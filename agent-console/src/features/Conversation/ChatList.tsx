@@ -1,4 +1,5 @@
-import { lazy, memo, Suspense, useCallback, useMemo } from 'react';
+import { lazy, memo, Suspense, useCallback, useMemo, type RefObject } from 'react';
+import { Virtualizer } from 'virtua';
 
 import type { StaticConversation, StaticUserMessage } from '../../domain/types/conversation';
 import type { Message } from '../../domain/types';
@@ -14,6 +15,8 @@ import { StreamingAssistantMessage } from '../Messages/StreamingAssistantMessage
 import { StaticUserMessageView } from '../Messages/StaticUserMessage';
 import { MessageActionProvider } from '../Messages/Contexts/MessageActionProvider';
 import { MessageContextMenu, type MessageContextMenuProps } from '../Overlays/MessageContextMenu';
+
+const VIRTUALIZE_AFTER = 40;
 const DevShowcaseSection =
   import.meta.env.DEV && !isAgentConsoleApiMode()
     ? lazy(() => import('./ShowcaseSection').then((m) => ({ default: m.ShowcaseSection })))
@@ -217,12 +220,14 @@ export const ChatList = memo(function ChatList({
   streamingMessage,
   topicId,
   hidden = false,
+  scrollRootRef,
 }: {
   messages: Message[];
   staticConversation?: StaticConversation | null;
   streamingMessage?: StreamingMessage | null;
   topicId: string;
   hidden?: boolean;
+  scrollRootRef?: RefObject<HTMLDivElement | null>;
 }) {
   const onUpdateStatic = useCallback(
     (messageId: string, payload: UserTurnPayload) => editUserMessage(topicId, messageId, payload),
@@ -239,7 +244,43 @@ export const ChatList = memo(function ChatList({
     return null;
   }, [messages]);
 
-  let userIndex = 0;
+  const prepared = useMemo(() => {
+    let userIndex = 0;
+    return messages.map((msg, listIndex) => {
+      if (msg.role === 'user') {
+        const index = userIndex;
+        userIndex += 1;
+        return {
+          msg,
+          listIndex,
+          userIndex: index,
+          isLastUser: msg.id === lastUserMessageId,
+        };
+      }
+      return { msg, listIndex, userIndex: 0, isLastUser: false };
+    });
+  }, [lastUserMessageId, messages]);
+
+  const renderItem = (item: (typeof prepared)[number]) =>
+    item.msg.role === 'user' ? (
+      <UserMessage
+        key={item.msg.id}
+        index={item.userIndex}
+        isLastUser={item.isLastUser}
+        message={item.msg}
+        topicId={topicId}
+      />
+    ) : (
+      <MessageItem
+        key={item.msg.id}
+        index={item.listIndex}
+        isLastUser={false}
+        message={item.msg}
+        topicId={topicId}
+      />
+    );
+
+  const shouldVirtualize = !useStaticThread && prepared.length > VIRTUALIZE_AFTER && scrollRootRef;
 
   const listBody = useStaticThread ? (
     <StaticSkillsConversation
@@ -248,26 +289,12 @@ export const ChatList = memo(function ChatList({
       topicId={topicId}
       onUpdateStatic={onUpdateStatic}
     />
+  ) : shouldVirtualize ? (
+    <Virtualizer scrollRef={scrollRootRef}>
+      {prepared.map(renderItem)}
+    </Virtualizer>
   ) : (
-    messages.map((msg, listIndex) =>
-      msg.role === 'user' ? (
-        <UserMessage
-          key={msg.id}
-          index={userIndex++}
-          isLastUser={msg.id === lastUserMessageId}
-          message={msg}
-          topicId={topicId}
-        />
-      ) : (
-        <MessageItem
-          key={msg.id}
-          index={listIndex}
-          isLastUser={false}
-          message={msg}
-          topicId={topicId}
-        />
-      ),
-    )
+    prepared.map(renderItem)
   );
 
   return (

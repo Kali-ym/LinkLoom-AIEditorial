@@ -1,4 +1,4 @@
-import { getBuiltinRender } from '../Render/registry';
+import { hasBuiltinRender } from '../Render/registry';
 import { CustomRender } from './Render/CustomRender';
 
 /** Use the skill's builtin render (e.g. TodoPanel) instead of raw argument rows. */
@@ -19,7 +19,7 @@ export function renderBuiltinPreview({
   requestArgs?: string;
   toolCallId: string;
 }) {
-  if (!getBuiltinRender(identifier, apiName)) return null;
+  if (!hasBuiltinRender(identifier, apiName)) return null;
 
   return (
     <CustomRender
@@ -35,5 +35,5 @@ export function renderBuiltinPreview({
 }
 
 export function hasBuiltinPreview(identifier: string, apiName: string) {
-  return Boolean(getBuiltinRender(identifier, apiName));
+  return hasBuiltinRender(identifier, apiName);
 }

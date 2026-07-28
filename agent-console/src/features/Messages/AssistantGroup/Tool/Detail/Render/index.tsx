@@ -1,6 +1,6 @@
 import { memo } from 'react';
 
-import { getBuiltinRender } from '../../Render/registry';
+import { hasBuiltinRender } from '../../Render/registry';
 import { CustomRender } from './CustomRender';
 import { FallbackArgumentRender } from './FallbackArgumentRender';
 
@@ -24,7 +24,7 @@ export const ToolRender = memo(function ToolRender({
   showCustomToolRender?: boolean;
   toolCallId: string;
 }) {
-  const hasCustomRender = Boolean(getBuiltinRender(identifier, apiName));
+  const hasCustomRender = hasBuiltinRender(identifier, apiName);
 
   if (hasCustomRender && showCustomToolRender) {
     return (

@@ -1,16 +1,25 @@
 import { Flexbox } from '@lobehub/ui';
-import { memo, useRef } from 'react';
+import { Suspense, lazy, memo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import { isAgentConsolePopupRoute, isAgentSubRoute } from '../constants/agentConsoleRoutes';
 import { AgentConsoleRoutes } from '../routes/AgentConsoleRoutes';
-import { HotkeyHelperPanel } from '../features/HotkeyHelperPanel';
-import { AgentSettingDrawer } from '../features/AgentSetting/AgentSettingDrawer';
 import { RegisterHotkeys } from '../features/RegisterHotkeys';
 import { AgentSidebar } from '../features/Sidebar';
-import { WorkingSidebar } from '../features/WorkingSidebar';
 import { layoutStyles } from '../styles/layoutStyles';
 import { LayoutContainerContext } from './LayoutContainerContext';
+
+const WorkingSidebar = lazy(() =>
+  import('../features/WorkingSidebar').then((m) => ({ default: m.WorkingSidebar })),
+);
+const HotkeyHelperPanel = lazy(() =>
+  import('../features/HotkeyHelperPanel').then((m) => ({ default: m.HotkeyHelperPanel })),
+);
+const AgentSettingDrawer = lazy(() =>
+  import('../features/AgentSetting/AgentSettingDrawer').then((m) => ({
+    default: m.AgentSettingDrawer,
+  })),
+);
 
 /**
  * §B 布局几何 — [NavPanel | Conversation+Portal | WorkingSidebar]
@@ -42,10 +51,16 @@ export const AgentConsoleLayout = memo(function AgentConsoleLayout() {
           <RegisterHotkeys />
           <AgentConsoleRoutes />
         </Flexbox>
-        {!hideWorkingSidebar && <WorkingSidebar />}
+        {!hideWorkingSidebar && (
+          <Suspense fallback={null}>
+            <WorkingSidebar />
+          </Suspense>
+        )}
       </Flexbox>
-      <HotkeyHelperPanel />
-      <AgentSettingDrawer />
+      <Suspense fallback={null}>
+        <HotkeyHelperPanel />
+        <AgentSettingDrawer />
+      </Suspense>
     </LayoutContainerContext>
   );
 });

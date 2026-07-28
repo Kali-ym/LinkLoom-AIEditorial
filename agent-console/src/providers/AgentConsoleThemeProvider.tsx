@@ -1,5 +1,5 @@
 import { ConfigProvider, ThemeProvider } from '@lobehub/ui';
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 
 import { useTheme } from '../context/ThemeContext';
 import { CONSOLE_FONT_FAMILY, CONSOLE_FONT_FAMILY_CODE } from '../constants/typographyTokens';
@@ -31,7 +31,8 @@ export function AgentConsoleThemeProvider({ children }: AgentConsoleThemeProvide
         },
       }}
     >
-      <ConfigProvider motion={motion}>
+      {/* `m` works with LazyMotion/domAnimation — avoid full `motion` import. */}
+      <ConfigProvider motion={m}>
         <div className="agent-console-provider-root">{children}</div>
       </ConfigProvider>
     </ThemeProvider>

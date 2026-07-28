@@ -41,9 +41,33 @@ export * from './types';
 let elapsedTimerId: number | null = null;
 let isBootstrapped = false;
 let isBootstrapComplete = false;
+let bootstrapCompleteResolve: (() => void) | null = null;
+let bootstrapCompletePromise: Promise<void> | null = null;
+
+function getBootstrapCompletePromise(): Promise<void> {
+  if (isBootstrapComplete) return Promise.resolve();
+  if (!bootstrapCompletePromise) {
+    bootstrapCompletePromise = new Promise<void>((resolve) => {
+      bootstrapCompleteResolve = resolve;
+    });
+  }
+  return bootstrapCompletePromise;
+}
 
 export function isAgentConsoleBootstrapComplete(): boolean {
   return isBootstrapComplete;
+}
+
+/** Resolves when the first bootstrap pass finishes (success or failure). */
+export function whenAgentConsoleBootstrapComplete(): Promise<void> {
+  return getBootstrapCompletePromise();
+}
+
+function markBootstrapComplete(): void {
+  isBootstrapComplete = true;
+  bootstrapCompleteResolve?.();
+  bootstrapCompleteResolve = null;
+  bootstrapCompletePromise = null;
 }
 
 function applyUiDefaults(activeTopicId?: string): void {
@@ -80,9 +104,7 @@ function applyHydrate(
   useAgentStore.getState().hydrate(hydrate);
   useAgentListStore.getState().hydrate(hydrate);
   if (!agentListLayout.isAgentListInit) {
-    window.setTimeout(() => {
-      useAgentListStore.getState().finishAgentListInit();
-    }, 320);
+    useAgentListStore.getState().finishAgentListInit();
   }
   useTopicStore.getState().hydrate(hydrate);
   useChatStore.getState().hydrate(hydrate);
@@ -93,14 +115,14 @@ function applyHydrate(
   useToolAuthStore.getState().hydrate(hydrate.pendingAuthTools);
 
   seedAgentConsoleQueryCache(queryClient, hydrate);
-
-  window.setTimeout(() => {
-    useAgentStore.getState().finishConfigLoad();
-  }, 320);
+  useAgentStore.getState().finishConfigLoad();
 }
 
 function runPortBootstrap(): void {
   isBootstrapComplete = false;
+  bootstrapCompletePromise = null;
+  bootstrapCompleteResolve = null;
+  void getBootstrapCompletePromise();
   void seedStoresFromPorts()
     .then(({ agentListLayout, hydrate }) => {
       applyHydrate(hydrate, agentListLayout);
@@ -115,7 +137,7 @@ function runPortBootstrap(): void {
       useAgentStore.getState().finishConfigLoad();
     })
     .finally(() => {
-      isBootstrapComplete = true;
+      markBootstrapComplete();
     });
 }
 
@@ -133,4 +155,7 @@ export function teardownAgentConsole(): void {
   }
   isBootstrapped = false;
   isBootstrapComplete = false;
+  bootstrapCompleteResolve?.();
+  bootstrapCompleteResolve = null;
+  bootstrapCompletePromise = null;
 }

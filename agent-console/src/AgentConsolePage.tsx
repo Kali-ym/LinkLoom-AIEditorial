@@ -1,10 +1,7 @@
-import { EditorProvider } from '@lobehub/editor/react';
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 
 import { HotkeysProvider } from './hooks/useHotkeys';
 import { CmdkLazy } from './features/CommandMenu/CmdkLazy';
-import { MobileTopicPanel } from './features/Sidebar/Topic/Mobile';
-import { AgentConsoleLayout } from './layout/AgentConsoleLayout';
 import { LayoutBackdrops } from './layout/LayoutBackdrops';
 import { AgentConsoleShell } from './layout/AgentConsoleShell';
 import { SPAGlobalProvider } from './layout/SPAGlobalProvider';
@@ -13,9 +10,16 @@ import { AgentConsoleThemeProvider } from './providers/AgentConsoleThemeProvider
 
 import './styles/index-html.css';
 
+const MobileTopicPanel = lazy(() =>
+  import('./features/Sidebar/Topic/Mobile').then((m) => ({ default: m.MobileTopicPanel })),
+);
+const AgentConsoleLayout = lazy(() =>
+  import('./layout/AgentConsoleLayout').then((m) => ({ default: m.AgentConsoleLayout })),
+);
+
 /**
- * Agent 主页面 — 薄组合层（对齐 sandbox agent/index.tsx）
- * ChatHydration + Conversation 布局 + TelemetryNotification
+ * Agent 主页面 — 薄组合层。
+ * Editor 已下沉到 DesktopChatInputLazy，首屏不再解析 lexical。
  */
 export default function AgentConsolePage() {
   useEffect(() => {
@@ -37,20 +41,22 @@ export default function AgentConsolePage() {
   return (
     <div className="agent-console-host">
       <AgentConsoleThemeProvider>
-        <EditorProvider>
-          <HotkeysProvider>
-            <SPAGlobalProvider>
-              <div className="agent-console-editor-root">
-                <CmdkLazy />
+        <HotkeysProvider>
+          <SPAGlobalProvider>
+            <div className="agent-console-editor-root">
+              <CmdkLazy />
+              <Suspense fallback={null}>
                 <MobileTopicPanel />
-                <AgentConsoleShell>
+              </Suspense>
+              <AgentConsoleShell>
+                <Suspense fallback={null}>
                   <AgentConsoleLayout />
-                  <LayoutBackdrops />
-                </AgentConsoleShell>
-              </div>
-            </SPAGlobalProvider>
-          </HotkeysProvider>
-        </EditorProvider>
+                </Suspense>
+                <LayoutBackdrops />
+              </AgentConsoleShell>
+            </div>
+          </SPAGlobalProvider>
+        </HotkeysProvider>
       </AgentConsoleThemeProvider>
     </div>
   );

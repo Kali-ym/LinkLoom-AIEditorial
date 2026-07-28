@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { AppError } from '../../domain/errors.js';
+import { ConsoleBootstrapService } from '../../services/console/ConsoleBootstrapService.js';
 import { ConsoleSearchService } from '../../services/console/ConsoleSearchService.js';
 import type { RouteRegistrar } from './types.js';
 
@@ -16,8 +17,9 @@ function readInstanceVersion(projectRoot: string): string {
   return '0';
 }
 
-export const registerConsoleSearchRoutes: RouteRegistrar = (fastify, { store, projectRoot }) => {
+export const registerConsoleSearchRoutes: RouteRegistrar = (fastify, { store, context, projectRoot }) => {
   const service = new ConsoleSearchService(store);
+  const bootstrapService = new ConsoleBootstrapService(store, context);
 
   fastify.get('/api/console/connection', async () => ({
     ok: true as const,
@@ -26,6 +28,14 @@ export const registerConsoleSearchRoutes: RouteRegistrar = (fastify, { store, pr
       version: readInstanceVersion(projectRoot),
     },
   }));
+
+  fastify.get('/api/console/bootstrap', async (request) => {
+    const query = request.query as { agentId?: string; topicId?: string };
+    return bootstrapService.bootstrap({
+      agentId: typeof query.agentId === 'string' ? query.agentId : undefined,
+      topicId: typeof query.topicId === 'string' ? query.topicId : undefined,
+    });
+  });
 
   fastify.get('/api/console/search', async (request) => {
     const query = request.query as { q?: string; agentId?: string; limit?: string };

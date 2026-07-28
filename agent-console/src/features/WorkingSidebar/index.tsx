@@ -17,12 +17,20 @@ import {
 import { panelStyles } from '../../layout/panelStyles';
 import { useLayoutStore, useWorkingSidebarStore } from '../../stores';
 import type { WorkingSidebarTab } from '../../stores/types';
-import { FilesPanel } from './FilesPanel';
-import { ReviewPanel } from './ReviewPanel';
-import { ResourcesSection } from './ResourcesSection';
-import { TodoProgressCard } from './TodoProgressCard';
 import { workingSidebarStyles } from './workingSidebarStyles';
 
+const TodoProgressCard = lazy(() =>
+  import('./TodoProgressCard').then((m) => ({ default: m.TodoProgressCard })),
+);
+const ResourcesSection = lazy(() =>
+  import('./ResourcesSection').then((m) => ({ default: m.ResourcesSection })),
+);
+const ReviewPanel = lazy(() =>
+  import('./ReviewPanel').then((m) => ({ default: m.ReviewPanel })),
+);
+const FilesPanel = lazy(() =>
+  import('./FilesPanel').then((m) => ({ default: m.FilesPanel })),
+);
 const ParamsSection = lazy(() => import('./ParamsSection'));
 
 const ALL_TABS: { key: WorkingSidebarTab; label: string }[] = [
@@ -32,7 +40,64 @@ const ALL_TABS: { key: WorkingSidebarTab; label: string }[] = [
   { key: 'params', label: '参数' },
 ];
 
-/** §C.5 / §C.27 WorkingSidebar*/
+function ActiveTabBody({
+  activeTab,
+  paramsAvailable,
+  reviewAvailable,
+  filesAvailable,
+}: {
+  activeTab: WorkingSidebarTab;
+  paramsAvailable: boolean;
+  reviewAvailable: boolean;
+  filesAvailable: boolean;
+}) {
+  if (activeTab === 'space') {
+    return (
+      <Flexbox className={cx(workingSidebarStyles.pane, workingSidebarStyles.resourcesPane)} id="pane-resources">
+        <Suspense fallback={null}>
+          <TodoProgressCard />
+          <ResourcesSection />
+        </Suspense>
+      </Flexbox>
+    );
+  }
+
+  if (activeTab === 'params' && paramsAvailable) {
+    return (
+      <div className={workingSidebarStyles.pane} id="pane-params">
+        <div className={workingSidebarStyles.paneScroll} id="paramsPanelMount">
+          <Suspense fallback={null}>
+            <ParamsSection />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
+
+  if (activeTab === 'review' && reviewAvailable) {
+    return (
+      <div className={workingSidebarStyles.pane} id="pane-review">
+        <Suspense fallback={null}>
+          <ReviewPanel />
+        </Suspense>
+      </div>
+    );
+  }
+
+  if (activeTab === 'files' && filesAvailable) {
+    return (
+      <div className={workingSidebarStyles.pane} id="pane-files">
+        <Suspense fallback={null}>
+          <FilesPanel />
+        </Suspense>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/** §C.5 / §C.27 WorkingSidebar — only mount the active tab body. */
 export const WorkingSidebar = memo(function WorkingSidebar() {
   const zenMode = useLayoutStore((s) => s.zenMode);
   const rightCollapsed = useLayoutStore((s) => s.rightCollapsed);
@@ -73,6 +138,8 @@ export const WorkingSidebar = memo(function WorkingSidebar() {
 
   if (zenMode) return null;
 
+  const showBody = isCompactViewport || !rightCollapsed;
+
   const inner = (
     <Flexbox height="100%" width="100%" style={{ minHeight: 0 }}>
       <Flexbox
@@ -107,59 +174,16 @@ export const WorkingSidebar = memo(function WorkingSidebar() {
         />
       </Flexbox>
 
-      <div className={workingSidebarStyles.body}>
-        <Flexbox
-          className={cx(
-            workingSidebarStyles.pane,
-            workingSidebarStyles.resourcesPane,
-            activeTab !== 'space' && workingSidebarStyles.paneHidden,
-          )}
-          id="pane-resources"
-        >
-          <TodoProgressCard />
-          <ResourcesSection />
-        </Flexbox>
-
-        {paramsAvailable ? (
-          <div
-            className={cx(
-              workingSidebarStyles.pane,
-              activeTab !== 'params' && workingSidebarStyles.paneHidden,
-            )}
-            id="pane-params"
-          >
-            <div className={workingSidebarStyles.paneScroll} id="paramsPanelMount">
-              <Suspense fallback={null}>
-                <ParamsSection />
-              </Suspense>
-            </div>
-          </div>
-        ) : null}
-
-        {reviewAvailable ? (
-          <div
-            className={cx(
-              workingSidebarStyles.pane,
-              activeTab !== 'review' && workingSidebarStyles.paneHidden,
-            )}
-            id="pane-review"
-          >
-            <ReviewPanel />
-          </div>
-        ) : null}
-
-        {filesAvailable ? (
-          <div
-            className={cx(
-              workingSidebarStyles.pane,
-              activeTab !== 'files' && workingSidebarStyles.paneHidden,
-            )}
-            id="pane-files"
-          >
-            <FilesPanel />
-          </div>
-        ) : null}
-      </div>
+      {showBody ? (
+        <div className={workingSidebarStyles.body}>
+          <ActiveTabBody
+            activeTab={activeTab}
+            filesAvailable={filesAvailable}
+            paramsAvailable={paramsAvailable}
+            reviewAvailable={reviewAvailable}
+          />
+        </div>
+      ) : null}
     </Flexbox>
   );
 

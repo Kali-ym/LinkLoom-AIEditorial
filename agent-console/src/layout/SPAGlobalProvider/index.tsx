@@ -1,6 +1,6 @@
 import { TooltipGroup } from '@lobehub/ui';
 import { StyleProvider } from 'antd-style';
-import { domMax, LazyMotion } from 'framer-motion';
+import { domAnimation, LazyMotion } from 'framer-motion';
 import { lazy, memo, type PropsWithChildren, Suspense } from 'react';
 
 import { DragUploadProvider } from '../../components/DragUploadZone';
@@ -26,7 +26,7 @@ export const SPAGlobalProvider = memo(function SPAGlobalProvider({ children }: P
   return (
     <LocaleProvider>
       <QueryProvider>
-        <LazyMotion features={domMax}>
+        <LazyMotion features={domAnimation} strict>
           <DragUploadProvider>
             <TooltipGroup layoutAnimation={false}>
               <StyleProvider speedy={import.meta.env.PROD}>{children}</StyleProvider>

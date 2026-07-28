@@ -5,7 +5,7 @@ import {
   AgentConsoleApiError,
   agentConsoleGetJson,
 } from './http';
-import { resolveActiveAgentId, startAgentRun } from './agentRun';
+import { listAgentRunsForAgent, resolveActiveAgentId, startAgentRun } from './agentRun';
 import { editSessionMessage, regenerateSessionMessage } from './sessionMessageActions';
 import { mapBackendMessagesToDomain } from './mappers/message';
 import {
@@ -14,7 +14,7 @@ import {
   topicIdToSessionId,
 } from './mappers/sessionTopic';
 import type { BackendSessionMessagesDto } from './types/message';
-import type { BackendAgentRunPageDto } from './types/session';
+import { readStoredActiveTopicId } from './activeTopicStorage';
 
 async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
   try {
@@ -34,29 +34,30 @@ async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
   }
 }
 
+/** Resolve active topic for bootstrap without pulling every session's messages. */
+async function resolveBootstrapActiveTopicId(agentId: string): Promise<string> {
+  const stored = readStoredActiveTopicId(agentId);
+  if (stored && !isEphemeralTopicId(stored)) return stored;
+
+  const page = await listAgentRunsForAgent(agentId);
+  const firstSessionId = page.items.find((run) => run.sessionId)?.sessionId;
+  return firstSessionId ? sessionIdToTopicId(firstSessionId) : '';
+}
+
 export const apiChatPort: IChatPort = {
+  /**
+   * Bootstrap path: only hydrate the active topic's messages.
+   * Other topics load on demand via getMessages / MessagesHydration.
+   */
   async getMessagesByTopicId() {
     const agentId = await resolveActiveAgentId();
-    const page = await agentConsoleGetJson<BackendAgentRunPageDto>(
-      `/api/agent-runs?agentId=${encodeURIComponent(agentId)}&limit=100`,
-    );
+    const topicId = await resolveBootstrapActiveTopicId(agentId);
+    if (!topicId || isEphemeralTopicId(topicId)) {
+      return {};
+    }
 
-    const sessionIds = [
-      ...new Set(
-        page.items
-          .map((run) => run.sessionId)
-          .filter((sessionId): sessionId is string => Boolean(sessionId)),
-      ),
-    ];
-
-    const entries = await Promise.all(
-      sessionIds.map(async (sessionId) => {
-        const messages = await fetchSessionMessages(sessionId);
-        return [sessionIdToTopicId(sessionId), messages] as const;
-      }),
-    );
-
-    return Object.fromEntries(entries);
+    const messages = await fetchSessionMessages(topicIdToSessionId(topicId));
+    return { [topicId]: messages };
   },
 
   async getMessages(topicId) {

@@ -6,8 +6,13 @@ import {
   maskApiKey,
   probeConsoleConnection,
 } from '../../domain/connection/consoleConnection';
+import {
+  isAgentConsoleBootstrapComplete,
+  whenAgentConsoleBootstrapComplete,
+} from '../../stores';
 
 const HEARTBEAT_MS = 45_000;
+const PROBE_IDLE_DELAY_MS = 1_500;
 
 function statusColor(health: string): string {
   if (health === 'connected') return '#22c55e';
@@ -21,6 +26,31 @@ function statusLabel(health: string): string {
   return '已断开';
 }
 
+function scheduleAfterIdle(callback: () => void, timeoutMs: number): () => void {
+  let idleId: number | undefined;
+  let timeoutId: number | undefined;
+  let cancelled = false;
+
+  const run = () => {
+    if (cancelled) return;
+    callback();
+  };
+
+  if (typeof window.requestIdleCallback === 'function') {
+    idleId = window.requestIdleCallback(run, { timeout: timeoutMs });
+  } else {
+    timeoutId = window.setTimeout(run, timeoutMs);
+  }
+
+  return () => {
+    cancelled = true;
+    if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(idleId);
+    }
+    if (timeoutId != null) window.clearTimeout(timeoutId);
+  };
+}
+
 export function ConnectionStatusControl() {
   const navigate = useNavigate();
   const { connection, health, lastHeartbeatAt, disconnect, setHealth } = useAuth();
@@ -29,6 +59,8 @@ export function ConnectionStatusControl() {
     if (!connection) return;
 
     let cancelled = false;
+    let intervalId: number | undefined;
+    let cancelIdle: (() => void) | undefined;
 
     const beat = async () => {
       if (cancelled) return;
@@ -51,12 +83,27 @@ export function ConnectionStatusControl() {
       }
     };
 
-    setHealth('checking');
-    void beat();
-    const timer = window.setInterval(() => void beat(), HEARTBEAT_MS);
+    const startHeartbeat = () => {
+      if (cancelled) return;
+      setHealth('checking');
+      void beat();
+      intervalId = window.setInterval(() => void beat(), HEARTBEAT_MS);
+    };
+
+    const begin = async () => {
+      if (!isAgentConsoleBootstrapComplete()) {
+        await whenAgentConsoleBootstrapComplete();
+      }
+      if (cancelled) return;
+      cancelIdle = scheduleAfterIdle(startHeartbeat, PROBE_IDLE_DELAY_MS);
+    };
+
+    void begin();
+
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      cancelIdle?.();
+      if (intervalId != null) window.clearInterval(intervalId);
     };
   }, [connection, disconnect, navigate, setHealth]);
 

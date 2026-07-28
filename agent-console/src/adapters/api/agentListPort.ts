@@ -10,7 +10,7 @@ import type { BackendAgentRunPageDto } from './types/session';
 
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'paused', 'cancelling']);
 
-async function listRecentRuns(limit = 200): Promise<BackendAgentRunPageDto> {
+export async function listRecentRuns(limit = 200): Promise<BackendAgentRunPageDto> {
   const params = new URLSearchParams({
     limit: String(limit),
     sortField: 'updatedAt',
@@ -19,7 +19,7 @@ async function listRecentRuns(limit = 200): Promise<BackendAgentRunPageDto> {
   return agentConsoleGetJson<BackendAgentRunPageDto>(`/api/agent-runs?${params.toString()}`);
 }
 
-function buildDefaultLayout(agents: Agent[]): AgentListLayout {
+export function buildDefaultLayout(agents: Agent[]): AgentListLayout {
   const prefs = readAgentListLayoutPrefs();
   const agentIds = agents.map((agent) => agent.id);
   const knownIds = new Set(agentIds);
@@ -50,7 +50,7 @@ function buildDefaultLayout(agents: Agent[]): AgentListLayout {
   };
 }
 
-function buildRuntimeMap(
+export function buildRuntimeMap(
   runs: BackendAgentRunPageDto['items'],
   agentIds: string[],
 ): Record<string, AgentRuntimeStatus> {

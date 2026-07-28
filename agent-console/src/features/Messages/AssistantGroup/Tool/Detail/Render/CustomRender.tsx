@@ -1,11 +1,15 @@
 import { Flexbox } from '@lobehub/ui';
-import { memo } from 'react';
+import { Suspense, lazy, memo, useMemo, type ComponentType } from 'react';
 
 import { safeParsePartialJSON } from '../../../../../../utils/safeParsePartialJSON';
-import { getBuiltinRender } from '../../Render/registry';
+import { loadBuiltinRenderRegistry } from '../../Render/registry';
 import { toolRenderStyles } from '../../shared/toolRenderStyles';
 
-/** §C.45*/
+function EmptyBuiltinRender() {
+  return null;
+}
+
+/** §C.45 — resolve builtin render from a dynamically loaded registry chunk. */
 export const CustomRender = memo(function CustomRender({
   apiName,
   content,
@@ -23,20 +27,38 @@ export const CustomRender = memo(function CustomRender({
   requestArgs?: string;
   toolCallId: string;
 }) {
-  const Render = getBuiltinRender(identifier, apiName);
-  if (!Render) return null;
+  const Render = useMemo(() => {
+    const LazyRender = lazy(async () => {
+      const registry = await loadBuiltinRenderRegistry();
+      const Comp = registry.getBuiltinRender(identifier, apiName);
+      return {
+        default: (Comp ?? EmptyBuiltinRender) as ComponentType<{
+          apiName: string;
+          args: Record<string, unknown>;
+          content: string;
+          identifier: string;
+          messageId: string;
+          pluginState?: unknown;
+          toolCallId: string;
+        }>,
+      };
+    });
+    return LazyRender;
+  }, [apiName, identifier]);
 
   return (
     <Flexbox className={toolRenderStyles.shell} gap={12} id={toolCallId} width="100%">
-      <Render
-        apiName={apiName}
-        args={safeParsePartialJSON(requestArgs)}
-        content={content}
-        identifier={identifier}
-        messageId={messageId}
-        pluginState={pluginState}
-        toolCallId={toolCallId}
-      />
+      <Suspense fallback={null}>
+        <Render
+          apiName={apiName}
+          args={safeParsePartialJSON(requestArgs)}
+          content={content}
+          identifier={identifier}
+          messageId={messageId}
+          pluginState={pluginState}
+          toolCallId={toolCallId}
+        />
+      </Suspense>
     </Flexbox>
   );
 });

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 
 import {
   DragUploadZone,
@@ -20,8 +20,6 @@ import { selectMessagesForTopic, selectMinimapVisible, selectStreamingMessageFor
 import { systemStatusSelectors } from '../../selectors/systemStatus';
 import { IS_ADMIN_DESKTOP } from '../ChatInput/ControlBar/helpers/platform';
 import { insertLocalFolderMentions } from '../ChatInput/editor/insertLocalFolderMentions';
-import { DesktopChatInput } from '../ChatInput';
-import { PortalDrawer } from '../Portal';
 import { BackBottom } from './BackBottom';
 import { AgentHome } from './AgentHome';
 import { ChatHeader } from './Header';
@@ -43,6 +41,13 @@ import {
 import { ZenModeToast } from '../ZenModeToast';
 import { layoutStyles } from '../../styles/layoutStyles';
 import { WideScreenContainer } from '../WideScreenContainer';
+
+const DesktopChatInputLazy = lazy(() =>
+  import('../ChatInput/DesktopChatInputLazy').then((m) => ({ default: m.DesktopChatInputLazy })),
+);
+const PortalDrawer = lazy(() =>
+  import('../Portal').then((m) => ({ default: m.PortalDrawer })),
+);
 
 const dragUploadWrapperStyle: CSSProperties = {
   display: 'flex',
@@ -215,6 +220,7 @@ export const Conversation = memo(function Conversation() {
                 <ChatList
                   hidden={showHome}
                   messages={messages}
+                  scrollRootRef={scrollRef}
                   staticConversation={
                     !isAgentConsoleApiMode() && activeTopicId === 'skills' ? staticConversation : null
                   }
@@ -239,7 +245,9 @@ export const Conversation = memo(function Conversation() {
             onScrollToBottom={() => scrollChatToBottom(true)}
           />
         </div>
-        <DesktopChatInput />
+        <Suspense fallback={null}>
+          <DesktopChatInputLazy />
+        </Suspense>
       </DragUploadZone>
       <ZenModeToast />
     </section>
@@ -250,7 +258,9 @@ export const ChatWorkspace = memo(function ChatWorkspace() {
   return (
     <div className={`chat-workspace ${layoutStyles.chatWorkspaceInner}`} data-region="chat-workspace">
       <Conversation />
-      <PortalDrawer />
+      <Suspense fallback={null}>
+        <PortalDrawer />
+      </Suspense>
     </div>
   );
 });

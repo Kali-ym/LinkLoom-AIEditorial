@@ -1,19 +1,55 @@
-import { memo, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { memo, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { isAgentConsoleApiMode } from './ports';
-import { getAgentConsolePorts } from './ports';
+import type { AgentPlusState } from '../../domain/types';
+import type { Agent } from '../../domain/types';
+import type { AgentListLayout, AgentRuntimeStatus } from '../../domain/types/agentList';
+import {
+  isAgentConsoleBootstrapComplete,
+  useAgentListStore,
+  useAgentStore,
+  whenAgentConsoleBootstrapComplete,
+} from '../../stores';
+import { getAgentConsolePorts, isAgentConsoleApiMode } from './ports';
 import { agentConsoleQueryKeys } from './queryKeys';
-import { useAgentListStore, useAgentStore } from '../../stores';
 
-/** api 模式：拉取 agent 列表 bundle 并同步 zustand（mock 由 bootstrap seed）。 */
+type AgentListBundle = {
+  agents: Agent[];
+  layout: AgentListLayout;
+  plusStateByAgentId: Record<string, AgentPlusState>;
+  runtimeByAgentId: Record<string, AgentRuntimeStatus>;
+};
+
+/** api 模式：等 bootstrap 完成后再同步；优先使用 seed 的 query cache，避免双打 /api/agents。 */
 export const AgentListQueryHydration = memo(function AgentListQueryHydration() {
   const isApi = isAgentConsoleApiMode();
+  const queryClient = useQueryClient();
+  const [bootstrapReady, setBootstrapReady] = useState(() =>
+    isApi ? isAgentConsoleBootstrapComplete() : true,
+  );
+
+  useEffect(() => {
+    if (!isApi || bootstrapReady) return;
+    let cancelled = false;
+    void whenAgentConsoleBootstrapComplete().then(() => {
+      if (!cancelled) setBootstrapReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapReady, isApi]);
 
   const { data } = useQuery({
-    enabled: isApi,
+    enabled: isApi && bootstrapReady,
     queryKey: agentConsoleQueryKeys.agentListBundle(),
-    queryFn: async () => {
+    queryFn: async (): Promise<AgentListBundle> => {
+      const seeded = queryClient.getQueryData<AgentListBundle>(
+        agentConsoleQueryKeys.agentListBundle(),
+      );
+      if (seeded?.agents) {
+        return seeded;
+      }
+
       const ports = getAgentConsolePorts();
       const [agents, layout, runtimeByAgentId, plusStateByAgentId] = await Promise.all([
         ports.agent.listAgents(),

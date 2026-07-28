@@ -1,7 +1,7 @@
 import { Flexbox, Markdown, PreviewGroup } from '@lobehub/ui';
 import { Image } from 'antd';
 import { createStaticStyles } from 'antd-style';
-import { memo } from 'react';
+import { memo, useEffect, useRef, useState, type RefObject } from 'react';
 
 import type { GroundingData } from '../../../domain/types';
 import type { StaticReasoningBlock } from '../../../domain/types/conversation';
@@ -20,6 +20,37 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+/** Enable expensive shiki highlighting only when the message is near the viewport. */
+function useNearViewport(deferUntilVisible: boolean): [RefObject<HTMLDivElement | null>, boolean] {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [near, setNear] = useState(!deferUntilVisible);
+
+  useEffect(() => {
+    if (!deferUntilVisible) {
+      setNear(true);
+      return;
+    }
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          setNear(true);
+          observer.disconnect();
+        }
+      },
+      { root: null, rootMargin: '200px 0px', threshold: 0.01 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [deferUntilVisible]);
+
+  return [ref, near];
+}
+
 /** §C.11 content order: Grounding → Reasoning → body → images */
 export const AssistantMessageContent = memo(function AssistantMessageContent({
   messageId = 'assistant',
@@ -37,26 +68,26 @@ export const AssistantMessageContent = memo(function AssistantMessageContent({
   streaming?: boolean;
 }) {
   const markdownProps = useConversationMarkdown(messageId, 'assistant', { animated: streaming });
-  // Let @lobehub/ui's StreamdownRender handle stream smoothing itself — it has
-  // block-level memoization and an adaptive CPS smoother (useSmoothStreamContent)
-  // that is far cheaper than re-parsing the full growing Markdown each frame.
-  // We only buffer when NOT streaming so finalized content commits immediately.
   const markdown = useStreamingContentBuffer(content, streaming);
   const hasContent = Boolean(markdown?.trim());
-  // Syntax highlighting (fullFeaturedCodeBlock) is the single most expensive
-  // part of Markdown rendering and is wasted during streaming since the code
-  // block is still incomplete. Disable it while streaming and re-enable on
-  // finalize so long answers stop getting slower as code grows.
-  const fullFeaturedCodeBlock = !streaming;
+  const [rootRef, nearViewport] = useNearViewport(!streaming);
+  // Syntax highlighting is expensive; keep it off while streaming and until near viewport.
+  const fullFeaturedCodeBlock = !streaming && nearViewport;
 
   return (
-    <Flexbox gap={8} style={{ width: '100%' }}>
+    <Flexbox ref={rootRef} gap={8} style={{ width: '100%' }}>
       {grounding && <GroundingMessage data={grounding} />}
       {reasoning && <ReasoningBlock block={reasoning} />}
       {hasContent ? (
         <div className="markdown-body">
           <Markdown
-            key={streaming ? `${messageId}-stream` : `${messageId}-final`}
+            key={
+              streaming
+                ? `${messageId}-stream`
+                : fullFeaturedCodeBlock
+                  ? `${messageId}-final-hl`
+                  : `${messageId}-final`
+            }
             {...markdownProps}
             animated={streaming}
             enableStream={Boolean(streaming)}

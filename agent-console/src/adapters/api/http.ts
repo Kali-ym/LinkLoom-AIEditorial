@@ -83,9 +83,24 @@ export async function agentConsoleFetch(
   return response;
 }
 
+/** Share in-flight GET JSON by path so bootstrap parallel ports don't stampede. */
+const inflightGetJson = new Map<string, Promise<unknown>>();
+
 export async function agentConsoleGetJson<T>(path: string): Promise<T> {
-  const response = await agentConsoleFetch(path);
-  return (await response.json()) as T;
+  const existing = inflightGetJson.get(path);
+  if (existing) return existing as Promise<T>;
+
+  const promise = (async () => {
+    try {
+      const response = await agentConsoleFetch(path);
+      return (await response.json()) as T;
+    } finally {
+      inflightGetJson.delete(path);
+    }
+  })();
+
+  inflightGetJson.set(path, promise);
+  return promise;
 }
 
 export async function agentConsolePostJson<T>(

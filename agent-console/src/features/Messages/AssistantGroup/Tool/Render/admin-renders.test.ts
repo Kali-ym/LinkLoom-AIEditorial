@@ -67,7 +67,7 @@ import {
   getQueryResultCount,
   normalizeQueryRows,
 } from './admin/adminQueryRenderConfig';
-import { getBuiltinRender } from './registry';
+import { getBuiltinRender } from './registryImpl';
 
 describe('admin Render cards', () => {
   it('formatNewsScoreDisplay handles reset and numeric scores', () => {

@@ -14,7 +14,6 @@ import {
   teardownAgentConsole,
   useLayoutStore,
 } from '../stores';
-import '../styles/index-html.css';
 
 interface AgentConsoleShellProps {
   children: ReactNode;
