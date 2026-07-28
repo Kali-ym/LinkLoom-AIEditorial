@@ -1,3 +1,4 @@
+import type { OutgoingHttpHeaders } from 'node:http';
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { AppError, DomainError } from '../domain/errors.js';
 import { captureHttpError } from '../utils/sentry.js';
@@ -29,7 +30,10 @@ export function beginSse(reply: FastifyReply) {
   // Preflight OPTIONS still works; only the actual SSE GET was missing ACAO.
   if (!reply.raw.headersSent) {
     reply.hijack();
-    reply.raw.writeHead(reply.statusCode || 200, reply.getHeaders());
+    reply.raw.writeHead(
+      reply.statusCode || 200,
+      reply.getHeaders() as OutgoingHttpHeaders
+    );
   }
 }
 
