@@ -1,0 +1,30 @@
+/** §C.39 文案 — 对齐 `chat`/`common` i18n keys；接 i18n 时替换为 `t()`。 */
+export const shareStrings = {
+  apiDeferHint: '链接分享尚未接入后端，暂仅支持本地导出。',
+  cancel: '取消',
+  copyLink: '复制链接',
+  copyLinkSuccess: '链接已复制',
+  export: '导出',
+  linkHint: '拥有链接的任何人都可以查看此对话。',
+  permissionLink: '拥有链接的人',
+  permissionPrivate: '仅自己可见',
+  privateHint: '仅你可访问此对话。',
+  share: '分享',
+  title: '分享对话',
+  updateError: '更新分享设置失败，请重试',
+  visibility: '可见性',
+  visibilityUpdated: '可见性已更新',
+  privacyWarning: {
+    confirm: '开启链接分享',
+    content: '链接分享可能暴露对话中的敏感内容，请确认后继续。',
+    doNotShowAgain: '不再提示',
+    note: '你随时可以将可见性改回「仅自己可见」。',
+    title: '开启链接分享',
+    items: {
+      credentials: '凭据与密钥',
+      files: '附件与文件',
+      images: '图片',
+      toolCalls: '工具调用记录',
+    },
+  },
+} as const;

@@ -1,0 +1,37 @@
+node_modules/
+admin/node_modules/
+agent-console/node_modules/
+web/node_modules/
+package-lock.json
+**/package-lock.json
+yarn.lock
+**/yarn.lock
+npm-shrinkwrap.json
+/backend/dist/
+/admin/dist/
+/agent-console/dist/
+/data/
+/backups/
+coverage/
+.turbo/
+.playwright/
+.env
+.env.local
+*.log
+/sandbox/
+
+# IDE / agent tooling (not product source)
+.agents/
+.cursor/
+.codex/
+.superpowers/
+
+# Agent process docs & personal prep (keep docs/{deployment,operations,...})
+docs/superpowers/
+docs/gateway/
+docs/design/
+
+# Local scratch / caches
+**/__pycache__/
+*.py[cod]
+scripts/exports/

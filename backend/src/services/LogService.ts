@@ -1,0 +1,43 @@
+export class LogService {
+  private static logs: { timestamp: string; level: string; message: string }[] = [];
+  private static maxLogs = 100;
+
+  static info(message: string) {
+    this.addLog('INFO', message);
+  }
+
+  static warn(message: string) {
+    this.addLog('WARN', message);
+  }
+
+  static error(message: string) {
+    this.addLog('ERROR', message);
+  }
+
+  private static addLog(level: string, message: string) {
+    const now = new Date();
+    const timestamp = now.toLocaleTimeString('zh-CN', {
+      hour12: false,
+      timeZone: 'Asia/Shanghai'
+    });
+    this.logs.push({ timestamp, level, message });
+    if (this.logs.length > this.maxLogs) {
+      this.logs.shift();
+    }
+    if (process.env.LOG_FORMAT === 'json') {
+      console.log(
+        JSON.stringify({
+          time: now.toISOString(),
+          level,
+          message
+        })
+      );
+      return;
+    }
+    console.log(`[${timestamp}] ${level}: ${message}`);
+  }
+
+  static getLogs() {
+    return [...this.logs].reverse();
+  }
+}

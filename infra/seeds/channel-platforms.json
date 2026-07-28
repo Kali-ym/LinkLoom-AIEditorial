@@ -1,0 +1,46 @@
+{
+  "$schema": "./channel-platforms.schema.json",
+  "platforms": [
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "description": "通过 Bot API 连接 Telegram 频道与群组",
+      "documentationUrl": "https://lobehub.com/docs/usage/channels/overview",
+      "credentialFields": [
+        { "key": "botToken", "label": "Bot Token", "secret": true, "placeholder": "123456:ABC..." }
+      ]
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "description": "连接 Discord 服务器与频道",
+      "documentationUrl": "https://lobehub.com/docs/usage/channels/overview",
+      "credentialFields": [
+        { "key": "botToken", "label": "Bot Token", "secret": true },
+        { "key": "applicationId", "label": "Application ID" }
+      ]
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "接入 Slack 工作区",
+      "documentationUrl": "https://lobehub.com/docs/usage/channels/overview",
+      "credentialFields": [
+        { "key": "botToken", "label": "Bot User OAuth Token", "secret": true },
+        { "key": "signingSecret", "label": "Signing Secret", "secret": true }
+      ]
+    },
+    {
+      "id": "wechat",
+      "name": "微信",
+      "description": "企业微信 / 公众号 Bot",
+      "comingSoon": true
+    },
+    {
+      "id": "imessage",
+      "name": "iMessage",
+      "description": "BlueBubbles 桥接",
+      "comingSoon": true
+    }
+  ]
+}

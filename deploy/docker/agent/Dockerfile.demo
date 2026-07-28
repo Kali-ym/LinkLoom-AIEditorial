@@ -1,0 +1,4 @@
+FROM node:20-alpine
+RUN addgroup -g 1001 -S agent && adduser -u 1001 -S -G agent agent
+USER agent:agent
+CMD ["node", "-e", "setInterval(() => {}, 1000)"]

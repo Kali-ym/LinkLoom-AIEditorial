@@ -1,0 +1,25 @@
+{
+  "$schema": "./channel-bindings.schema.json",
+  "bindings": [
+    {
+      "channel": "cli",
+      "agentId": "cli-cli",
+      "description": "Default agent for local CLI runs."
+    },
+    {
+      "channel": "tg",
+      "agentId": "tg-fallback",
+      "description": "Catch-all for any Telegram peer we don't have a specific rule for."
+    },
+    {
+      "channel": "discord",
+      "agentId": "discord-fallback",
+      "description": "Default Discord agent."
+    },
+    {
+      "channel": "web",
+      "agentId": "web-default",
+      "description": "Web chat default; will likely be replaced by a per-user binding once auth lands."
+    }
+  ]
+}

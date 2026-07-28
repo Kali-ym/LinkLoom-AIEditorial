@@ -1,0 +1,2 @@
+export const TIMELINE_INITIAL_LIMIT = 40;
+export const TIMELINE_PAGE_SIZE = 20;

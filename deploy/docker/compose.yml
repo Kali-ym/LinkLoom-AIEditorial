@@ -1,0 +1,63 @@
+# LinkLoom 生产栈（Postgres + 应用）
+# 应用环境变量：仓库根目录 .env（模板见根 .env.example，索引见 config/README.md）
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-linkloom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linkloom}
+      POSTGRES_DB: ${POSTGRES_DB:-linkloom}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-linkloom}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      - '${POSTGRES_PUBLISH:-127.0.0.1:5432}:5432'
+
+  linkloom:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        BUILD_NODE_MAX_OLD_SPACE_SIZE: ${BUILD_NODE_MAX_OLD_SPACE_SIZE:-1280}
+        DOCKER_BUILD_PARALLEL: ${DOCKER_BUILD_PARALLEL:-serial}
+        SKIP_APP_BUILD: ${SKIP_APP_BUILD:-1}
+    image: linkloom:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../.env
+    ports:
+      - '${HOST_PUBLISH:-0.0.0.0:3000}:${PORT:-3000}'
+    volumes:
+      - ${DATA_DIR:-../../data}:/app/data
+      - ${BACKUP_DIR:-../../backups}:/app/backups
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pgdata:
+    name: linkloom_pgdata
+    external: true

@@ -1,0 +1,427 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@config "../tailwind.config.js";
+
+@theme {
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* LinkLoom brand accent */
+  --color-primary: #0cafcf;
+  --color-primary-deep: #0892ac;
+
+  /* Miro-inspired Ink / Canvas system (light theme defaults) */
+  --color-ink: #0a0a12;
+  --color-ink-deep: #050038;
+  --color-charcoal: #2c2a3a;
+
+  --color-canvas: #ffffff;
+  --color-surface: #f5f5f7;
+  --color-surface-soft: #fafafb;
+  --color-surface-yellow: #fff8d6;
+  --color-surface-lavender: #efedff;
+
+  --color-hairline: #e4e5e9;
+  --color-hairline-soft: #eeeef1;
+  --color-hairline-strong: #c5c6cc;
+
+  --color-text-ink: #1f1b36;
+  --color-text-charcoal: #3b3850;
+  --color-text-slate: #6a6680;
+  --color-text-steel: #85819a;
+  --color-text-stone: #a8a4bc;
+  --color-text-muted: #c5c2d0;
+
+  /* Brand pastel palette */
+  --color-brand-yellow: #fcdc2a;
+  --color-brand-yellow-deep: #e5c800;
+  --color-yellow-light: #fff6cc;
+  --color-yellow-dark: #5a4e00;
+
+  --color-brand-coral: #ff7a59;
+  --color-coral-light: #ffe2d6;
+  --color-coral-dark: #7a1f0f;
+  --color-brand-rose: #ffd5d8;
+  --color-rose-light: #ffe9eb;
+  --color-brand-teal: #1aa499;
+  --color-teal-light: #d1f5f0;
+  --color-moss-dark: #0f4f4a;
+  --color-brand-orange-light: #ffd9b3;
+
+  --color-background-light: #f7f7f9;
+  --color-background-dark: #0c1015;
+  --color-surface-dark: #161a23;
+  --color-surface-dark-lighter: #1f2530;
+  --color-surface-darker: #0a0d12;
+  --color-border-dark: #2a3040;
+  --color-text-secondary: #90c1cb;
+
+  /* Semantic */
+  --color-accent-success: #0bb07b;
+  --color-accent-warning: #f7b500;
+  --color-accent-error: #ef4444;
+  --color-brand-red: #ff5c5c;
+
+  --animate-ping-slow: ping 3s cubic-bezier(0, 0, 0.2, 1) infinite;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+  html, body {
+    font-feature-settings: 'cv11', 'ss01', 'ss03', 'salt';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-background-light dark:bg-background-dark text-text-ink dark:text-white antialiased transition-colors duration-300;
+    @apply selection:bg-brand-yellow selection:text-ink;
+  }
+  /* Display headings get tight letter-spacing per Miro spec */
+  h1, h2, h3 {
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  /* Black pill primary CTA - the dominant Miro pattern */
+  .btn-pill-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-ink text-white font-medium text-sm px-5 py-2.5 transition-all;
+    @apply hover:bg-charcoal active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100;
+    @apply disabled:bg-surface disabled:text-text-slate disabled:border disabled:border-hairline-soft disabled:opacity-100;
+  }
+  .dark .btn-pill-primary {
+    @apply bg-white text-ink hover:bg-slate-100;
+    @apply disabled:bg-white/10 disabled:text-text-stone disabled:border-white/10;
+  }
+
+  /* Ink / inverted CTA used inline on generation & commit actions */
+  .btn-pill-cta {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-ink text-white font-medium text-[13px] px-5 py-2.5 transition-all;
+    @apply hover:bg-charcoal active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100;
+    @apply disabled:bg-surface disabled:text-text-slate disabled:border disabled:border-hairline-soft disabled:opacity-100;
+  }
+  .dark .btn-pill-cta {
+    @apply bg-white text-ink hover:bg-slate-100;
+    @apply disabled:bg-white/10 disabled:text-text-stone disabled:border-white/10;
+  }
+
+  /* Yellow accent pill - brand emphasis (used sparingly) */
+  .btn-pill-yellow {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-brand-yellow text-ink font-medium text-sm px-5 py-2.5 transition-all;
+    @apply hover:bg-brand-yellow-deep active:scale-[0.98];
+  }
+
+  /* Cyan accent pill - LinkLoom brand color for primary product actions */
+  .btn-pill-accent {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-primary text-white font-medium text-sm px-5 py-2.5 transition-all;
+    @apply hover:bg-primary-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100;
+    @apply disabled:bg-surface disabled:text-text-slate disabled:border disabled:border-hairline-soft disabled:opacity-100;
+  }
+  .dark .btn-pill-accent {
+    @apply disabled:bg-white/10 disabled:text-text-stone disabled:border-white/10;
+  }
+
+  /* Outlined secondary pill */
+  .btn-pill-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-transparent text-text-ink font-medium text-sm px-5 py-2.5 transition-all;
+    @apply border border-hairline-strong hover:border-ink hover:text-ink;
+    @apply dark:text-white dark:border-white/15 dark:hover:border-white dark:hover:bg-white/5;
+  }
+
+  /* Ghost button */
+  .btn-pill-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-transparent text-text-slate font-medium text-sm px-4 py-2 transition-all;
+    @apply hover:bg-surface hover:text-text-ink dark:hover:bg-white/5 dark:text-text-secondary dark:hover:text-white;
+  }
+
+  /* Pastel feature card variants */
+  .card-pastel-yellow {
+    @apply rounded-4xl bg-brand-yellow text-ink p-6;
+  }
+  .card-pastel-coral {
+    @apply rounded-4xl bg-coral-light text-ink p-6;
+  }
+  .card-pastel-teal {
+    @apply rounded-4xl bg-teal-light text-moss-dark p-6;
+  }
+  .card-pastel-rose {
+    @apply rounded-4xl bg-rose-light text-ink p-6;
+  }
+  .card-pastel-lavender {
+    @apply rounded-4xl bg-surface-lavender text-ink-deep p-6;
+  }
+
+  /* Standard surface card */
+  .card-surface {
+    @apply rounded-2xl bg-canvas border border-hairline-soft p-5;
+    @apply dark:bg-surface-dark dark:border-white/5;
+  }
+
+  /* Tag chips */
+  .chip-yellow {
+    @apply inline-flex items-center gap-1 rounded-full bg-surface-yellow text-yellow-dark text-xs font-semibold px-2.5 py-1;
+  }
+  .chip-coral {
+    @apply inline-flex items-center gap-1 rounded-full bg-coral-light text-coral-dark text-xs font-semibold px-2.5 py-1;
+  }
+  .chip-lavender {
+    @apply inline-flex items-center gap-1 rounded-full bg-surface-lavender text-ink-deep text-xs font-semibold px-2.5 py-1;
+  }
+  .chip-teal {
+    @apply inline-flex items-center gap-1 rounded-full bg-teal-light text-moss-dark text-xs font-semibold px-2.5 py-1;
+  }
+  .chip-success {
+    @apply inline-flex items-center gap-1 rounded-full bg-accent-success text-white text-xs font-semibold px-2.5 py-1;
+  }
+  .chip-neutral {
+    @apply inline-flex items-center gap-1 rounded-full bg-surface text-text-charcoal text-xs font-medium px-2.5 py-1;
+    @apply dark:bg-white/5 dark:text-text-secondary;
+  }
+
+  /* Interactive info cards — subtle lift on hover */
+  .card-interactive {
+    @apply transition-all duration-200 ease-out;
+    @apply hover:shadow-card hover:-translate-y-0.5;
+  }
+  .card-interactive-subtle {
+    @apply transition-all duration-200 ease-out;
+    @apply hover:shadow-subtle hover:-translate-y-0.5;
+  }
+}
+
+/* Custom scrollbar - softer Miro-style */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(10, 10, 18, 0.12);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(10, 10, 18, 0.22);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar,
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 横向可滑动的 pill 分类栏（外层滚动 + 内层 w-max） */
+.scroll-x-tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+.scroll-x-tabs::-webkit-scrollbar {
+  display: none;
+}
+.scroll-x-tabs-track {
+  /* 略增右侧留白，避免最后一项贴边难以滑动 */
+  padding-inline-end: 2px;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  font-size: 1.5rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  user-select: none;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+}
+.material-symbols-outlined.fill {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+.material-symbols-outlined.text-xs {
+  font-size: 0.75rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.material-symbols-outlined.text-sm {
+  font-size: 0.875rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.material-symbols-outlined.text-base {
+  font-size: 1rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.material-symbols-outlined.text-lg {
+  font-size: 1.125rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.material-symbols-outlined.text-xl {
+  font-size: 1.25rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+.material-symbols-outlined.text-2xl {
+  font-size: 1.5rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+.material-symbols-outlined.text-3xl {
+  font-size: 1.875rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+.material-symbols-outlined.text-4xl {
+  font-size: 2.25rem !important;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 48;
+}
+
+.preview-html-content {
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.preview-html-content img {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.75rem;
+}
+
+.preview-html-content video {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.75rem;
+}
+
+.preview-html-content a {
+  color: #0cafcf;
+  text-decoration: underline;
+}
+
+.preview-html-content p {
+  margin-bottom: 0.75rem;
+}
+
+.preview-html-content ul {
+  list-style-type: disc;
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.preview-html-content ol {
+  list-style-type: decimal;
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.preview-html-content li {
+  margin-bottom: 0.5rem;
+}
+
+.preview-html-content h1 { @apply text-2xl font-bold mt-6 mb-4; }
+.preview-html-content h2 { @apply text-xl font-bold mt-5 mb-3; }
+.preview-html-content h3 { @apply text-lg font-bold mt-4 mb-2; }
+.preview-html-content hr { @apply my-8 border-slate-200 dark:border-white/10; }
+
+/* 日报 Markdown 预览：禁止横向滚动，紧凑排版 */
+.preview-markdown-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.preview-markdown-content pre {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow-x: visible !important;
+  max-width: 100%;
+  color: rgb(30 41 59);
+}
+
+.preview-markdown-content pre code {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+
+.dark .preview-markdown-content pre {
+  color: rgb(226 232 240);
+}
+
+.preview-markdown-content :is(a, p, li, td, th, blockquote) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.preview-markdown-content.prose :where(p):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
+}
+
+.preview-markdown-content.prose :where(li):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.12em;
+  margin-bottom: 0.12em;
+}
+
+.preview-markdown-content.prose :where(ul, ol):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
+}
+
+.preview-markdown-content.prose :where(h2):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.85em;
+  margin-bottom: 0.35em;
+}
+
+.preview-markdown-content.prose :where(h3):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.65em;
+  margin-bottom: 0.25em;
+}
+
+.preview-markdown-content.prose :where(blockquote):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
+}
+
+.preview-markdown-content.prose :where(hr):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+}

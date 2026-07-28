@@ -1,0 +1,13 @@
+# workspace 成员：根目录 backend + admin + web + agent-console，根目录执行一次 pnpm install 即可。
+packages:
+  - '.'
+  - 'admin'
+  - 'web'
+  - 'agent-console'
+
+dangerouslyAllowAllBuilds: true
+
+overrides:
+  '@types/react': ^19.2.5
+  '@types/react-dom': ^19.2.3
+  uuid: ^11.1.1

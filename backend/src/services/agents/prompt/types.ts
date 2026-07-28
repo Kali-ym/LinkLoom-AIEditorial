@@ -1,0 +1,118 @@
+import type { AgentDefinition, SkillDefinition, ToolDefinition } from '../../../types/agent.js';
+import type { AIProviderConfig } from '../../../types/config.js';
+import type { WebSearchPolicy } from '../search/types.js';
+import type { AgentWorkspaceState } from '../workspace/AgentWorkspaceState.js';
+
+/** few-shot 示例 */
+export interface FewShotExample {
+  input: string;
+  output: string;
+  /** 可选：示例适用场景标签 */
+  tags?: string[];
+}
+
+/** 超级管理员 taskPlaybook 单条任务 SOP 的参数定义 */
+export interface TaskPlaybookParam {
+  name: string;
+  type: string;
+  required?: boolean;
+  default?: unknown;
+  desc: string;
+  example?: string;
+  hints?: string;
+  values?: string[];
+  dependsOn?: string;
+  guide?: string;
+  condition?: string;
+}
+
+/** 超级管理员 taskPlaybook 单条任务 SOP */
+export interface TaskPlaybookEntry {
+  task: string;
+  intent: string[];
+  params: TaskPlaybookParam[];
+  guideOrder: string[];
+  tool: string;
+  confirm: string;
+  result: string;
+}
+
+/** per-model 提示：按 providerId 写特定提示语（大写枚举 OPENAI/CLAUDE/GEMINI/GLM/OLLAMA） */
+export interface ModelHints {
+  [providerId: string]: string;
+}
+
+/** 结构化 system prompt：七字段扁平分节对象 */
+export interface StructuredPrompt {
+  /** 角色定位：一句话说明「你是谁、做什么」 */
+  role?: string;
+  /** 身份人设：更详细的人格/语气/立场；预留文档引用扩展位 */
+  identity?: string | { docRef: string };
+  /** 能力说明：agent 能做什么、擅长什么、可用工具的高层提示 */
+  capabilities?: string;
+  /** 行为约束/规则：must/must-not、边界、安全规则 */
+  constraints?: string;
+  /** 输出格式要求：结构、长度、语言、JSON schema 等 */
+  outputFormat?: string;
+  /** few-shot 示例 */
+  examples?: FewShotExample[];
+  /** per-model 提示 */
+  modelHints?: ModelHints;
+  /** 超级管理员专属：面向任务的引导式操作 SOP 清单 */
+  taskPlaybook?: TaskPlaybookEntry[];
+}
+
+/** Pipeline 阶段 */
+export type PromptPhase =
+  | 'system_accumulate'
+  | 'before_first_user'
+  | 'tail_guidance'
+  | 'message_transform';
+
+/** Provider 注入的内容 */
+export interface PromptContribution {
+  content: string;
+}
+
+/** Provider 构建上下文 */
+export interface PromptBuildContext {
+  agentDef: AgentDefinition;
+  structuredPrompt: StructuredPrompt;
+  tools: ToolDefinition[];
+  skills: SkillDefinition[];
+  mcpTools: ToolDefinition[];
+  /** AIProviderConfig.type 的大写枚举值（OPENAI/CLAUDE/GEMINI/GLM/OLLAMA） */
+  providerId: string;
+  /** AIProviderConfig（用于读取 reasoningEffort/thinkingConfig 等模型特定配置） */
+  providerConfig?: AIProviderConfig;
+  model: string;
+  date?: string;
+  variables: Record<string, string>;
+  /** 预生成的 skill instructions（由 AgentService.buildTurnSkillInstructions 生成） */
+  skillInstructions?: string;
+  /** 可选:PromptRegistry 实例,供 BaseAgentProvider 等加载 base 模板(测试可注入) */
+  registry?: import('./registry/PromptRegistry.js').PromptRegistry;
+  /** 预检索的知识库上下文(已展开为带标号的字符串);由 AgentService 在 buildPromptPipelineContext 之前异步解析 */
+  knowledgeContext?: string;
+  /** 预检索的记忆上下文(已展开为带标号的字符串);由 AgentService 在 buildPromptPipelineContext 之前异步解析 */
+  memoryContext?: string;
+  /** 会话组内最新非空 workspaceState(含 todos/plan);由 AgentService 解析,仅 TodoHintProvider 消费 */
+  todoState?: AgentWorkspaceState;
+  /** Console 联网搜索策略;由 AgentService 解析,ModelHintProvider 等消费 */
+  webSearchPolicy?: WebSearchPolicy;
+}
+
+/** 可插拔 Provider */
+export interface PromptProvider {
+  id: string;
+  phase: PromptPhase;
+  priority: number;
+  build(ctx: PromptBuildContext): PromptContribution | null;
+}
+
+/** Pipeline 最终组装的消息 */
+export interface AssembledMessages {
+  systemMessage: { role: 'system'; content: string };
+  preUserMessages: { role: 'system'; content: string }[];
+  tailMessages: { role: 'system'; content: string }[];
+}

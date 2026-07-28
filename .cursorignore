@@ -1,0 +1,15 @@
+node_modules/
+**/node_modules/
+backend/dist/
+admin/dist/
+web/.next/
+/data/
+backups/
+coverage/
+.turbo/
+.playwright/
+pnpm-lock.yaml
+**/*.tsbuildinfo
+*.log
+.env
+.env.local

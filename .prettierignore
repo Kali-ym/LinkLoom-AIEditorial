@@ -1,0 +1,14 @@
+node_modules/
+**/node_modules/
+backend/dist/
+admin/dist/
+admin/pnpm-lock.yaml
+web/.next/
+data/
+backups/
+coverage/
+.playwright/
+pnpm-lock.yaml
+*.log
+.env
+.env.local

@@ -1,0 +1,148 @@
+{
+  "id": "feed-scoring-pipeline",
+  "name": "时间线 AI 评分管线",
+  "version": 1,
+  "description": "按筛选条件取出候选条目，逐条调用评分智能体，再把评分结果写回 metadata。与调度中心默认种子工作流一致，可从模板一键创建或复制自定义版本。",
+  "category": "feed",
+  "requiredTools": [],
+  "requiredSkills": [],
+  "variables": [
+    {
+      "id": "scoringAgentId",
+      "name": "评分智能体 ID",
+      "defaultValue": "feed_scoring_agent",
+      "description": "Feed 评分主编，为每条素材打分并写回 metadata。"
+    },
+    {
+      "id": "scoringPipelineWorkflowId",
+      "name": "评分管线工作流 ID",
+      "defaultValue": "feed_scoring_pipeline_workflow"
+    },
+    {
+      "id": "providerId",
+      "name": "模型供应商",
+      "defaultValue": ""
+    },
+    {
+      "id": "model",
+      "name": "模型",
+      "defaultValue": ""
+    }
+  ],
+  "agents": [
+    {
+      "id": "{{scoringAgentId}}",
+      "name": "Feed 评分主编",
+      "description": "为每条素材打分、生成摘要、分类、出标签；输出严格 JSON。",
+      "promptRef": "feed_scoring",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.3,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "feed",
+      "isHidden": false
+    }
+  ],
+  "workflows": [
+    {
+      "id": "{{scoringPipelineWorkflowId}}",
+      "name": "时间线 AI 评分管线",
+      "description": "按筛选条件取出候选条目，逐条调用评分智能体，再把评分结果写回 metadata。",
+      "initialStepId": "query",
+      "metadata": {
+        "feed": true,
+        "kind": "scoring-pipeline",
+        "templateId": "feed-scoring-pipeline",
+        "templateVersion": 2
+      },
+      "steps": [
+        {
+          "id": "query",
+          "type": "store-query",
+          "displayName": "查询待评分素材",
+          "config": {
+            "filter": {
+              "metadataFilters": [{ "path": "ai_scored_at", "op": "notExists" }],
+              "sinceHours": 0
+            },
+            "limit": 200,
+            "orderBy": "fetchedDesc"
+          },
+          "nextStepIds": ["score"]
+        },
+        {
+          "id": "score",
+          "type": "batch-iterate",
+          "displayName": "批量评分",
+          "config": {
+            "itemsPath": "$.query.items",
+            "concurrency": 1,
+            "delay": 400,
+            "onItemFailure": "skip",
+            "child": {
+              "type": "agent",
+              "id": "{{scoringAgentId}}",
+              "inputTemplate": {
+                "id": "$.item.id",
+                "title": "$.item.title",
+                "url": "$.item.url",
+                "source": "$.item.source",
+                "author": "$.item.author",
+                "published_date": "$.item.published_date",
+                "description": "$.item.description"
+              }
+            }
+          },
+          "nextStepIds": ["write"]
+        },
+        {
+          "id": "write",
+          "type": "batch-iterate",
+          "displayName": "写回评分结果",
+          "config": {
+            "itemsPath": "$.score.results",
+            "concurrency": 1,
+            "delay": 0,
+            "onItemFailure": "skip",
+            "child": {
+              "type": "store-write",
+              "config": {
+                "id": "$.item.item.id",
+                "patch": "$.item.parsed",
+                "allowedKeys": [
+                  "ai_score",
+                  "ai_summary",
+                  "ai_summary_short",
+                  "key_facts",
+                  "entities",
+                  "numbers",
+                  "ai_relevance_hint",
+                  "event_signature",
+                  "source_meta",
+                  "ai_recommendation",
+                  "ai_source_type",
+                  "ai_topic",
+                  "ai_category",
+                  "ai_tags",
+                  "ai_picked",
+                  "ai_related_ids"
+                ],
+                "stamp": "ai_scored_at"
+              }
+            }
+          },
+          "nextStepIds": ["rebuild_hot"]
+        },
+        {
+          "id": "rebuild_hot",
+          "type": "tool",
+          "displayName": "重建热搜快照",
+          "toolId": "rebuild_hot_snapshot",
+          "nextStepIds": []
+        }
+      ]
+    }
+  ]
+}

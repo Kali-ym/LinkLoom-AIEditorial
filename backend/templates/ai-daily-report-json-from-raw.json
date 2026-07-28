@@ -1,0 +1,369 @@
+{
+  "id": "ai-daily-report-json-from-raw",
+  "name": "AI Daily Report (JSON, From Raw)",
+  "version": 1,
+  "description": "JSON 版 AI 资讯日报-原文版：使用新闻原文 (content_html/full_content/description) 经过素材简报智能体生成结构化简报，再走路由、策划、主题简报、要闻 JSON、组装等完整流程。适合从待处理列表勾选并希望由 AI 重新基于原文撰写每条简报。",
+  "category": "report",
+  "requiredTools": [
+    "query_coverage_index",
+    "deduplicate_items",
+    "reconcile_plan_coverage",
+    "build_daily_report_json"
+  ],
+  "requiredSkills": [],
+  "variables": [
+    { "id": "reportName", "name": "报告名称", "defaultValue": "AI资讯日报-原文版（JSON）", "description": "用于生成 Agent 和工作流展示名。" },
+    { "id": "workflowId", "name": "工作流 ID", "defaultValue": "wf_ai_daily_report_json_from_raw" },
+    { "id": "agentPrefix", "name": "Agent ID 前缀", "defaultValue": "ai_daily_json_raw" },
+    { "id": "providerId", "name": "模型供应商", "defaultValue": "" },
+    { "id": "model", "name": "模型", "defaultValue": "" },
+    { "id": "coverageNamespace", "name": "历史覆盖命名空间", "defaultValue": "ai-daily" },
+    { "id": "lookbackDays", "name": "历史回看天数", "defaultValue": 7 },
+    { "id": "batchSize", "name": "分批大小", "defaultValue": 10 },
+    { "id": "headlineMaxTopics", "name": "头条主题数", "defaultValue": 5 },
+    { "id": "mergeMaxSources", "name": "单主题最多来源", "defaultValue": 4 },
+    { "id": "titleTemplate", "name": "标题模板", "defaultValue": "AI资讯日报 {yyyy}/{m}/{d}" },
+    { "id": "linkTitleTemplate", "name": "链接标题模板", "defaultValue": "{mm}-{dd} AI资讯" },
+    { "id": "descriptionDefault", "name": "默认描述", "defaultValue": "AI 资讯日报 - 当日精选要点摘要。" },
+    { "id": "reportKvKeyPrefix", "name": "落地 KV 键前缀", "defaultValue": "daily_report_json:" },
+    { "id": "reportKvIndexKey", "name": "KV 索引键", "defaultValue": "daily_report_json_index" }
+  ],
+  "agents": [
+    {
+      "id": "{{agentPrefix}}_material_brief",
+      "name": "{{reportName}}素材简报",
+      "description": "将原始长素材压缩为结构化事实摘要",
+      "promptRef": "daily_material_brief",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.25,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    },
+    {
+      "id": "{{agentPrefix}}_ingest_router",
+      "name": "{{reportName}}素材路由",
+      "description": "根据素材简报分配主题栏目",
+      "promptRef": "daily_ingest_router",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.2,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    },
+    {
+      "id": "{{agentPrefix}}_editorial_plan",
+      "name": "{{reportName}}编辑策划",
+      "description": "基于素材简报做 AI 相关性分级、聚类、排序和过滤",
+      "promptRef": "daily_editorial_plan",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.25,
+      "toolIds": ["query_publication_history", "query_knowledge"],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    },
+    {
+      "id": "{{agentPrefix}}_brief_batch",
+      "name": "{{reportName}}主题简报",
+      "description": "按编辑主题生成简报条目",
+      "promptRef": "daily_brief_batch",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.7,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    },
+    {
+      "id": "{{agentPrefix}}_digest_json",
+      "name": "{{reportName}}要闻 JSON",
+      "description": "从主题简报中挑出今日要闻并生成元描述，输出结构化 JSON",
+      "promptRef": "daily_digest_body_json",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.35,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    },
+    {
+      "id": "{{agentPrefix}}_meta_footer",
+      "name": "{{reportName}}头尾元信息",
+      "description": "生成 YAML、顶栏引用和页脚（沿用原 Markdown 片段，作为渲染元数据）",
+      "promptRef": "daily_meta_footer",
+      "providerId": "{{providerId}}",
+      "model": "{{model}}",
+      "temperature": 0.4,
+      "toolIds": [],
+      "skillIds": [],
+      "mcpServerIds": [],
+      "category": "report"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "{{workflowId}}",
+      "name": "{{reportName}}",
+      "description": "原文版日报：覆盖、去重、素材简报（LLM 处理原文）、路由、策划、主题简报、结构化 digest、组装 report JSON、落 KV。",
+      "initialStepId": "coverage",
+      "templateVariables": {
+        "reportName": "{{reportName}}",
+        "coverageNamespace": "{{coverageNamespace}}",
+        "lookbackDays": "{{lookbackDays}}",
+        "batchSize": "{{batchSize}}",
+        "outputFormat": "json",
+        "inputMode": "raw"
+      },
+      "outputSpec": {
+        "report": "$.assemble.report",
+        "editorialPlan": "$.reconcile_plan.plan"
+      },
+      "steps": [
+        {
+          "id": "coverage",
+          "type": "tool",
+          "displayName": "历史覆盖检查",
+          "toolId": "query_coverage_index",
+          "inputTransform": {
+            "operations": [
+              { "op": "parseJson" },
+              { "op": "default", "path": "items", "value": "$.current" },
+              { "op": "set", "path": "editorialMode", "value": "$.__runtimeOptions.editorialMode" },
+              { "op": "set", "path": "pipelineHints", "value": "$.__runtimeOptions.digestContext.suggestedDailyOneXTopics" },
+              { "op": "default", "path": "pipelineHints", "value": [] },
+              { "op": "default", "path": "editorialMode", "value": "standard" },
+              { "op": "set", "path": "headlineMaxTopics", "value": "{{headlineMaxTopics}}" },
+              { "op": "set", "path": "mergeMaxSources", "value": "{{mergeMaxSources}}" },
+              {
+                "op": "wrapResult",
+                "template": {
+                  "items": "$.current.items",
+                  "editorialMode": "$.current.editorialMode",
+                  "pipelineHints": "$.current.pipelineHints",
+                  "headlineMaxTopics": "$.current.headlineMaxTopics",
+                  "mergeMaxSources": "$.current.mergeMaxSources"
+                }
+              }
+            ]
+          },
+          "inputTemplate": {
+            "namespace": "{{coverageNamespace}}",
+            "lookbackDays": "{{lookbackDays}}",
+            "items": "$.input.items",
+            "date": "$.__date"
+          },
+          "nextStepIds": ["dedup"]
+        },
+        {
+          "id": "dedup",
+          "type": "tool",
+          "displayName": "素材去重",
+          "toolId": "deduplicate_items",
+          "inputTemplate": {
+            "items": "$.coverage.items",
+            "historicalUrls": "$.coverage.historicalUrls"
+          },
+          "nextStepIds": ["material_brief"]
+        },
+        {
+          "id": "material_brief",
+          "type": "agent",
+          "displayName": "素材简报",
+          "agentId": "{{agentPrefix}}_material_brief",
+          "agentOptions": { "noTools": true, "noSkills": true },
+          "inputTemplate": {
+            "items": "$.dedup.items"
+          },
+          "execution": {
+            "mode": "batch",
+            "itemsPath": "$.items",
+            "batchSize": "{{batchSize}}",
+            "inputTemplate": {
+              "count": "$.batchSize",
+              "items": "$.batch",
+              "input_mode": "original"
+            },
+            "mergeStrategy": "jsonArrayMerge",
+            "onBatchParseError": "splitAndRetry",
+            "onBatchItemCountMismatch": "splitAndRetry",
+            "maxBatchRetries": 1,
+            "minBatchSize": 1,
+            "reindexField": "index",
+            "itemFields": [
+              "index",
+              "selectedOrder",
+              "title",
+              "url",
+              "description",
+              "published_date",
+              "source",
+              "category",
+              "author",
+              "ingestion_date",
+              "source_tier",
+              "metadata.content_html",
+              "metadata.full_content"
+            ],
+            "itemFieldLimits": {
+              "description": 480,
+              "metadata.content_html": 1800,
+              "metadata.full_content": 1800
+            }
+          },
+          "nextStepIds": ["route", "plan"]
+        },
+        {
+          "id": "route",
+          "type": "agent",
+          "displayName": "素材路由",
+          "agentId": "{{agentPrefix}}_ingest_router",
+          "agentOptions": { "noTools": true },
+          "inputTemplate": { "count": "$.material_brief.count", "items": "$.material_brief.items" },
+          "execution": {
+            "mode": "batch",
+            "batchSize": "{{batchSize}}",
+            "inputTemplate": "$.batch",
+            "mergeStrategy": "jsonArrayMerge",
+            "onBatchParseError": "splitAndRetry",
+            "onBatchItemCountMismatch": "splitAndRetry",
+            "maxBatchRetries": 1,
+            "minBatchSize": 1,
+            "reindexField": "index"
+          },
+          "nextStepIds": ["reconcile_plan"]
+        },
+        {
+          "id": "plan",
+          "type": "agent",
+          "displayName": "编辑策划",
+          "agentId": "{{agentPrefix}}_editorial_plan",
+          "agentOptions": { "noTools": true },
+          "inputTemplate": {
+            "count": "$.material_brief.count",
+            "items": "$.material_brief.items",
+            "dedup_log": "$.dedup.dedup_log",
+            "prior_coverage": "$.coverage.coverage",
+            "headline_max_topics": "$.coverage.headlineMaxTopics",
+            "merge_max_sources": "$.coverage.mergeMaxSources",
+            "pipeline_hints": "$.coverage.pipelineHints"
+          },
+          "execution": {
+            "mode": "single",
+            "validateJsonObject": true,
+            "validateCoverage": {
+              "inputItemsPath": "$.items",
+              "outputCollections": ["topics", "dropped"],
+              "sourceItemsField": "source_items",
+              "idField": "index"
+            },
+            "maxAgentRetries": 1
+          },
+          "nextStepIds": ["reconcile_plan"]
+        },
+        {
+          "id": "reconcile_plan",
+          "type": "tool",
+          "displayName": "策划补全",
+          "toolId": "reconcile_plan_coverage",
+          "inputTemplate": {
+            "plan": "$.plan",
+            "inputItems": "$.material_brief.items",
+            "routeItems": "$.route.items",
+            "materialItems": "$.material_brief.items",
+            "dedupLog": "$.dedup.dedup_log"
+          },
+          "nextStepIds": ["brief"]
+        },
+        {
+          "id": "brief",
+          "type": "agent",
+          "displayName": "主题简报",
+          "agentId": "{{agentPrefix}}_brief_batch",
+          "agentOptions": { "noTools": true },
+          "inputTemplate": "$.reconcile_plan.plan",
+          "execution": {
+            "mode": "batch",
+            "itemsPath": "$.topics",
+            "batchTargetPath": "$.topics",
+            "inputTemplate": "$.input",
+            "batchSize": "{{batchSize}}",
+            "mergeStrategy": "jsonArrayMerge",
+            "onBatchParseError": "splitAndRetry",
+            "onBatchItemCountMismatch": "splitAndRetry",
+            "maxBatchRetries": 1,
+            "minBatchSize": 1,
+            "reindexField": "index"
+          },
+          "nextStepIds": ["digest_json", "meta"]
+        },
+        {
+          "id": "digest_json",
+          "type": "agent",
+          "displayName": "要闻 JSON",
+          "agentId": "{{agentPrefix}}_digest_json",
+          "agentOptions": { "noTools": true },
+          "inputTemplate": {
+            "count": "$.brief.count",
+            "items": "$.brief.items",
+            "headline_max_topics": "$.coverage.headlineMaxTopics"
+          },
+          "execution": {
+            "mode": "single",
+            "validateJsonObject": true,
+            "maxAgentRetries": 1
+          },
+          "nextStepIds": ["assemble"]
+        },
+        {
+          "id": "meta",
+          "type": "agent",
+          "displayName": "头尾元信息",
+          "agentId": "{{agentPrefix}}_meta_footer",
+          "agentOptions": { "noTools": true },
+          "inputTemplate": {
+            "brief_batch": "$.brief",
+            "archive_date": "$.__date",
+            "report_date": "$.__date",
+            "report_date_source": "workflow_date"
+          },
+          "nextStepIds": ["assemble"]
+        },
+        {
+          "id": "assemble",
+          "type": "tool",
+          "displayName": "组装日报 JSON",
+          "toolId": "build_daily_report_json",
+          "inputTemplate": {
+            "brief": "$.brief",
+            "digest": "$.digest_json",
+            "meta": "$.meta",
+            "editorialPlan": "$.reconcile_plan.plan",
+            "date": "$.__date",
+            "titleTemplate": "{{titleTemplate}}",
+            "linkTitleTemplate": "{{linkTitleTemplate}}",
+            "descriptionDefault": "{{descriptionDefault}}",
+            "headlineMaxTopics": "{{headlineMaxTopics}}",
+            "coverageNamespace": "{{coverageNamespace}}",
+            "kvKeyPrefix": "{{reportKvKeyPrefix}}",
+            "kvIndexKey": "{{reportKvIndexKey}}"
+          },
+          "nextStepIds": []
+        }
+      ],
+      "metadata": {
+        "templateId": "ai-daily-report-json-from-raw",
+        "templateVersion": 1,
+        "outputFormat": "json",
+        "inputMode": "raw"
+      }
+    }
+  ]
+}

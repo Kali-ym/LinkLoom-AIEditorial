@@ -1,0 +1,12 @@
+node_modules
+admin/node_modules
+web/node_modules
+agent-console/node_modules
+# 预构建产物由 deploy 脚本在宿主机生成后打入镜像（见 SKIP_APP_BUILD）
+data
+backups
+.env
+.env.local
+*.log
+.git
+sandbox
