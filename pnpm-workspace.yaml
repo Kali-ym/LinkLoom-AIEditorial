@@ -1,4 +1,5 @@
-# workspace 成员：根目录 backend + admin + web + agent-console，根目录执行一次 pnpm install 即可。
+# workspace 成员：根目录 backend + admin + web + agent-console。
+# 默认开发 / 构建 / CI / Docker 排除 agent-console（显式用 *:console 脚本）。
 packages:
   - '.'
   - 'admin'

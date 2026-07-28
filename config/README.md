@@ -69,10 +69,10 @@ cp .env.example .env && ./deploy/docker-deploy.sh
 | 文件 | 说明 |
 | ---- | ---- |
 | `package.json` | 根脚本：`dev:*`、`build:*`、`test`、`ci`、`deploy:docker` |
-| `pnpm-workspace.yaml` | workspace 包：`admin`、`web`、`agent-console` |
+| `pnpm-workspace.yaml` | workspace 包：`admin`、`web`、`agent-console`（默认脚本/CI/Docker 排除 console） |
 | `pnpm-lock.yaml` | 依赖锁定 |
 | `.npmrc` | pnpm 行为（registry、hoist 等） |
-| `turbo.json` | Turborepo 任务编排（`build:all`） |
+| `turbo.json` | Turborepo 任务编排；`build:all` 等默认排除 `linkloom-agent-console` |
 | `tsconfig.json` | backend TypeScript 编译配置 |
 
 ### 质量与测试（仓库级）

@@ -157,10 +157,11 @@ admin/src/pages/
 | ---- | ---- |
 | `pnpm run dev:backend` | 后端 tsx watch，`3000` |
 | `pnpm run dev:admin` | 管理端 Vite，`5173` |
-| `pnpm run dev:console` | Agent 控制台 Vite，`5174` |
+| `pnpm run dev:console` | Agent 控制台 Vite，`5174`（**默认不随 `dev:all` 启动**） |
 | `pnpm run dev:web` | Next.js dev，`3100` |
-| `pnpm run dev:all` | 四端并行（concurrently） |
-| `pnpm run build:all` | Turborepo 并行构建四端 |
+| `pnpm run dev:all` | 三端并行：backend + admin + web（排除 console） |
+| `pnpm run build:all` | Turborepo 并行构建（默认 `--filter=!linkloom-agent-console`） |
+| `pnpm run build:console` | 显式构建独立 Agent Console |
 
 ---
 
@@ -168,7 +169,7 @@ admin/src/pages/
 
 | 层级     | 位置 / 命令                                                      |
 | -------- | ---------------------------------------------------------------- |
-| 单元     | `backend/tests/*.test.ts` + `agent-console/src/**/*.test.ts` → `pnpm run test:unit` |
+| 单元     | `backend/tests/*.test.ts` + `admin`/`web` 单测 → `pnpm run test:unit`（console 单测用 `pnpm --filter ./agent-console test`） |
 | 后端冒烟 | `backend/scripts/test-*.mjs` → `pnpm run test:backend-smoke`     |
 | 管理端   | `admin` 内 workflow-utils → `pnpm run test:admin-workflow-utils` |
 | E2E      | `e2e/` → `pnpm run test:e2e`                                     |

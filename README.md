@@ -98,9 +98,9 @@ Schema 在 backend 首次启动时自动迁移。非 Docker 自建数据库需�
 
 | 模式 | 命令 | 说明 |
 | ---- | ---- | ---- |
-| 四端并行开发 | `pnpm run dev:all` | backend + admin + web + agent-console |
+| 三端并行开发 | `pnpm run dev:all` | backend + admin + web（不含 agent-console） |
 | 仅后端 | `pnpm run dev:backend` | 默认端口 `3000` |
-| 管理端 / 控制台 / 站点 | `dev:admin` / `dev:console` / `dev:web` | `5173` / `5174` / `3100` |
+| 管理端 / 控制台 / 站点 | `dev:admin` / `dev:console` / `dev:web` | `5173` / `5174` / `3100`；控制台需显式启动 |
 | 一键生产 | `pnpm run prod` | 全量构建后由 backend 统一对外提供服务 |
 | Docker 一键部署 | `pnpm run deploy:docker` 或 `./deploy/docker-deploy.sh` | postgres + 应用 |
 
@@ -112,7 +112,7 @@ Schema 在 backend 首次启动时自动迁移。非 Docker 自建数据库需�
 | ---- | ---- |
 | `http://127.0.0.1:3000/` | 公共站点（热搜 / 信息流 / 日报） |
 | `http://127.0.0.1:3000/admin/login` | 管理后台登录 |
-| `http://127.0.0.1:3000/console/` | Agent 控制台 |
+| `http://127.0.0.1:5174/console/` | Agent 控制台（独立；`pnpm run dev:console`） |
 | `http://127.0.0.1:3000/admin/ops` | 运营中心 |
 | `http://127.0.0.1:3000/api/*` | REST API |
 
@@ -247,11 +247,11 @@ Schema 在 backend 首次启动时自动迁移。非 Docker 自建数据库需�
 | `sharp` / bindings 报错 | 执行 `pnpm run rebuild:native` |
 | `/admin/login` 黑屏或循环刷新 | 在浏览器控制台执行 `localStorage.removeItem('auth_token'); location.href='/admin/login'` |
 | 生产环境 `/admin/` 返回 404 | 确认已执行 `pnpm run build:admin`；后端读取 `admin/dist/` |
-| Agent 控制台空白 | 确认已执行 `build:console` 或 `dev:console`，且 backend `3000` 可访问 |
+| Agent 控制台空白 | 默认构建不含 console：显式 `pnpm run build:console` 或 `dev:console`，并确认能连上 backend |
 | 公共站显示「暂无数据」 | 尚未完成采集/评分/发布；请按 §3 在调度中心与生成预览完成流程 |
 | RAG 持续降级为 FTS | 检查 pgvector 与 `GET /api/rag/status`；见 [`docs/operations.md`](docs/operations.md) |
 | `EADDRINUSE ... 3000` | 结束占用进程，或修改 `.env` 中的 `PORT` |
-| 构建产物模块找不到 | 删除 `backend/dist`、`admin/dist`、`agent-console/dist`、`web/.next` 后执行 `pnpm run build:all` |
+| 构建产物模块找不到 | 删除 `backend/dist`、`admin/dist`、`web/.next` 后执行 `pnpm run build:all` |
 
 更多运维排障见 [`docs/runbook.md`](docs/runbook.md)。
 
@@ -283,8 +283,10 @@ Schema 在 backend 首次启动时自动迁移。非 Docker 自建数据库需�
 常用开发命令（均在仓库根目录执行）：
 
 ```bash
-pnpm run dev:all          # 四端开发
-pnpm run build:all        # Turborepo 并行构建
+pnpm run dev:all          # 三端开发（backend + admin + web；不含 console）
+pnpm run build:all        # Turborepo 并行构建（默认排除 agent-console）
+pnpm run dev:console      # 需要时再启独立 Console
+pnpm run build:console    # 需要时再构建 Console
 pnpm run typecheck:all    # 全量类型检查
 pnpm run test:unit        # Vitest 单元测试
 pnpm run ci               # 全量质量门禁

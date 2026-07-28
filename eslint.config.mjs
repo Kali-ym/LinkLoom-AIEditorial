@@ -1,6 +1,6 @@
 // 根级 ESLint flat config。
 //
-// 覆盖范围（明确不覆盖 admin/、web/，它们各自有 eslint.config）：
+// 覆盖范围（明确不覆盖 admin/、web/、agent-console/，它们各自有 eslint.config）：
 //   backend/src/**         TypeScript 源代码（启用类型感知规则）
 //   backend/scripts/**     烟雾测试 / 维护脚本（.mjs，JS-only 规则）
 //   backend/tests/**       Vitest 单元测试（TypeScript）
@@ -39,6 +39,7 @@ export default tseslint.config(
       'backend/dist/**',
       'admin/**',
       'web/**',
+      'agent-console/**',
       'data/**',
       'backups/**',
       'coverage/**',

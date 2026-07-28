@@ -27,6 +27,7 @@ RUN npm config set registry "${NPM_REGISTRY}" \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY admin/package.json admin/package.json
 COPY web/package.json web/package.json
+# 仍拷贝 package.json 以满足 workspace/lockfile；安装时排除，默认不装 console 依赖
 COPY agent-console/package.json agent-console/package.json
 
 # First install can take 10–20 min (Next.js + native builds). Use plain progress:
@@ -34,13 +35,13 @@ COPY agent-console/package.json agent-console/package.json
 FROM deps-base AS deps
 RUN --mount=type=cache,id=linkloom-pnpm-store,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
-    && pnpm install --frozen-lockfile --reporter=append-only
+    && pnpm install --frozen-lockfile --filter=!linkloom-agent-console --reporter=append-only
 
 FROM deps-base AS prod-deps
 ENV CI=true
 RUN --mount=type=cache,id=linkloom-pnpm-store,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
-    && pnpm install --frozen-lockfile --prod --reporter=append-only
+    && pnpm install --frozen-lockfile --prod --filter=!linkloom-agent-console --reporter=append-only
 
 FROM deps AS build
 WORKDIR /app
@@ -54,6 +55,7 @@ ENV NODE_OPTIONS=--max-old-space-size=${BUILD_NODE_MAX_OLD_SPACE_SIZE}
 ARG VITE_API_BASE_URL=
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 COPY . .
+# 默认构建排除 agent-console（独立托管；需要时本地 pnpm run build:console）
 RUN if [ "$SKIP_APP_BUILD" = "1" ]; then \
       echo ">> 使用宿主机预构建产物 + 容器内构建 web" \
       && test -d backend/dist \
@@ -61,7 +63,7 @@ RUN if [ "$SKIP_APP_BUILD" = "1" ]; then \
       && pnpm --filter ./web run build; \
     elif [ "$DOCKER_BUILD_PARALLEL" = "parallel" ]; then \
       pnpm run build:backend \
-      && pnpm exec turbo run build --filter=linkloom-admin --filter=linkloom-web --concurrency=2; \
+      && pnpm exec turbo run build --filter=!linkloom-agent-console --concurrency=2; \
     else \
       pnpm run build:backend \
       && pnpm --filter ./admin run build \
