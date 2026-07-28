@@ -49,7 +49,9 @@ function buildAuthHeaders(init?: RequestInit): HeadersInit {
 }
 
 function maybeEmitUnauthorized(status: number): void {
-  if ((status === 401 || status === 403) && readConnection()) {
+  // Only 401 means the Interop API Key is missing/invalid.
+  // Business 403s (e.g. workspace_not_configured) must not clear the session.
+  if (status === 401 && readConnection()) {
     emitConsoleUnauthorized();
   }
 }

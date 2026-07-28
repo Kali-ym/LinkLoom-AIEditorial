@@ -115,7 +115,7 @@ export async function probeConsoleConnection(
     throw new ConsoleConnectionError('网络错误，请检查连接后重试', 'network');
   }
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new ConsoleConnectionError('API Key 无效或已被撤销', 'auth');
   }
 
