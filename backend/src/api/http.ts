@@ -17,9 +17,20 @@ export function httpErrorHandler(
 }
 
 export function beginSse(reply: FastifyReply) {
-  reply.raw.setHeader('Content-Type', 'text/event-stream');
-  reply.raw.setHeader('Cache-Control', 'no-cache');
-  reply.raw.setHeader('Connection', 'keep-alive');
+  reply.header('Content-Type', 'text/event-stream');
+  reply.header('Cache-Control', 'no-cache');
+  reply.header('Connection', 'keep-alive');
+  // Disable proxy buffering (e.g. nginx) so comments/events flush promptly.
+  reply.header('X-Accel-Buffering', 'no');
+
+  // Writing via reply.raw skips Fastify's send path, so plugin headers
+  // (notably @fastify/cors Access-Control-Allow-Origin) never reach the wire
+  // unless we flush them onto the Node response first.
+  // Preflight OPTIONS still works; only the actual SSE GET was missing ACAO.
+  if (!reply.raw.headersSent) {
+    reply.hijack();
+    reply.raw.writeHead(reply.statusCode || 200, reply.getHeaders());
+  }
 }
 
 export function writeSseComment(reply: FastifyReply, comment: string) {

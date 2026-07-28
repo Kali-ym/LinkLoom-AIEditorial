@@ -7,19 +7,21 @@ function manualChunks(id: string): string | undefined {
   const normalized = id.replace(/\\/g, '/')
 
   if (!normalized.includes('node_modules')) {
-    if (
-      normalized.includes('/Tool/Render/registryImpl') ||
-      normalized.includes('/Tool/Render/shared/')
-    ) {
-      return 'tool-renders'
-    }
-    if (normalized.includes('/features/WorkingSidebar/')) {
-      return 'working-sidebar'
-    }
-    if (normalized.includes('/features/ChatInput/')) {
-      return 'chat-input'
-    }
+    // Do not force app feature chunks (ChatInput/WorkingSidebar/tool-renders):
+    // cross-imports create circular TDZ errors in production
+    // ("Cannot access 'X' before initialization").
     return undefined
+  }
+
+  // React must stay in one chunk. Splitting react into lobehub-ui and
+  // react-dom into antd caused: Cannot set properties of undefined (setting 'Activity').
+  if (
+    normalized.includes('/node_modules/react/') ||
+    normalized.includes('/node_modules/react-dom/') ||
+    normalized.includes('/node_modules/scheduler/') ||
+    normalized.includes('/node_modules/use-sync-external-store/')
+  ) {
+    return 'vendor-react'
   }
 
   if (
@@ -67,7 +69,7 @@ export default defineConfig(({ mode }) => {
     base: '/console/',
     plugins: [react()],
     resolve: {
-      dedupe: [...lexicalDedupe],
+      dedupe: ['react', 'react-dom', ...lexicalDedupe],
       alias: {
         lexical: path.resolve(__dirname, 'node_modules/lexical'),
         '@lexical/utils': path.resolve(__dirname, 'node_modules/@lexical/utils'),

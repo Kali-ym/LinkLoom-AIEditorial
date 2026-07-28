@@ -26,7 +26,7 @@ export const SPAGlobalProvider = memo(function SPAGlobalProvider({ children }: P
   return (
     <LocaleProvider>
       <QueryProvider>
-        <LazyMotion features={domAnimation} strict>
+        <LazyMotion features={domAnimation}>
           <DragUploadProvider>
             <TooltipGroup layoutAnimation={false}>
               <StyleProvider speedy={import.meta.env.PROD}>{children}</StyleProvider>

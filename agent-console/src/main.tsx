@@ -27,21 +27,17 @@ class AppErrorBoundary extends Component<
     return (
       <div className="min-h-screen bg-background-dark p-6 text-white">
         <p className="text-[15px] font-medium">页面发生错误，请刷新后重试。</p>
-        {import.meta.env.DEV && (
-          <>
-            <pre className="mt-4 max-w-3xl overflow-auto rounded-xl bg-black/40 p-4 text-[12px] leading-relaxed text-red-300 whitespace-pre-wrap">
-              {message}
-              {stack ? `\n\n${stack}` : ''}
-            </pre>
-            <button
-              type="button"
-              onClick={() => this.setState({ error: null })}
-              className="mt-4 rounded-full bg-white/10 px-4 py-2 text-[13px] hover:bg-white/20"
-            >
-              重试
-            </button>
-          </>
-        )}
+        <pre className="mt-4 max-w-3xl overflow-auto rounded-xl bg-black/40 p-4 text-[12px] leading-relaxed text-red-300 whitespace-pre-wrap">
+          {message}
+          {import.meta.env.DEV && stack ? `\n\n${stack}` : ''}
+        </pre>
+        <button
+          type="button"
+          onClick={() => this.setState({ error: null })}
+          className="mt-4 rounded-full bg-white/10 px-4 py-2 text-[13px] hover:bg-white/20"
+        >
+          重试
+        </button>
       </div>
     );
   }
