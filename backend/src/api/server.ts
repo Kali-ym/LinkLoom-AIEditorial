@@ -194,13 +194,19 @@ export async function createServer(existingStore?: LocalStore) {
 }
 
 async function resolveCorsOrigin(origin: string | undefined): Promise<boolean> {
+  // Independent Agent Console may run on any origin; auth is via Interop API Key.
+  // CORS_ORIGINS=* (or unset / empty) → allow all. Otherwise keep an explicit allowlist.
   if (!origin) return true;
   if (process.env.NODE_ENV !== 'production') return true;
 
-  const allowed = (process.env.CORS_ORIGINS || process.env.PUBLIC_ORIGIN || '')
+  const raw = (process.env.CORS_ORIGINS ?? '').trim();
+  if (!raw || raw === '*') return true;
+
+  const allowed = raw
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+  if (allowed.includes('*')) return true;
   return allowed.includes(origin);
 }
 
