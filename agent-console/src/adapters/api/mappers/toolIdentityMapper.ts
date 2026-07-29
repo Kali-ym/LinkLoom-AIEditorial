@@ -188,6 +188,28 @@ const LINKLOOM_TOOL_MAPPINGS: ToolMappingEntry[] = [
   // —— Super admin phase 4 — batch ops ——
   entry(['batch_reset_scoring'], TOOLSET_IDS.ADMIN, 'batchResetScoring'),
   entry(['backfill_publication_items'], TOOLSET_IDS.ADMIN, 'backfillPublicationItems'),
+
+  // —— Super admin phase 1 A+B — feed/ops/rag ——
+  entry(['list_raw_news'], TOOLSET_IDS.ADMIN, 'listRawNews'),
+  entry(['import_opml'], TOOLSET_IDS.ADMIN, 'importOpml'),
+  entry(['delete_workflow'], TOOLSET_IDS.ADMIN, 'deleteWorkflow'),
+  entry(['dry_run_workflow_step'], TOOLSET_IDS.ADMIN, 'dryRunWorkflowStep'),
+  entry(['list_agent_runs'], TOOLSET_IDS.ADMIN, 'listAgentRuns'),
+  entry(['get_agent_run'], TOOLSET_IDS.ADMIN, 'getAgentRun'),
+  entry(['list_agent_run_messages'], TOOLSET_IDS.ADMIN, 'listAgentRunMessages'),
+  entry(['cancel_agent_run'], TOOLSET_IDS.ADMIN, 'cancelAgentRun'),
+  entry(['retry_agent_run'], TOOLSET_IDS.ADMIN, 'retryAgentRun'),
+  entry(['list_pending_agent_hitl'], TOOLSET_IDS.ADMIN, 'listPendingAgentHitl'),
+  entry(['list_pending_agent_permissions'], TOOLSET_IDS.ADMIN, 'listPendingAgentPermissions'),
+  entry(['approve_agent_permission'], TOOLSET_IDS.ADMIN, 'approveAgentPermission'),
+  entry(['reject_agent_permission'], TOOLSET_IDS.ADMIN, 'rejectAgentPermission'),
+  entry(['resolve_agent_hitl'], TOOLSET_IDS.ADMIN, 'resolveAgentHitl'),
+  entry(['list_agent_session_messages'], TOOLSET_IDS.ADMIN, 'listAgentSessionMessages'),
+  entry(['rag_reindex'], TOOLSET_IDS.ADMIN, 'ragReindex'),
+  entry(['list_rag_jobs'], TOOLSET_IDS.ADMIN, 'listRagJobs'),
+  entry(['run_rag_jobs_once'], TOOLSET_IDS.ADMIN, 'runRagJobsOnce'),
+  entry(['run_rag_eval'], TOOLSET_IDS.ADMIN, 'runRagEval'),
+  entry(['list_rag_eval_runs'], TOOLSET_IDS.ADMIN, 'listRagEvalRuns'),
 ];
 
 const TOOL_IDENTITY_BY_KEY = new Map<string, LinkLoomToolIdentity>();

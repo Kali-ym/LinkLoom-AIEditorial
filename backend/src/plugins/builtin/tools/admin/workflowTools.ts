@@ -198,8 +198,89 @@ class DecideWorkflowStepTool extends BaseTool {
   }
 }
 
+class DeleteWorkflowTool extends BaseTool {
+  readonly id = 'delete_workflow';
+  readonly name = 'delete_workflow';
+  readonly displayName = '删除工作流';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly execution = { readonly: false, riskLevel: 'high' as const };
+  readonly description =
+    '删除一个工作流定义（高危）。必填 workflowId。删除前应先 list_workflows 确认。';
+  readonly parameters = {
+    type: 'object',
+    properties: { workflowId: { type: 'string', description: '工作流 id' } },
+    required: ['workflowId'],
+  };
+
+  async handler(args: { workflowId?: string }, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new WorkflowRunService(store, services);
+      await service.deleteWorkflow(String(args.workflowId || ''));
+      return { ok: true, deleted: args.workflowId };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'DELETE_WORKFLOW_FAILED', message };
+    }
+  }
+}
+
+class DryRunWorkflowStepTool extends BaseTool {
+  readonly id = 'dry_run_workflow_step';
+  readonly name = 'dry_run_workflow_step';
+  readonly displayName = '干跑工作流步骤';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly description =
+    '对工作流某一步做 dry-run（不落库）。必填 workflow 对象与 stepId；可选 input/stepResults/date。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      workflow: { type: 'object', description: '工作流定义对象' },
+      stepId: { type: 'string', description: '步骤 id' },
+      input: { description: '工作流输入' },
+      stepResults: { type: 'object', additionalProperties: true },
+      date: { type: 'string' },
+      runtimeOptions: { type: 'object', additionalProperties: true },
+    },
+    required: ['workflow', 'stepId'],
+  };
+
+  async handler(
+    args: {
+      workflow?: unknown;
+      stepId?: string;
+      input?: unknown;
+      stepResults?: Record<string, unknown>;
+      date?: string;
+      runtimeOptions?: Record<string, unknown>;
+    },
+    toolCtx?: ToolExecutionContext,
+  ) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new WorkflowRunService(store, services);
+      const result = service.dryRunStep({
+        workflow: args.workflow,
+        stepId: args.stepId,
+        input: args.input,
+        stepResults: args.stepResults,
+        date: args.date,
+        runtimeOptions: args.runtimeOptions,
+      });
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'DRY_RUN_STEP_FAILED', message };
+    }
+  }
+}
+
 export const workflowTools: BaseTool[] = [
   new RunWorkflowTool(),
   new TriggerScoringTool(),
   new DecideWorkflowStepTool(),
+  new DeleteWorkflowTool(),
+  new DryRunWorkflowStepTool(),
 ];

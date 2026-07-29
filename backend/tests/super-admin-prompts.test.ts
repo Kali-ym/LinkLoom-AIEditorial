@@ -45,7 +45,16 @@ describe('SUPER_ADMIN_PROMPT', () => {
       expect.arrayContaining(['platform_discover', 'platform_invoke', ...ADMIN_SOP_TOOL_IDS]),
     );
     expect(ADMIN_TOOL_IDS).toHaveLength(ADMIN_PLATFORM_TOOLS.length + ADMIN_SOP_TOOL_IDS.length);
-    expect(ADMIN_DISPATCH_TOOL_IDS).toHaveLength(63);
+    expect(ADMIN_DISPATCH_TOOL_IDS.length).toBeGreaterThanOrEqual(63);
+    expect(ADMIN_DISPATCH_TOOL_IDS).toEqual(
+      expect.arrayContaining([
+        'list_raw_news',
+        'import_opml',
+        'delete_workflow',
+        'list_agent_runs',
+        'rag_reindex',
+      ]),
+    );
     expect(ADMIN_DISPATCH_TOOL_IDS).not.toEqual(expect.arrayContaining([...ADMIN_SOP_TOOL_IDS]));
   });
 

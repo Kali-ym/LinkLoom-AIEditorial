@@ -127,7 +127,7 @@ admin/src/pages/
 
 - **通用原语**：`list_dir` / `glob` / `grep` / `readFile` / `writeFile` / `editFile` / `execute_command` / `web_search` / `crawl_pages`；多步计划与待办约定写 `.linkloom/plan.md`、`.linkloom/todos.json`。
 - **领域适配器**：`query_data`、知识/记忆、发布渠道等仍保留结构化入口。
-- **Super Admin**：LLM 绑定 `platform_discover` + `platform_invoke` + 少量 SOP 糖（`create_cron` / `trigger_scoring` / …）；其余 CRUD 仅作 `platform_invoke` 内部调度（`ADMIN_DISPATCH_TOOL_IDS`），不直接暴露给模型。
+- **Super Admin**：LLM 绑定 `platform_discover` + `platform_invoke` + 少量 SOP 糖（`create_cron` / `trigger_scoring` / …）；其余 CRUD 仅作 `platform_invoke` 内部调度（`ADMIN_DISPATCH_TOOL_IDS`），不直接暴露给模型。Phase 1 已对齐选题/运营 runs/RAG 真路径（见 `docs/operations.md`）。
 - 兼容别名仍注册：`crawl_single_page` / `crawl_multi_pages`、`query_coverage_index`、以及 plan/todo 五件套（转发到文件约定）。
 
 ---

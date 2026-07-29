@@ -3,8 +3,88 @@ import {
   type ToolExecutionContext,
 } from '../../../../services/ToolExecutionContext.js';
 import { FeedRouteService } from '../../../../services/api/FeedRouteService.js';
+import { ContentRouteService } from '../../../../services/api/ContentRouteService.js';
 import { PublishingRouteService } from '../../../../services/api/PublishingRouteService.js';
+import type { ToolExecutionPolicy } from '../../../../types/agent.js';
 import { BaseTool } from '../../../base/BaseTool.js';
+
+const MEDIUM: ToolExecutionPolicy = { readonly: false, riskLevel: 'medium' };
+
+class ListRawNewsTool extends BaseTool {
+  readonly id = 'list_raw_news';
+  readonly name = 'list_raw_news';
+  readonly displayName = '列原始素材';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly description =
+    '列出 Feed 原始素材时间线（与 /selection raw 同源）。' +
+    '可选 date、rangeFrom、rangeTo、limit(默认 100)、offset。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      date: { type: 'string', description: '采集日期 YYYY-MM-DD' },
+      rangeFrom: { type: 'string', description: '发布日起 YYYY-MM-DD' },
+      rangeTo: { type: 'string', description: '发布日止 YYYY-MM-DD' },
+      limit: { type: 'number', description: '条数，默认 100，最大 200' },
+      offset: { type: 'number', description: '偏移' },
+    },
+  };
+
+  async handler(
+    args: {
+      date?: string;
+      rangeFrom?: string;
+      rangeTo?: string;
+      limit?: number;
+      offset?: number;
+    },
+    toolCtx?: ToolExecutionContext,
+  ) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const feedService = new FeedRouteService(store, services);
+      const result = await feedService.getRawTimeline(args);
+      return { ok: true, ...result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'LIST_RAW_NEWS_FAILED', message };
+    }
+  }
+}
+
+class ImportOpmlTool extends BaseTool {
+  readonly id = 'import_opml';
+  readonly name = 'import_opml';
+  readonly displayName = '导入 OPML';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly execution = MEDIUM;
+  readonly description =
+    '将 OPML 内容导入 RSS 适配器订阅源。必填 opmlContent；可选 adapterId。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      opmlContent: { type: 'string', description: 'OPML XML 文本' },
+      adapterId: { type: 'string', description: '目标 RSS 适配器 id（可选）' },
+    },
+    required: ['opmlContent'],
+  };
+
+  async handler(
+    args: { opmlContent?: string; adapterId?: string },
+    toolCtx?: ToolExecutionContext,
+  ) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new ContentRouteService(store, services);
+      const result = await service.importOpml(args.opmlContent, args.adapterId);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'IMPORT_OPML_FAILED', message };
+    }
+  }
+}
 
 class ListProcessedNewsTool extends BaseTool {
   readonly id = 'list_processed_news';
@@ -134,6 +214,8 @@ class QueryContinuationReportTool extends BaseTool {
 }
 
 export const selectionTools: BaseTool[] = [
+  new ListRawNewsTool(),
+  new ImportOpmlTool(),
   new ListProcessedNewsTool(),
   new GetSelectionStatsTool(),
   new QueryContinuationReportTool(),

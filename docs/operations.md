@@ -72,6 +72,7 @@ Provider tool_calls
 - 缺少 required 参数或类型不匹配时，会在工具边界返回可观测错误，不进入底层检索/业务服务。
 - 同一工具重复出现同类参数错误时会提前停止，避免刷满 `maxRounds`。
 - Super Admin 运维读/写优先 `platform_invoke`（allowlist 内 REST 风格，内部调已有 admin handler）；高频 SOP 仍用专属工具名。
+- **Phase 1（A+B）覆盖面**：选题/生成缺口（`/api/feed/admin/raw|stats|items|scoring`、OPML、workflow delete/dry-run）+ 运营 Agent runs/HITL + RAG reindex/jobs/eval；catalog path 与 admin UI 真路径对齐，旧别名仍可用。Knowledge 深写 / AI Builder / Gateway 后续期。
 - 会话计划/待办优先 `writeFile` 写入 `.linkloom/plan.md` / `.linkloom/todos.json`（专用 create_plan/create_todos 为兼容 shim）。
 
 回归验证：

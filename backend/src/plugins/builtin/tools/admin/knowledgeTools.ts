@@ -154,8 +154,156 @@ class GetRagStatusTool extends BaseTool {
         ok: false,
         errorCode: 'GET_RAG_STATUS_FAILED',
         message,
-        hint: '可在 /settings 页面查看 RAG 配置',
+        hint: '可在 /ops 或 /settings 查看 RAG 配置',
       };
+    }
+  }
+}
+
+class RagReindexTool extends BaseTool {
+  readonly id = 'rag_reindex';
+  readonly name = 'rag_reindex';
+  readonly displayName = 'RAG 重建索引';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly execution = MEDIUM;
+  readonly description =
+    '触发 RAG embedding 重建/补齐。可选 categoryId/documentId/limit/onlyMissing/dryRun/targetStorage。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      categoryId: { type: 'string' },
+      documentId: { type: 'string' },
+      limit: { type: 'number' },
+      onlyMissing: { type: 'boolean' },
+      dryRun: { type: 'boolean' },
+      targetStorage: { type: 'string' },
+      indexVersion: { type: 'string' },
+    },
+  };
+
+  async handler(args: Record<string, unknown>, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new RagRouteService(store, services);
+      const result = await service.reindexEmbeddings(args);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'RAG_REINDEX_FAILED', message };
+    }
+  }
+}
+
+class ListRagJobsTool extends BaseTool {
+  readonly id = 'list_rag_jobs';
+  readonly name = 'list_rag_jobs';
+  readonly displayName = '列 RAG 任务';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly description = '列出 RAG embedding 任务队列。可选 status/limit。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      status: { type: 'string' },
+      limit: { type: 'number' },
+    },
+  };
+
+  async handler(args: Record<string, unknown>, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new RagRouteService(store, services);
+      const result = await service.listEmbeddingJobs(args);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'LIST_RAG_JOBS_FAILED', message };
+    }
+  }
+}
+
+class RunRagJobsOnceTool extends BaseTool {
+  readonly id = 'run_rag_jobs_once';
+  readonly name = 'run_rag_jobs_once';
+  readonly displayName = '跑一轮 RAG 任务';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly execution = MEDIUM;
+  readonly description = '立即跑一轮 RAG embedding job runner。可选 limit。';
+  readonly parameters = {
+    type: 'object',
+    properties: { limit: { type: 'number' } },
+  };
+
+  async handler(args: Record<string, unknown>, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new RagRouteService(store, services);
+      const result = await service.runEmbeddingJobsOnce(args);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'RUN_RAG_JOBS_FAILED', message };
+    }
+  }
+}
+
+class RunRagEvalTool extends BaseTool {
+  readonly id = 'run_rag_eval';
+  readonly name = 'run_rag_eval';
+  readonly displayName = '跑 RAG 评测';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly execution = MEDIUM;
+  readonly description = '运行 RAG eval dataset。参数与 /api/rag/eval/run body 一致（如 datasetId）。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      datasetId: { type: 'string' },
+      indexVersion: { type: 'string' },
+    },
+    additionalProperties: true,
+  };
+
+  async handler(args: Record<string, unknown>, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new RagRouteService(store, services);
+      const result = await service.runEvalDataset(args);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'RUN_RAG_EVAL_FAILED', message };
+    }
+  }
+}
+
+class ListRagEvalRunsTool extends BaseTool {
+  readonly id = 'list_rag_eval_runs';
+  readonly name = 'list_rag_eval_runs';
+  readonly displayName = '列 RAG 评测运行';
+  readonly scope = 'agent' as const;
+  readonly isBuiltin = true;
+  readonly description = '列出 RAG eval 运行记录。可选 datasetId/limit。';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      datasetId: { type: 'string' },
+      limit: { type: 'number' },
+      indexVersion: { type: 'string' },
+    },
+  };
+
+  async handler(args: Record<string, unknown>, toolCtx?: ToolExecutionContext) {
+    const { store, services } = requireToolContext(toolCtx, this.id);
+    try {
+      const service = new RagRouteService(store, services);
+      const result = await service.listEvalRuns(args);
+      return { ok: true, result };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, errorCode: 'LIST_RAG_EVAL_RUNS_FAILED', message };
     }
   }
 }
@@ -264,6 +412,11 @@ export const knowledgeTools: BaseTool[] = [
   new GetKbContentTool(),
   new ListMemoryCategoriesTool(),
   new GetRagStatusTool(),
+  new RagReindexTool(),
+  new ListRagJobsTool(),
+  new RunRagJobsOnceTool(),
+  new RunRagEvalTool(),
+  new ListRagEvalRunsTool(),
   new ListPluginMetadataTool(),
   new CreateKbCategoryTool(),
   new DeleteKbDocumentTool(),

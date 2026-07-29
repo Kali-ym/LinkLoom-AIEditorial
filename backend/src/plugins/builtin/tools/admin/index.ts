@@ -9,6 +9,7 @@ import { generationTools } from './generationTools.js';
 import { opsTools } from './opsTools.js';
 import { historyTools } from './historyTools.js';
 import { agentTools } from './agentTools.js';
+import { agentRunAdminTools } from './agentRunAdminTools.js';
 import { knowledgeTools } from './knowledgeTools.js';
 import { settingsTools } from './settingsTools.js';
 import { batchTools } from './batchTools.js';
@@ -48,6 +49,7 @@ export const ADMIN_LEGACY_TOOLS: BaseTool[] = [
   ...opsTools,
   ...historyTools,
   ...agentTools,
+  ...agentRunAdminTools,
   ...knowledgeTools,
   ...settingsTools,
   ...batchTools,
@@ -83,6 +85,7 @@ export {
   opsTools,
   historyTools,
   agentTools,
+  agentRunAdminTools,
   knowledgeTools,
   settingsTools,
   batchTools,

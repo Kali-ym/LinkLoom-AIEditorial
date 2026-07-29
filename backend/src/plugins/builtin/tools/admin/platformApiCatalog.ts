@@ -142,6 +142,30 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
   },
   {
     method: 'POST',
+    path: '/api/workflows',
+    summary: '保存工作流',
+    toolId: 'save_workflow',
+    riskLevel: 'medium',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'DELETE',
+    path: '/api/workflows/:id',
+    summary: '删除工作流',
+    toolId: 'delete_workflow',
+    riskLevel: 'high',
+    mapArgs: ({ params }) => ({ workflowId: params.id }),
+  },
+  {
+    method: 'POST',
+    path: '/api/workflows/dry-run-step',
+    summary: '干跑工作流步骤',
+    toolId: 'dry_run_workflow_step',
+    riskLevel: 'low',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'POST',
     path: '/api/workflows/:id/run',
     summary: '运行工作流',
     toolId: 'run_workflow',
@@ -188,7 +212,31 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
     mapArgs: ({ body }) => body,
   },
 
-  // news / feed admin
+  // news / feed admin (true admin UI paths + legacy aliases)
+  {
+    method: 'GET',
+    path: '/api/feed/admin/stats',
+    summary: '选题统计',
+    toolId: 'get_selection_stats',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
+  {
+    method: 'GET',
+    path: '/api/feed/admin/selection-stats',
+    summary: '选题统计(别名)',
+    toolId: 'get_selection_stats',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
+  {
+    method: 'GET',
+    path: '/api/feed/admin/raw',
+    summary: '列原始素材',
+    toolId: 'list_raw_news',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
   {
     method: 'GET',
     path: '/api/feed/admin/unevaluated',
@@ -215,19 +263,51 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
   },
   {
     method: 'GET',
-    path: '/api/feed/admin/news/:id',
+    path: '/api/feed/admin/items/:id',
     summary: '获取新闻条目',
     toolId: 'get_news_item',
     riskLevel: 'low',
     mapArgs: ({ params }) => ({ id: params.id }),
   },
   {
+    method: 'GET',
+    path: '/api/feed/admin/news/:id',
+    summary: '获取新闻条目(别名)',
+    toolId: 'get_news_item',
+    riskLevel: 'low',
+    mapArgs: ({ params }) => ({ id: params.id }),
+  },
+  {
     method: 'PATCH',
-    path: '/api/feed/admin/news/:id/score',
+    path: '/api/feed/admin/scoring/:id',
     summary: '更新新闻评分',
     toolId: 'update_news_score',
     riskLevel: 'medium',
-    mapArgs: ({ params, body }) => ({ id: params.id, ...body }),
+    mapArgs: ({ params, body }) => ({
+      newsId: params.id,
+      action: 'patch',
+      score: body.score ?? body.ai_score,
+    }),
+  },
+  {
+    method: 'PATCH',
+    path: '/api/feed/admin/news/:id/score',
+    summary: '更新新闻评分(别名)',
+    toolId: 'update_news_score',
+    riskLevel: 'medium',
+    mapArgs: ({ params, body }) => ({
+      newsId: params.id,
+      action: body.action === 'reset' ? 'reset' : 'patch',
+      score: body.score ?? body.ai_score,
+    }),
+  },
+  {
+    method: 'POST',
+    path: '/api/feed/admin/scoring/:id/reset',
+    summary: '重置单条评分',
+    toolId: 'update_news_score',
+    riskLevel: 'medium',
+    mapArgs: ({ params }) => ({ newsId: params.id, action: 'reset' }),
   },
   {
     method: 'DELETE',
@@ -235,15 +315,15 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
     summary: '删除新闻',
     toolId: 'delete_news',
     riskLevel: 'high',
-    mapArgs: ({ params }) => ({ id: params.id }),
+    mapArgs: ({ params }) => ({ newsId: params.id }),
   },
   {
-    method: 'GET',
-    path: '/api/feed/admin/selection-stats',
-    summary: '选题统计',
-    toolId: 'get_selection_stats',
-    riskLevel: 'low',
-    mapArgs: ({ query }) => query,
+    method: 'POST',
+    path: '/api/feed/admin/hot/rebuild',
+    summary: '重建热搜快照',
+    toolId: 'rebuild_hot_snapshot',
+    riskLevel: 'medium',
+    mapArgs: ({ body }) => body,
   },
   {
     method: 'POST',
@@ -259,6 +339,14 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
     summary: '批量重置评分',
     toolId: 'batch_reset_scoring',
     riskLevel: 'high',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'POST',
+    path: '/api/adapters/import-opml',
+    summary: '导入 OPML',
+    toolId: 'import_opml',
+    riskLevel: 'medium',
     mapArgs: ({ body }) => body,
   },
 
@@ -498,13 +586,105 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
     toolId: 'list_agent_bindings',
     riskLevel: 'low',
   },
+
+  // agent runs / sessions (ops)
+  {
+    method: 'GET',
+    path: '/api/agent-runs',
+    summary: '列 Agent 运行',
+    toolId: 'list_agent_runs',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
+  {
+    method: 'GET',
+    path: '/api/agent-runs/:runId',
+    summary: '获取 Agent 运行',
+    toolId: 'get_agent_run',
+    riskLevel: 'low',
+    mapArgs: ({ params }) => ({ runId: params.runId }),
+  },
+  {
+    method: 'GET',
+    path: '/api/agent-runs/:runId/messages',
+    summary: '列 Agent 运行消息',
+    toolId: 'list_agent_run_messages',
+    riskLevel: 'low',
+    mapArgs: ({ params }) => ({ runId: params.runId }),
+  },
   {
     method: 'POST',
-    path: '/api/workflows',
-    summary: '保存工作流',
-    toolId: 'save_workflow',
+    path: '/api/agent-runs/:runId/cancel',
+    summary: '取消 Agent 运行',
+    toolId: 'cancel_agent_run',
     riskLevel: 'medium',
-    mapArgs: ({ body }) => body,
+    mapArgs: ({ params }) => ({ runId: params.runId }),
+  },
+  {
+    method: 'POST',
+    path: '/api/agent-runs/:runId/retry',
+    summary: '重试 Agent 运行',
+    toolId: 'retry_agent_run',
+    riskLevel: 'medium',
+    mapArgs: ({ params }) => ({ runId: params.runId }),
+  },
+  {
+    method: 'GET',
+    path: '/api/agent-runs/hitl/pending',
+    summary: '列待处理 HITL',
+    toolId: 'list_pending_agent_hitl',
+    riskLevel: 'low',
+  },
+  {
+    method: 'GET',
+    path: '/api/agent-runs/permissions/pending',
+    summary: '列待处理权限审批',
+    toolId: 'list_pending_agent_permissions',
+    riskLevel: 'low',
+  },
+  {
+    method: 'POST',
+    path: '/api/agent-runs/:runId/permissions/:permissionId/approve',
+    summary: '批准 Agent 权限',
+    toolId: 'approve_agent_permission',
+    riskLevel: 'high',
+    mapArgs: ({ params, body }) => ({
+      runId: params.runId,
+      permissionId: params.permissionId,
+      ...body,
+    }),
+  },
+  {
+    method: 'POST',
+    path: '/api/agent-runs/:runId/permissions/:permissionId/reject',
+    summary: '拒绝 Agent 权限',
+    toolId: 'reject_agent_permission',
+    riskLevel: 'high',
+    mapArgs: ({ params, body }) => ({
+      runId: params.runId,
+      permissionId: params.permissionId,
+      ...body,
+    }),
+  },
+  {
+    method: 'POST',
+    path: '/api/agent-runs/:runId/hitl/:requestId/resolve',
+    summary: '解决 Agent HITL',
+    toolId: 'resolve_agent_hitl',
+    riskLevel: 'high',
+    mapArgs: ({ params, body }) => ({
+      runId: params.runId,
+      requestId: params.requestId,
+      ...body,
+    }),
+  },
+  {
+    method: 'GET',
+    path: '/api/agent-sessions/:sessionId/messages',
+    summary: '列会话消息',
+    toolId: 'list_agent_session_messages',
+    riskLevel: 'low',
+    mapArgs: ({ params }) => ({ sessionId: params.sessionId }),
   },
 
   // knowledge / memory / rag
@@ -562,6 +742,46 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
     riskLevel: 'low',
   },
   {
+    method: 'POST',
+    path: '/api/rag/reindex',
+    summary: 'RAG 重建索引',
+    toolId: 'rag_reindex',
+    riskLevel: 'medium',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'GET',
+    path: '/api/rag/jobs',
+    summary: '列 RAG 任务',
+    toolId: 'list_rag_jobs',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
+  {
+    method: 'POST',
+    path: '/api/rag/jobs/run-once',
+    summary: '跑一轮 RAG 任务',
+    toolId: 'run_rag_jobs_once',
+    riskLevel: 'medium',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'POST',
+    path: '/api/rag/eval/run',
+    summary: '跑 RAG 评测',
+    toolId: 'run_rag_eval',
+    riskLevel: 'medium',
+    mapArgs: ({ body }) => body,
+  },
+  {
+    method: 'GET',
+    path: '/api/rag/eval/runs',
+    summary: '列 RAG 评测运行',
+    toolId: 'list_rag_eval_runs',
+    riskLevel: 'low',
+    mapArgs: ({ query }) => query,
+  },
+  {
     method: 'GET',
     path: '/api/plugins/metadata',
     summary: '插件元数据',
@@ -603,19 +823,124 @@ export const PLATFORM_API_OPERATIONS: PlatformApiOperation[] = [
   },
 ];
 
-export function discoverPlatformOperations(prefix?: string, limit = 50) {
-  const normalized = (prefix || '/api').trim() || '/api';
-  const matched = PLATFORM_API_OPERATIONS.filter((op) => op.path.startsWith(normalized));
-  return {
-    prefix: normalized,
-    count: matched.length,
-    operations: matched.slice(0, limit).map((op) => ({
+export type DiscoverPlatformOptions = {
+  prefix?: string;
+  /** Filter by HTTP method (case-insensitive). */
+  method?: string;
+  /** Keyword match against path / summary / toolId. */
+  q?: string;
+  /**
+   * Include underlying tool description + arg schema.
+   * Auto-enabled when matched count ≤ AUTO_DETAIL_MAX.
+   */
+  detail?: boolean;
+  limit?: number;
+};
+
+const AUTO_DETAIL_MAX = 8;
+
+function pathParamsFromTemplate(path: string): string[] {
+  return path
+    .split('/')
+    .filter((part) => part.startsWith(':'))
+    .map((part) => part.slice(1));
+}
+
+function summarizeToolParameters(
+  schema: unknown
+): { args: Record<string, string>; required: string[] } | null {
+  if (!schema || typeof schema !== 'object') return null;
+  const record = schema as {
+    properties?: Record<string, { type?: unknown; description?: string }>;
+    required?: string[];
+  };
+  const props = record.properties;
+  if (!props || typeof props !== 'object') return null;
+
+  const args: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(props)) {
+    const type = Array.isArray(raw?.type)
+      ? raw.type.join('|')
+      : typeof raw?.type === 'string'
+        ? raw.type
+        : 'any';
+    const desc = typeof raw?.description === 'string' ? raw.description.trim() : '';
+    args[key] = desc ? `${type} — ${desc}` : type;
+  }
+  const required = Array.isArray(record.required)
+    ? record.required.filter((k) => typeof k === 'string')
+    : [];
+  return { args, required };
+}
+
+function invokePlacement(method: PlatformHttpMethod): string {
+  if (method === 'GET' || method === 'DELETE') {
+    return 'pathParams → path；其余参数放 query';
+  }
+  return 'pathParams → path；其余参数放 body';
+}
+
+export function discoverPlatformOperations(options: DiscoverPlatformOptions | string = {}) {
+  const opts: DiscoverPlatformOptions =
+    typeof options === 'string' ? { prefix: options } : options ?? {};
+  const normalized = (opts.prefix || '/api').trim() || '/api';
+  const limit =
+    typeof opts.limit === 'number' && Number.isFinite(opts.limit) && opts.limit > 0
+      ? Math.floor(opts.limit)
+      : 50;
+  const methodFilter = opts.method?.trim().toUpperCase();
+  const keyword = opts.q?.trim().toLowerCase();
+
+  let matched = PLATFORM_API_OPERATIONS.filter((op) => op.path.startsWith(normalized));
+  if (methodFilter) {
+    matched = matched.filter((op) => op.method === methodFilter);
+  }
+  if (keyword) {
+    matched = matched.filter(
+      (op) =>
+        op.path.toLowerCase().includes(keyword) ||
+        op.summary.toLowerCase().includes(keyword) ||
+        op.toolId.toLowerCase().includes(keyword),
+    );
+  }
+
+  const detail = opts.detail === true || matched.length <= AUTO_DETAIL_MAX;
+  const registry = ToolRegistry.getInstance();
+
+  const operations = matched.slice(0, limit).map((op) => {
+    const pathParams = pathParamsFromTemplate(op.path);
+    const base = {
       method: op.method,
       path: op.path,
       summary: op.summary,
       riskLevel: op.riskLevel,
-    })),
+      pathParams,
+    };
+    if (!detail) return base;
+
+    const tool = registry.getTool(op.toolId);
+    const paramSummary = summarizeToolParameters(tool?.parameters);
+    return {
+      ...base,
+      toolId: op.toolId,
+      description: tool?.description ?? op.summary,
+      required: paramSummary?.required ?? [],
+      args: paramSummary?.args ?? {},
+      how: invokePlacement(op.method),
+    };
+  });
+
+  return {
+    prefix: normalized,
+    method: methodFilter || undefined,
+    q: keyword || undefined,
+    detail,
+    count: matched.length,
+    operations,
     truncated: matched.length > limit,
+    hint: detail
+      ? '调用 platform_invoke：method+path 必填；按 how 把参数放进 query 或 body。'
+      : `结果较多仅返回索引。用更具体 prefix（如 /api/feed）、method、q，或 detail:true 查看参数说明（≤${AUTO_DETAIL_MAX} 条自动展开）。`,
   };
 }
 

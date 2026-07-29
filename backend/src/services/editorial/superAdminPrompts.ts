@@ -18,7 +18,8 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
   capabilities:
     '能操作:调度/cron、采集适配器、新闻评分、日报生成发布、工作流运行/审批、' +
     '平台状态、发布历史、智能体/技能/MCP/模板、系统设置、知识库等。' +
-    '通用平台工具:platform_discover(发现 allowlist API)、platform_invoke(REST 风格调用;查询已评分新闻用 GET /api/feed/admin/scored?dateRange=&scoreRange=&limit=)。' +
+    '通用平台工具:platform_discover(按 prefix/q 收窄并查看参数;匹配少时自动展开 description+args)、' +
+    'platform_invoke(REST 风格调用;查询已评分新闻用 GET /api/feed/admin/scored?dateRange=&scoreRange=&limit=)。' +
     'SOP 专属工具:create_cron、trigger_scoring、generate_daily_report、publish_report、' +
     'run_workflow、decide_workflow_step、update_news_score、rebuild_hot_snapshot。' +
     '编辑工具:query_knowledge/query_memory。' +
@@ -31,7 +32,7 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
     '- 参数缺失时按 guideOrder 逐个追问,不一次性堆问;每个参数给出含义+可选值+默认。\n' +
     '- 涉及选择项时先 GET 清单(如 GET /api/workflows、GET /api/adapters)再让用户选,不凭空猜。\n' +
     '- 高危操作(删除、发布)在确认摘要中标注「高危」。\n' +
-    '- 不确定 path 时先 platform_discover;高频 SOP 优先用专属工具而非 platform_invoke。\n' +
+    '- 不确定 path/参数时先 platform_discover(用 prefix 或 q 收窄,必要时 detail:true);高频 SOP 优先专属工具。\n' +
     '- 工具返回 {ok:false} 时,用自然语言告知失败原因 + 建议下一步,不暴露堆栈。\n' +
     '- 长时操作(运行工作流)立即返回 runId,不阻塞对话。\n' +
     '- 仅当同一回合需连续执行 3 步以上 SOP 时才写 `.linkloom/todos.json`;单次读查询禁止建 todo。',
@@ -243,7 +244,17 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
     },
     {
       task: 'list_read',
-      intent: ['查看定时任务', '有哪些适配器', '有哪些工作流', '未评分新闻', '平台状态', '分数高于', '已评分新闻'],
+      intent: [
+        '查看定时任务',
+        '有哪些适配器',
+        '有哪些工作流',
+        '未评分新闻',
+        '平台状态',
+        '分数高于',
+        '已评分新闻',
+        '原始素材',
+        '选题统计',
+      ],
       params: [],
       guideOrder: [],
       tool: 'platform_invoke',
@@ -253,10 +264,62 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
         '- GET /api/schedules\n' +
         '- GET /api/adapters\n' +
         '- GET /api/workflows\n' +
-        '- GET /api/feed/admin/unevaluated\n' +
+        '- GET /api/feed/admin/stats\n' +
+        '- GET /api/feed/admin/raw\n' +
+        '- GET /api/feed/admin/unevaluated（别名）\n' +
         '- GET /api/feed/admin/scored?dateRange=YYYY-MM-DD~YYYY-MM-DD&scoreRange=60-100&limit=100\n' +
         '- GET /api/feed/admin/processed?picked=true&date=YYYY-MM-DD\n' +
+        '- GET /api/feed/admin/items/:id\n' +
         '- GET /api/platform/pipelines/status',
+    },
+    {
+      task: 'ops_agent_runs',
+      intent: ['有哪些卡住的审批', '列agent运行', '查run详情', '取消这次run', '重试run', '待处理HITL'],
+      params: [],
+      guideOrder: [],
+      tool: 'platform_invoke',
+      confirm: '读操作无需确认；cancel/retry/approve/reject/resolve 写操作需确认',
+      result:
+        '常用 path:\n' +
+        '- GET /api/agent-runs\n' +
+        '- GET /api/agent-runs/:runId\n' +
+        '- GET /api/agent-runs/:runId/messages\n' +
+        '- GET /api/agent-runs/hitl/pending\n' +
+        '- GET /api/agent-runs/permissions/pending\n' +
+        '- POST /api/agent-runs/:runId/cancel\n' +
+        '- POST /api/agent-runs/:runId/retry\n' +
+        '- POST /api/agent-runs/:runId/permissions/:permissionId/approve|reject\n' +
+        '- POST /api/agent-runs/:runId/hitl/:requestId/resolve\n' +
+        '- GET /api/agent-sessions/:sessionId/messages',
+    },
+    {
+      task: 'ops_rag',
+      intent: ['RAG状态', '重建索引', 'RAG任务', '跑评测'],
+      params: [],
+      guideOrder: [],
+      tool: 'platform_invoke',
+      confirm: '读操作无需确认；reindex/jobs/eval 写操作需确认',
+      result:
+        '常用 path:\n' +
+        '- GET /api/rag/status\n' +
+        '- POST /api/rag/reindex\n' +
+        '- GET /api/rag/jobs\n' +
+        '- POST /api/rag/jobs/run-once\n' +
+        '- POST /api/rag/eval/run\n' +
+        '- GET /api/rag/eval/runs',
+    },
+    {
+      task: 'import_opml',
+      intent: ['导入OPML', '导入RSS订阅'],
+      params: [
+        { name: 'opmlContent', type: 'string', required: true, desc: 'OPML XML 文本' },
+        { name: 'adapterId', type: 'string', required: false, desc: '目标 RSS 适配器 id' },
+      ],
+      guideOrder: ['opmlContent', 'adapterId'],
+      tool: 'platform_invoke',
+      invoke: { method: 'POST', path: '/api/adapters/import-opml', body: '{opmlContent,adapterId}' },
+      confirm: '将导入 OPML 到适配器 {adapterId}',
+      result: '导入结果',
     },
     {
       task: 'create_kb_category',
