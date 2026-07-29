@@ -47,22 +47,27 @@ export async function syncLinkloomArtifactToSession(
   }
 }
 
-export async function writeLinkloomPlan(
+/** Plan/todo shims: mirror session state into workspace file (no session re-sync). */
+export async function tryWriteLinkloomPlanFile(
   plan: { goal?: string; context?: string },
   context?: ToolExecutionContext
-) {
-  const content = formatPlanMarkdown(plan);
-  const result = await writeWorkspaceFile(LINKLOOM_PLAN_PATH, content, context);
-  await syncLinkloomArtifactToSession(LINKLOOM_PLAN_PATH, content, context);
-  return { ...result, plan };
+): Promise<void> {
+  if (!context?.workspace) return;
+  try {
+    await writeWorkspaceFile(LINKLOOM_PLAN_PATH, formatPlanMarkdown(plan), context);
+  } catch {
+    // Session already updated; file mirror is optional.
+  }
 }
 
-export async function writeLinkloomTodos(
+export async function tryWriteLinkloomTodosFile(
   todos: LinkloomTodoItem[],
   context?: ToolExecutionContext
-) {
-  const content = formatTodosJson(todos);
-  const result = await writeWorkspaceFile(LINKLOOM_TODOS_PATH, content, context);
-  await syncLinkloomArtifactToSession(LINKLOOM_TODOS_PATH, content, context);
-  return { ...result, todos };
+): Promise<void> {
+  if (!context?.workspace) return;
+  try {
+    await writeWorkspaceFile(LINKLOOM_TODOS_PATH, formatTodosJson(todos), context);
+  } catch {
+    // Session already updated; file mirror is optional.
+  }
 }

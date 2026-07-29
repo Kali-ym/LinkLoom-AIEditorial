@@ -2,14 +2,14 @@ import type { ToolExecutionContext } from '../../../services/ToolExecutionContex
 import { BaseTool } from '../../base/BaseTool.js';
 import { QueryPublicationHistoryTool } from './QueryPublicationHistoryTool.js';
 
-/** @deprecated Prefer query_publication_history. Kept as workflow compatibility alias. */
+/** query_publication_history 别名（workflow 响应形态）。 */
 export class QueryCoverageIndexTool extends BaseTool {
-  readonly id: string = 'query_coverage_index';
-  readonly name: string = 'query_coverage_index';
+  readonly id = 'query_coverage_index';
+  readonly name = 'query_coverage_index';
   readonly displayName = '历史覆盖检查';
   readonly scope = 'workflow' as const;
-  readonly description: string =
-    '【兼容别名】请优先使用 query_publication_history。检查候选素材在近期历史日报中的覆盖情况。';
+  readonly description =
+    'query_publication_history 别名。检查候选条目近期是否已覆盖。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -22,8 +22,8 @@ export class QueryCoverageIndexTool extends BaseTool {
       titleField: { type: 'string', description: 'Title field name, default title' },
       date: { type: 'string' },
       asOfDate: { type: 'string' },
-      titleThreshold: { type: 'number' }
-    }
+      titleThreshold: { type: 'number' },
+    },
   };
 
   private readonly delegate = new QueryPublicationHistoryTool();

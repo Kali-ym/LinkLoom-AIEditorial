@@ -6,7 +6,7 @@ const ADMIN_CATEGORY_PREFIX = 'admin-';
 
 /**
  * Legacy CRUD admin tools still registered for platform_invoke dispatch
- * and /api/tools/:id/run — not shown as LLM-facing categories, but exclusive.
+ * and /api/tools/:id/run — never exposed to the LLM / binding UI.
  */
 export const ADMIN_DISPATCH_TOOL_IDS: readonly string[] = [
   'list_schedules',
@@ -74,11 +74,21 @@ export const ADMIN_DISPATCH_TOOL_IDS: readonly string[] = [
   'create_api_key',
 ];
 
-/** All admin toolset tool ids (UI categories + dispatch-only legacy). */
+/** Admin tools shown in UI and bound to super_admin LLM (platform + SOP). */
+export const ADMIN_LLM_FACING_TOOL_IDS: readonly string[] = TOOL_CATEGORIES.filter((cat) =>
+  cat.id.startsWith(ADMIN_CATEGORY_PREFIX),
+).flatMap((cat) => cat.toolIds);
+
+export const ADMIN_LLM_FACING_TOOL_ID_SET = new Set(ADMIN_LLM_FACING_TOOL_IDS);
+
+export const ADMIN_DISPATCH_TOOL_ID_SET = new Set(ADMIN_DISPATCH_TOOL_IDS);
+
+/**
+ * All admin-related tool ids: LLM-facing + dispatch-only.
+ * Used to strip from non-super_admin agents / public catalogs.
+ */
 export const ADMIN_EXCLUSIVE_TOOL_IDS: readonly string[] = [
-  ...TOOL_CATEGORIES.filter((cat) => cat.id.startsWith(ADMIN_CATEGORY_PREFIX)).flatMap(
-    (cat) => cat.toolIds,
-  ),
+  ...ADMIN_LLM_FACING_TOOL_IDS,
   ...ADMIN_DISPATCH_TOOL_IDS,
 ];
 
@@ -86,6 +96,16 @@ export const ADMIN_EXCLUSIVE_TOOL_ID_SET = new Set(ADMIN_EXCLUSIVE_TOOL_IDS);
 
 export function isAdminExclusiveTool(toolId: string): boolean {
   return ADMIN_EXCLUSIVE_TOOL_ID_SET.has(toolId);
+}
+
+/** Whether this tool may be bound to the super_admin LLM. */
+export function isAdminLlmFacingTool(toolId: string): boolean {
+  return ADMIN_LLM_FACING_TOOL_ID_SET.has(toolId);
+}
+
+/** Dispatch-only handlers — must not appear in binding UI or agent toolIds. */
+export function isAdminDispatchTool(toolId: string): boolean {
+  return ADMIN_DISPATCH_TOOL_ID_SET.has(toolId);
 }
 
 export function isSuperAdminAgent(agentId: string): boolean {

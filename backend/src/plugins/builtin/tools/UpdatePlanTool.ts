@@ -1,10 +1,10 @@
 import { requireToolContext, type ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireAgentRun, requireWorkspaceStateService } from './workspaceToolSupport.js';
-import { writeLinkloomPlan } from './linkloomWorkspaceSync.js';
+import { tryWriteLinkloomPlanFile } from './linkloomWorkspaceSync.js';
 import { LINKLOOM_PLAN_PATH } from './linkloomWorkspaceArtifacts.js';
 
-/** @deprecated Prefer writeFile/editFile on `.linkloom/plan.md`. Compatibility shim. */
+/** 兼容别名：优先 writeFile/editFile 更新 `.linkloom/plan.md`。 */
 export class UpdatePlanTool extends BaseTool {
   readonly id = 'update_plan';
   readonly name = 'update_plan';
@@ -12,8 +12,8 @@ export class UpdatePlanTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    `【兼容别名】请优先用 writeFile/editFile 更新 ${LINKLOOM_PLAN_PATH}。` +
-    '更新当前会话执行计划。至少提供 goal 或 context 之一。';
+    `兼容别名：优先 writeFile/editFile 更新 ${LINKLOOM_PLAN_PATH}。` +
+    '更新会话计划；至少提供 goal 或 context。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -30,18 +30,7 @@ export class UpdatePlanTool extends BaseTool {
       ...(args.goal !== undefined ? { goal: args.goal } : {}),
       ...(args.context !== undefined ? { context: args.context } : {}),
     });
-    try {
-      const plan =
-        result && typeof result === 'object' && 'plan' in (result as object)
-          ? ((result as { plan?: { goal?: string; context?: string } }).plan ?? {})
-          : {
-              ...(args.goal !== undefined ? { goal: args.goal } : {}),
-              ...(args.context !== undefined ? { context: args.context } : {}),
-            };
-      await writeLinkloomPlan(plan, context);
-    } catch {
-      // best-effort
-    }
+    await tryWriteLinkloomPlanFile(result.plan ?? {}, context);
     return result;
   }
 }

@@ -18,7 +18,7 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
   capabilities:
     '能操作:调度/cron、采集适配器、新闻评分、日报生成发布、工作流运行/审批、' +
     '平台状态、发布历史、智能体/技能/MCP/模板、系统设置、知识库等。' +
-    '通用平台工具:platform_discover(发现 allowlist API)、platform_invoke(REST 风格调用)。' +
+    '通用平台工具:platform_discover(发现 allowlist API)、platform_invoke(REST 风格调用;查询已评分新闻用 GET /api/feed/admin/scored?dateRange=&scoreRange=&limit=)。' +
     'SOP 专属工具:create_cron、trigger_scoring、generate_daily_report、publish_report、' +
     'run_workflow、decide_workflow_step、update_news_score、rebuild_hot_snapshot。' +
     '编辑工具:query_knowledge/query_memory。' +
@@ -243,12 +243,20 @@ export const SUPER_ADMIN_PROMPT: StructuredPrompt = {
     },
     {
       task: 'list_read',
-      intent: ['查看定时任务', '有哪些适配器', '有哪些工作流', '未评分新闻', '平台状态'],
+      intent: ['查看定时任务', '有哪些适配器', '有哪些工作流', '未评分新闻', '平台状态', '分数高于', '已评分新闻'],
       params: [],
       guideOrder: [],
       tool: 'platform_invoke',
       confirm: '（读操作无需确认）',
-      result: '列表摘要。常用 path: /api/schedules、/api/adapters、/api/workflows、/api/feed/admin/unevaluated、/api/platform/pipelines/status',
+      result:
+        '列表摘要。常用 path:\n' +
+        '- GET /api/schedules\n' +
+        '- GET /api/adapters\n' +
+        '- GET /api/workflows\n' +
+        '- GET /api/feed/admin/unevaluated\n' +
+        '- GET /api/feed/admin/scored?dateRange=YYYY-MM-DD~YYYY-MM-DD&scoreRange=60-100&limit=100\n' +
+        '- GET /api/feed/admin/processed?picked=true&date=YYYY-MM-DD\n' +
+        '- GET /api/platform/pipelines/status',
     },
     {
       task: 'create_kb_category',

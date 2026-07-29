@@ -8,6 +8,7 @@ import {
   ADMIN_TOOL_IDS,
   ADMIN_PLATFORM_TOOLS,
   ADMIN_SOP_TOOL_IDS,
+  ADMIN_DISPATCH_TOOL_IDS,
 } from '../src/plugins/builtin/tools/admin/index.js';
 
 const ALLOWED_PLAYBOOK_TOOLS = new Set([
@@ -44,6 +45,8 @@ describe('SUPER_ADMIN_PROMPT', () => {
       expect.arrayContaining(['platform_discover', 'platform_invoke', ...ADMIN_SOP_TOOL_IDS]),
     );
     expect(ADMIN_TOOL_IDS).toHaveLength(ADMIN_PLATFORM_TOOLS.length + ADMIN_SOP_TOOL_IDS.length);
+    expect(ADMIN_DISPATCH_TOOL_IDS).toHaveLength(63);
+    expect(ADMIN_DISPATCH_TOOL_IDS).not.toEqual(expect.arrayContaining([...ADMIN_SOP_TOOL_IDS]));
   });
 
   it('capabilities mentions platform_invoke and SOP tools', () => {

@@ -1,5 +1,7 @@
 import {
+  isAdminDispatchTool,
   isAdminExclusiveTool,
+  isAdminLlmFacingTool,
   isSuperAdminAgent,
 } from '../../../../domain/constants/adminExclusiveTools';
 import { MCP_PLUGIN_PREFIX } from '../../../../domain/utils/agentPluginBindings';
@@ -85,6 +87,8 @@ export function buildAgentBindingRows(
 
   for (const tool of catalog.tools) {
     if (!tool.id) continue;
+    // Dispatch-only CRUD is never shown in the binding UI.
+    if (isAdminDispatchTool(tool.id)) continue;
     const adminExclusive = isAdminExclusiveTool(tool.id);
     if (adminExclusive && !superAdmin) continue;
     const catId = tool.category ?? categoryMap.get(tool.id);
@@ -110,7 +114,7 @@ export function buildAgentBindingRows(
       categoryColor: cat?.color,
       categoryIcon: cat?.icon,
       adminExclusive,
-      forcedEnabled: adminExclusive && superAdmin,
+      forcedEnabled: isAdminLlmFacingTool(tool.id) && superAdmin,
     });
   }
 

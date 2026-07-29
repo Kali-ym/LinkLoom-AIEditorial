@@ -15,6 +15,7 @@ export interface AgentWorkspaceState {
 }
 
 export interface WorkspaceTodoRenderItem {
+  id: string;
   content: string;
   completed: boolean;
 }
@@ -43,6 +44,7 @@ export function todosFromAdds(adds: string[]): WorkspaceTodoItem[] {
 
 export function toRenderTodos(todos: WorkspaceTodoItem[]): WorkspaceTodoRenderItem[] {
   return todos.map((todo) => ({
+    id: todo.id,
     content: todo.content,
     completed: todo.completed === true,
   }));

@@ -13,6 +13,7 @@ export interface BackendWorkspaceState {
 }
 
 export interface BackendWorkspaceTodoRender {
+  id?: string;
   content?: string;
   completed?: boolean;
 }
@@ -32,7 +33,7 @@ export function mapBackendTodosToDomain(todos?: BackendWorkspaceTodo[]): TodoIte
 
 export function mapRenderTodosToDomain(todos: BackendWorkspaceTodoRender[]): TodoItem[] {
   return todos.map((todo, index) => ({
-    id: `todo-${index + 1}`,
+    id: todo.id?.trim() || `todo-${index + 1}`,
     label: todo.content ?? '',
     done: todo.completed === true,
     status: todo.completed ? 'completed' : 'todo',

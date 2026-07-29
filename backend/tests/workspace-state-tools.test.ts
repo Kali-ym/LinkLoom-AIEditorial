@@ -44,8 +44,8 @@ describe('WorkspaceStateService', () => {
 
     expect(result.count).toBe(2);
     expect(result.todos).toEqual([
-      { content: '整理素材', completed: false },
-      { content: '生成选题', completed: false },
+      { id: 'todo-1', content: '整理素材', completed: false },
+      { id: 'todo-2', content: '生成选题', completed: false },
     ]);
     expect(getSession()?.workspaceState?.todos).toHaveLength(2);
   });

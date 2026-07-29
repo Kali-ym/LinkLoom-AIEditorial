@@ -1,10 +1,10 @@
 import { requireToolContext, type ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireAgentRun, requireWorkspaceStateService } from './workspaceToolSupport.js';
-import { writeLinkloomPlan } from './linkloomWorkspaceSync.js';
+import { tryWriteLinkloomPlanFile } from './linkloomWorkspaceSync.js';
 import { LINKLOOM_PLAN_PATH } from './linkloomWorkspaceArtifacts.js';
 
-/** @deprecated Prefer writeFile to `.linkloom/plan.md`. Compatibility shim. */
+/** 兼容别名：优先 writeFile 写入 `.linkloom/plan.md`。 */
 export class CreatePlanTool extends BaseTool {
   readonly id = 'create_plan';
   readonly name = 'create_plan';
@@ -12,9 +12,8 @@ export class CreatePlanTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    `【兼容别名】请优先用 writeFile 写入 ${LINKLOOM_PLAN_PATH}。` +
-    '为当前 Agent 运行创建或覆盖会话执行计划。仅当同一回合需连续执行 3 步以上的复杂 SOP 时使用。' +
-    '必填：goal；可选 context。';
+    `兼容别名：优先 writeFile 写入 ${LINKLOOM_PLAN_PATH}。` +
+    '创建/覆盖会话计划（3 步以上 SOP）。必填 goal；可选 context。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -33,11 +32,7 @@ export class CreatePlanTool extends BaseTool {
       context: args.context?.trim() || undefined,
     };
     const result = await service.createPlan(run.runId, plan);
-    try {
-      await writeLinkloomPlan(plan, context);
-    } catch {
-      // Workspace may be unavailable; session state still updated.
-    }
+    await tryWriteLinkloomPlanFile(plan, context);
     return result;
   }
 }

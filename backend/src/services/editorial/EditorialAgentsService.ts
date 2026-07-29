@@ -144,7 +144,9 @@ export class EditorialAgentsService {
         ...new Set([...(existing.toolIds ?? []), ...(agent.toolIds ?? [])]),
       ];
       const missingTools = (agent.toolIds ?? []).filter((id) => !existing.toolIds?.includes(id));
-      const shouldReplaceTools = existing.metadata?.customized !== true;
+      // super_admin tool surface is platform-owned: always sync to canonical (strip legacy CRUD).
+      const shouldReplaceTools =
+        agent.id === SUPER_ADMIN_ID || existing.metadata?.customized !== true;
       const existingToolIds = existing.toolIds ?? [];
       const canonicalToolIds = agent.toolIds ?? [];
       const toolsChanged = shouldReplaceTools

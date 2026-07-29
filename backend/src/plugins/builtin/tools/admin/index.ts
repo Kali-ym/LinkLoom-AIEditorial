@@ -58,6 +58,11 @@ const sopIdSet = new Set<string>(ADMIN_SOP_TOOL_IDS);
 
 export const ADMIN_SOP_TOOLS: BaseTool[] = ADMIN_LEGACY_TOOLS.filter((t) => sopIdSet.has(t.id));
 
+/** Dispatch-only CRUD (registered for platform_invoke /api/tools/:id/run, not LLM-bound). */
+export const ADMIN_DISPATCH_TOOL_IDS: readonly string[] = ADMIN_LEGACY_TOOLS.filter(
+  (t) => !sopIdSet.has(t.id),
+).map((t) => t.id);
+
 /** All admin tools registered in ToolRegistry (platform + legacy handlers). */
 export const ADMIN_TOOLS: BaseTool[] = [...ADMIN_PLATFORM_TOOLS, ...ADMIN_LEGACY_TOOLS];
 
