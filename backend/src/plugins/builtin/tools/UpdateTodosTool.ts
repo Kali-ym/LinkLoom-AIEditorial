@@ -1,7 +1,10 @@
 import { requireToolContext, type ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireAgentRun, requireWorkspaceStateService } from './workspaceToolSupport.js';
+import { writeLinkloomTodos } from './linkloomWorkspaceSync.js';
+import { LINKLOOM_TODOS_PATH } from './linkloomWorkspaceArtifacts.js';
 
+/** @deprecated Prefer writeFile/editFile on `.linkloom/todos.json`. Compatibility shim. */
 export class UpdateTodosTool extends BaseTool {
   readonly id = 'update_todos';
   readonly name = 'update_todos';
@@ -9,10 +12,8 @@ export class UpdateTodosTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    '按 id 增量更新当前会话待办项,或 replace=true 时整体替换列表。' +
-    '仅当本回合已用 create_todos 建立过多步任务清单、且某一步完成/内容变化时调用。' +
-    '禁止:为单次读查询建 todo、更新与当前用户问题无关的历史 todo。' +
-    '必填：updates（含 id 的变更数组）或 todos；replace 为 true 时传完整 todos 列表。';
+    `【兼容别名】请优先用 writeFile/editFile 更新 ${LINKLOOM_TODOS_PATH}。` +
+    '按 id 增量更新当前会话待办项,或 replace=true 时整体替换列表。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -54,6 +55,23 @@ export class UpdateTodosTool extends BaseTool {
     const context = requireToolContext(toolCtx, this.id);
     const run = requireAgentRun(context, this.id);
     const service = requireWorkspaceStateService(context, this.id);
-    return service.updateTodos(run.runId, args);
+    const result = await service.updateTodos(run.runId, args);
+    try {
+      const todos =
+        result && typeof result === 'object' && Array.isArray((result as { todos?: unknown }).todos)
+          ? (
+              (result as unknown as { todos: Array<{ id?: string; content: string; completed?: boolean }> })
+                .todos
+            ).map((t, i) => ({
+              id: t.id || `todo-${i + 1}`,
+              content: t.content,
+              completed: t.completed === true,
+            }))
+          : [];
+      await writeLinkloomTodos(todos, context);
+    } catch {
+      // best-effort
+    }
+    return result;
   }
 }

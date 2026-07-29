@@ -7,7 +7,21 @@ import {
 } from '../adapters/api/mappers/toolIdentityMapper';
 import { APPLICATION_CONSOLE_AGENT_IDS } from './applicationConsoleAgents';
 import { TOOLSET_IDS, resolveRegistryToolsetId } from './constants/toolsetIdentifiers';
+import { ADMIN_DISPATCH_TOOL_IDS } from './constants/adminExclusiveTools';
 import { buildToolCategoryMap } from './types/skill';
+
+const LLM_FACING_ADMIN_TOOLS = [
+  'platform_discover',
+  'platform_invoke',
+  'create_cron',
+  'trigger_scoring',
+  'generate_daily_report',
+  'publish_report',
+  'run_workflow',
+  'decide_workflow_step',
+  'update_news_score',
+  'rebuild_hot_snapshot',
+];
 
 describe('admin toolset identity', () => {
   it('TOOLSET_IDS.ADMIN is linkloom-admin', () => {
@@ -24,97 +38,22 @@ describe('admin toolset identity', () => {
     expect(id.apiName).toBe('createCron');
   });
 
-  it('maps all 70 admin tools', () => {
-    const names = [
-      'list_schedules',
-      'list_adapters',
-      'list_workflows',
-      'list_unevaluated_news',
-      'list_scored_news',
-      'get_news_item',
-      'list_workflow_runs',
-      'get_system_stats',
-      'list_recent_reports',
-      'create_cron',
-      'update_cron',
-      'delete_cron',
-      'run_schedule_now',
-      'run_workflow',
-      'trigger_scoring',
-      'decide_workflow_step',
-      'update_news_score',
-      'delete_news',
-      'generate_daily_report',
-      'publish_report',
-      'list_task_logs',
-      'get_schedule_detail',
-      'get_adapter_config',
-      'sync_adapter',
-      'clear_adapter_data',
-      'list_processed_news',
-      'get_selection_stats',
-      'query_continuation_report',
-      'get_daily_report_json',
-      'list_report_json_dates',
-      'get_digest_context',
-      'refresh_digest_context',
-      'get_aggregated_content',
-      'get_workflow_run_detail',
-      'get_workflow_run',
-      'list_pending_approvals',
-      'get_platform_status',
-      'get_governance_status',
-      'get_agent_metrics',
-      'get_commit_history',
-      'get_publication_items',
-      'republish_report',
-      'delete_commit_history',
-      'list_agents',
-      'get_agent',
-      'list_skills',
-      'scan_skills',
-      'list_tools',
-      'list_mcp_configs',
-      'test_mcp',
-      'list_workflow_templates',
-      'list_agent_bindings',
-      'list_kb_categories',
-      'list_kb_documents',
-      'get_kb_content',
-      'list_memory_categories',
-      'get_rag_status',
-      'list_plugin_metadata',
-      'save_agent',
-      'delete_agent',
-      'save_workflow',
-      'instantiate_template',
-      'get_settings',
-      'update_settings',
-      'test_ai_provider',
-      'create_api_key',
-      'create_kb_category',
-      'delete_kb_document',
-      'batch_reset_scoring',
-      'backfill_publication_items',
-    ];
-    for (const name of names) {
+  it('maps platform primitives and dispatch tools', () => {
+    for (const name of [...LLM_FACING_ADMIN_TOOLS, ...ADMIN_DISPATCH_TOOL_IDS]) {
       expect(isMappedLinkLoomTool(name)).toBe(true);
       const id = resolveLinkLoomToolIdentity({ toolName: name });
       expect(id.identifier).toBe('linkloom-admin');
     }
   });
 
-  it('admin mappings count is 70', () => {
+  it('admin mappings include platform + legacy', () => {
     const adminMappings = listLinkLoomToolMappings().filter((m) => m.identifier === 'linkloom-admin');
-    expect(adminMappings).toHaveLength(70);
+    expect(adminMappings.length).toBeGreaterThanOrEqual(70);
   });
 
-  it('all admin tools belong to a TOOL_CATEGORIES group', () => {
+  it('LLM-facing admin tools belong to a TOOL_CATEGORIES group', () => {
     const categoryMap = buildToolCategoryMap();
-    const adminNames = listLinkLoomToolMappings()
-      .filter((m) => m.identifier === 'linkloom-admin')
-      .flatMap((m) => m.keys);
-    const uncategorized = adminNames.filter((name) => !categoryMap.has(name));
+    const uncategorized = LLM_FACING_ADMIN_TOOLS.filter((name) => !categoryMap.has(name));
     expect(uncategorized).toEqual([]);
   });
 

@@ -2,6 +2,7 @@ import type { ToolExecutionPolicy } from '../../../types/agent.js';
 import type { ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { writeWorkspaceFile } from './workspaceFileToolSupport.js';
+import { syncLinkloomArtifactToSession } from './linkloomWorkspaceSync.js';
 
 export class WriteWorkspaceFileTool extends BaseTool {
   readonly id = 'write_workspace_file';
@@ -10,7 +11,8 @@ export class WriteWorkspaceFileTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly description =
     '将 UTF-8 文本写入活跃工作区文件（新建或整文件覆盖）；沙箱模式写入 /workspace。创建新文件或全量覆写时调用，局部修改请用 editFile。' +
-    '必填：path（工作区相对路径或 /workspace 绝对路径）、content。工具调用名：writeFile。';
+    '多步任务请写 `.linkloom/plan.md`（计划）与 `.linkloom/todos.json`（待办 JSON 数组）。' +
+    '必填：path、content。工具调用名：writeFile。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -36,6 +38,8 @@ export class WriteWorkspaceFileTool extends BaseTool {
     if (typeof args.content !== 'string') {
       throw new Error('content is required');
     }
-    return writeWorkspaceFile(filePath, args.content, context);
+    const result = await writeWorkspaceFile(filePath, args.content, context);
+    await syncLinkloomArtifactToSession(filePath, args.content, context);
+    return result;
   }
 }

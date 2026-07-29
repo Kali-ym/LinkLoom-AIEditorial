@@ -35,6 +35,8 @@ export interface TaskPlaybookEntry {
   tool: string;
   confirm: string;
   result: string;
+  /** Optional REST hint when tool is platform_invoke */
+  invoke?: { method: string; path: string; body?: string };
 }
 
 /** per-model 提示：按 providerId 写特定提示语（大写枚举 OPENAI/CLAUDE/GEMINI/GLM/OLLAMA） */

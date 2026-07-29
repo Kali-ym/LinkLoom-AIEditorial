@@ -56,6 +56,9 @@ const LINKLOOM_TOOL_MAPPINGS: ToolMappingEntry[] = [
   entry(['write_workspace_file', 'writeworkspacefile'], TOOLSET_IDS.LOCAL_SYSTEM, 'writeFile'),
   entry(['edit_workspace_file', 'editworkspacefile', 'editfile'], TOOLSET_IDS.LOCAL_SYSTEM, 'editFile'),
   entry(['delete_workspace_file', 'deleteworkspacefile', 'deletefile'], TOOLSET_IDS.LOCAL_SYSTEM, 'deleteFile'),
+  entry(['list_dir', 'listdir'], TOOLSET_IDS.LOCAL_SYSTEM, 'listDir'),
+  entry(['glob'], TOOLSET_IDS.LOCAL_SYSTEM, 'glob'),
+  entry(['grep'], TOOLSET_IDS.LOCAL_SYSTEM, 'grep'),
   entry(['execute_command'], TOOLSET_IDS.LOCAL_SYSTEM, 'runCommand'),
 
   // —— Agent orchestration ——
@@ -77,6 +80,7 @@ const LINKLOOM_TOOL_MAPPINGS: ToolMappingEntry[] = [
 
   // —— Web browsing (phase E — backend tools planned) ——
   entry(['web_search'], TOOLSET_IDS.WEB_BROWSING, 'search'),
+  entry(['crawl_pages', 'crawlpages'], TOOLSET_IDS.WEB_BROWSING, 'crawlPages'),
   entry(['crawl_single_page'], TOOLSET_IDS.WEB_BROWSING, 'crawlSinglePage'),
   entry(['crawl_multi_pages'], TOOLSET_IDS.WEB_BROWSING, 'crawlMultiPages'),
 
@@ -92,7 +96,10 @@ const LINKLOOM_TOOL_MAPPINGS: ToolMappingEntry[] = [
   entry(['publish_to_github'], TOOLSET_IDS.WORKFLOW, 'publishToGitHub'),
   entry(['publish_to_local_site'], TOOLSET_IDS.WORKFLOW, 'publishToLocalSite'),
 
-  // —— Super admin tools (phase SA — see super-admin-agent-backend plan) ——
+  // —— Super admin platform primitives + SOP ——
+  entry(['platform_discover'], TOOLSET_IDS.ADMIN, 'platformDiscover'),
+  entry(['platform_invoke'], TOOLSET_IDS.ADMIN, 'platformInvoke'),
+  entry(['rebuild_hot_snapshot'], TOOLSET_IDS.ADMIN, 'rebuildHotSnapshot'),
   entry(['list_schedules'], TOOLSET_IDS.ADMIN, 'listSchedules'),
   entry(['list_adapters'], TOOLSET_IDS.ADMIN, 'listAdapters'),
   entry(['list_workflows'], TOOLSET_IDS.ADMIN, 'listWorkflows'),

@@ -13,9 +13,31 @@ import { knowledgeTools } from './knowledgeTools.js';
 import { settingsTools } from './settingsTools.js';
 import { batchTools } from './batchTools.js';
 import { hotSnapshotTools } from './hotSnapshotTools.js';
+import { PlatformDiscoverTool } from './PlatformDiscoverTool.js';
+import { PlatformInvokeTool } from './PlatformInvokeTool.js';
 
-/** 超级管理员 agent 的 admin 操作工具集。 */
-export const ADMIN_TOOLS: BaseTool[] = [
+const platformDiscover = new PlatformDiscoverTool();
+const platformInvoke = new PlatformInvokeTool();
+
+/** LLM-facing platform primitives. */
+export const ADMIN_PLATFORM_TOOLS: BaseTool[] = [platformDiscover, platformInvoke];
+
+/**
+ * High-semantics SOP adapters kept as dedicated tools (HITL cards / playbook).
+ * Other CRUD stays in ADMIN_LEGACY_TOOLS for platform_invoke dispatch + /api/tools/:id/run.
+ */
+export const ADMIN_SOP_TOOL_IDS = [
+  'rebuild_hot_snapshot',
+  'trigger_scoring',
+  'generate_daily_report',
+  'decide_workflow_step',
+  'update_news_score',
+  'run_workflow',
+  'publish_report',
+  'create_cron',
+] as const;
+
+export const ADMIN_LEGACY_TOOLS: BaseTool[] = [
   ...queryTools,
   ...cronTools,
   ...workflowTools,
@@ -32,7 +54,18 @@ export const ADMIN_TOOLS: BaseTool[] = [
   ...hotSnapshotTools,
 ];
 
-export const ADMIN_TOOL_IDS: string[] = ADMIN_TOOLS.map((t) => t.id);
+const sopIdSet = new Set<string>(ADMIN_SOP_TOOL_IDS);
+
+export const ADMIN_SOP_TOOLS: BaseTool[] = ADMIN_LEGACY_TOOLS.filter((t) => sopIdSet.has(t.id));
+
+/** All admin tools registered in ToolRegistry (platform + legacy handlers). */
+export const ADMIN_TOOLS: BaseTool[] = [...ADMIN_PLATFORM_TOOLS, ...ADMIN_LEGACY_TOOLS];
+
+/** Tool ids exposed to super_admin LLM binding (not the full CRUD surface). */
+export const ADMIN_TOOL_IDS: string[] = [
+  ...ADMIN_PLATFORM_TOOLS.map((t) => t.id),
+  ...ADMIN_SOP_TOOL_IDS,
+];
 
 export {
   queryTools,

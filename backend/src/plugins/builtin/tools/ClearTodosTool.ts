@@ -1,7 +1,10 @@
 import { requireToolContext, type ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireAgentRun, requireWorkspaceStateService } from './workspaceToolSupport.js';
+import { writeLinkloomTodos } from './linkloomWorkspaceSync.js';
+import { LINKLOOM_TODOS_PATH } from './linkloomWorkspaceArtifacts.js';
 
+/** @deprecated Prefer writeFile `[]` to `.linkloom/todos.json`. Compatibility shim. */
 export class ClearTodosTool extends BaseTool {
   readonly id = 'clear_todos';
   readonly name = 'clear_todos';
@@ -9,9 +12,8 @@ export class ClearTodosTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    '清空当前 Agent 运行会话中的全部待办项。' +
-    '仅在用户明确要求重置待办、或同一多步任务全部完成且不再续接时调用。' +
-    '禁止:回答新问题时顺带清空、介绍工具能力时调用。无需参数。';
+    `【兼容别名】请优先用 writeFile 将 ${LINKLOOM_TODOS_PATH} 写为 []。` +
+    '清空当前会话全部待办。仅在用户明确要求重置或任务全部完成时调用。无需参数。';
   readonly parameters = {
     type: 'object',
     properties: {},
@@ -21,6 +23,12 @@ export class ClearTodosTool extends BaseTool {
     const context = requireToolContext(toolCtx, this.id);
     const run = requireAgentRun(context, this.id);
     const service = requireWorkspaceStateService(context, this.id);
-    return service.clearTodos(run.runId);
+    const result = await service.clearTodos(run.runId);
+    try {
+      await writeLinkloomTodos([], context);
+    } catch {
+      // best-effort
+    }
+    return result;
   }
 }

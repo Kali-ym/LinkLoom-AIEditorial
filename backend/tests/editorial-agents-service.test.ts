@@ -31,13 +31,16 @@ describe('EditorialAgentsService.ensureBuiltinAgents', () => {
           'read_skill',
           'list_skill',
           'web_search',
-          'crawl_single_page',
+          'crawl_pages',
+          'write_workspace_file',
         ]),
         systemPrompt: 'old prompt',
       }),
     );
   });
+});
 
+describe('EditorialAgentsService.ensureBuiltinAgents — retired', () => {
   it('deletes retired fact_reviewer agents', async () => {
     const saveAgent = vi.fn().mockResolvedValue(undefined);
     const deleteAgent = vi.fn().mockResolvedValue(undefined);
@@ -57,16 +60,16 @@ describe('EditorialAgentsService.ensureBuiltinAgents', () => {
               'read_skill',
               'list_skill',
               'web_search',
-              'crawl_single_page',
-              'crawl_multi_pages',
+              'crawl_pages',
               'query_memory',
               'save_memory',
               'read_upload',
-              'create_todos',
-              'update_todos',
-              'clear_todos',
-              'create_plan',
-              'update_plan',
+              'list_dir',
+              'glob',
+              'grep',
+              'read_workspace_file',
+              'write_workspace_file',
+              'edit_workspace_file',
             ],
             systemPrompt: { role: '选题 Copilot', identity: 'test' },
             metadata: {
@@ -96,7 +99,7 @@ describe('EditorialAgentsService.ensureBuiltinAgents', () => {
 });
 
 describe('EditorialAgentsService.ensureBuiltinAgents — super_admin', () => {
-  it('creates super_admin with admin tool ids + helper tools', async () => {
+  it('creates super_admin with platform + SOP tool ids', async () => {
     const saveAgent = vi.fn().mockResolvedValue(undefined);
     const store = {
       get: vi.fn().mockResolvedValue({ ACTIVE_AI_PROVIDER_ID: 'p1' }),
@@ -111,18 +114,18 @@ describe('EditorialAgentsService.ensureBuiltinAgents — super_admin', () => {
     expect(saved).toBeTruthy();
     expect(saved.toolIds).toEqual(
       expect.arrayContaining([
+        'platform_discover',
+        'platform_invoke',
         'create_cron',
         'trigger_scoring',
         'generate_daily_report',
         'decide_workflow_step',
         'query_knowledge',
         'query_memory',
-        'list_agents',
-        'list_kb_categories',
-        'create_todos',
-        'create_plan',
+        'write_workspace_file',
       ]),
     );
+    expect(saved.toolIds).not.toContain('list_schedules');
     expect(saved.runtime).toEqual({ mode: 'react', maxRounds: 12, maxToolCalls: 25 });
     expect(saved.metadata?.ui?.consoleVisible).toBe(true);
     expect(saved.metadata?.ui?.isPrimary).toBe(false);

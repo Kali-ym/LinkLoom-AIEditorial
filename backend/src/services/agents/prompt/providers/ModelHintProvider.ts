@@ -7,7 +7,7 @@ function webSearchHint(mode: WebSearchEffectiveMode): string | null {
     case 'off':
       return '本轮未开启联网搜索，请勿调用任何网页相关工具。';
     case 'app':
-      return '使用 web_search 搜索；已知 URL 用 crawl_single_page / crawl_multi_pages。';
+      return '使用 web_search 搜索；已知 URL 用 crawl_pages（可传 url 或 urls）。';
     case 'provider':
       return '优先用 google_search 获取实时信息，用 url_context 读网页；勿调用 web_search。';
     default:

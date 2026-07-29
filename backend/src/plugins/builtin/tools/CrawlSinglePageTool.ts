@@ -2,6 +2,7 @@ import { requireToolContext, type ToolExecutionContext } from '../../../services
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireWebBrowsingService } from './webBrowsingToolSupport.js';
 
+/** @deprecated Prefer crawl_pages. Kept as compatibility alias. */
 export class CrawlSinglePageTool extends BaseTool {
   readonly id = 'crawl_single_page';
   readonly name = 'crawl_single_page';
@@ -9,8 +10,7 @@ export class CrawlSinglePageTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    '抓取单个网页 URL 的可读正文（标题、摘要、正文文本）。已有确定 URL 需读取全文时调用；' +
-    '搜索页面用 web_search，多页用 crawl_multi_pages。必填：url。';
+    '【兼容别名】请优先使用 crawl_pages。抓取单个网页 URL 的可读正文。必填：url。';
   readonly parameters = {
     type: 'object',
     properties: {

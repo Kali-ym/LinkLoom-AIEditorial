@@ -1,7 +1,11 @@
 import { requireToolContext, type ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireAgentRun, requireWorkspaceStateService } from './workspaceToolSupport.js';
+import { writeLinkloomTodos } from './linkloomWorkspaceSync.js';
+import { LINKLOOM_TODOS_PATH } from './linkloomWorkspaceArtifacts.js';
+import { toWorkspaceTodos, todosFromAdds } from '../../../services/agents/workspace/AgentWorkspaceState.js';
 
+/** @deprecated Prefer writeFile to `.linkloom/todos.json`. Compatibility shim. */
 export class CreateTodosTool extends BaseTool {
   readonly id = 'create_todos';
   readonly name = 'create_todos';
@@ -9,9 +13,9 @@ export class CreateTodosTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
+    `【兼容别名】请优先用 writeFile 写入 ${LINKLOOM_TODOS_PATH}（JSON 数组）。` +
     '为当前 Agent 运行创建或替换会话待办列表。仅当同一回合需依次执行 3 个及以上独立步骤时使用。' +
-    '禁止:单次 list/get/query 读操作、把用户问题复述成 todo、寒暄或介绍工具时调用。' +
-    '必填：todos（对象数组，每项含 content）或 adds（纯文本行数组快捷创建）。';
+    '必填：todos 或 adds。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -42,6 +46,17 @@ export class CreateTodosTool extends BaseTool {
     const context = requireToolContext(toolCtx, this.id);
     const run = requireAgentRun(context, this.id);
     const service = requireWorkspaceStateService(context, this.id);
-    return service.createTodos(run.runId, args);
+    const result = await service.createTodos(run.runId, args);
+    try {
+      const todos = args.todos?.length
+        ? toWorkspaceTodos(args.todos)
+        : Array.isArray(args.adds)
+          ? todosFromAdds(args.adds)
+          : [];
+      await writeLinkloomTodos(todos, context);
+    } catch {
+      // best-effort
+    }
+    return result;
   }
 }

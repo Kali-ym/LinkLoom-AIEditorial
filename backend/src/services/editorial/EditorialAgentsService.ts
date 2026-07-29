@@ -73,14 +73,14 @@ export class EditorialAgentsService {
           'read_upload',
           'read_skill',
           'list_skill',
-          'create_todos',
-          'update_todos',
-          'clear_todos',
-          'create_plan',
-          'update_plan',
+          'list_dir',
+          'glob',
+          'grep',
+          'read_workspace_file',
+          'write_workspace_file',
+          'edit_workspace_file',
           'web_search',
-          'crawl_single_page',
-          'crawl_multi_pages',
+          'crawl_pages',
         ],
         { mode: 'react', maxRounds: 6, maxToolCalls: 8 },
         {
@@ -107,10 +107,13 @@ export class EditorialAgentsService {
           ...ADMIN_TOOL_IDS,
           'query_knowledge',
           'query_memory',
-          'create_todos',
-          'update_todos',
-          'create_plan',
-          'update_plan',
+          'ask_user_question',
+          'list_dir',
+          'glob',
+          'grep',
+          'read_workspace_file',
+          'write_workspace_file',
+          'edit_workspace_file',
         ],
         { mode: 'react', maxRounds: 12, maxToolCalls: 25 },
         {
@@ -141,6 +144,13 @@ export class EditorialAgentsService {
         ...new Set([...(existing.toolIds ?? []), ...(agent.toolIds ?? [])]),
       ];
       const missingTools = (agent.toolIds ?? []).filter((id) => !existing.toolIds?.includes(id));
+      const shouldReplaceTools = existing.metadata?.customized !== true;
+      const existingToolIds = existing.toolIds ?? [];
+      const canonicalToolIds = agent.toolIds ?? [];
+      const toolsChanged = shouldReplaceTools
+        ? JSON.stringify([...existingToolIds].sort()) !== JSON.stringify([...canonicalToolIds].sort())
+        : missingTools.length > 0;
+      const nextToolIds = shouldReplaceTools ? canonicalToolIds : mergedToolIds;
       // 结构化 prompt 用 JSON.stringify 做深比较,避免对象引用不等导致误刷新
       const shouldRefreshPrompt =
         existing.metadata?.customized !== true &&
@@ -163,11 +173,11 @@ export class EditorialAgentsService {
         needsApplicationConsoleUiPatch ||
         JSON.stringify(existing.metadata?.ui ?? {}) !== JSON.stringify(mergedMetadata?.ui ?? {});
 
-      if (missingTools.length === 0 && !shouldRefreshPrompt && !shouldRefreshUi) continue;
+      if (!toolsChanged && !shouldRefreshPrompt && !shouldRefreshUi) continue;
 
       await this.store.saveAgent({
         ...existing,
-        ...(missingTools.length > 0 ? { toolIds: mergedToolIds } : {}),
+        ...(toolsChanged ? { toolIds: nextToolIds } : {}),
         ...(shouldRefreshPrompt ? { systemPrompt: agent.systemPrompt } : {}),
         ...(shouldRefreshUi ? { metadata: mergedMetadata } : {}),
       });

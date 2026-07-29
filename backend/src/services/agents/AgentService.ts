@@ -365,6 +365,9 @@ const WORKSPACE_TOOL_IDS = [
   'read_workspace_file',
   'write_workspace_file',
   'edit_workspace_file',
+  'list_dir',
+  'glob',
+  'grep',
 ] as const;
 
 function isWorkspaceSystemTool(tool: { id: string }): boolean {

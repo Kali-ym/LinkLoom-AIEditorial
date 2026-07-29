@@ -2,6 +2,7 @@ import { requireToolContext, type ToolExecutionContext } from '../../../services
 import { BaseTool } from '../../base/BaseTool.js';
 import { requireWebBrowsingService } from './webBrowsingToolSupport.js';
 
+/** @deprecated Prefer crawl_pages. Kept as compatibility alias. */
 export class CrawlMultiPagesTool extends BaseTool {
   readonly id = 'crawl_multi_pages';
   readonly name = 'crawl_multi_pages';
@@ -9,8 +10,7 @@ export class CrawlMultiPagesTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly isBuiltin = true;
   readonly description =
-    '并发抓取多个网页 URL 的可读正文（标题、摘要、正文文本）。已有多个确定链接时调用；' +
-    '单页用 crawl_single_page，搜索未知信息用 web_search。必填：urls（字符串数组）；可选 limit（默认 5）。';
+    '【兼容别名】请优先使用 crawl_pages。并发抓取多个网页。必填：urls；可选 limit。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -26,7 +26,7 @@ export class CrawlMultiPagesTool extends BaseTool {
 
   async handler(
     args: { urls?: string[]; limit?: number },
-    toolCtx?: ToolExecutionContext,
+    toolCtx?: ToolExecutionContext
   ) {
     const context = requireToolContext(toolCtx, this.id);
     const service = requireWebBrowsingService(context, this.id);

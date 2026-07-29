@@ -71,6 +71,8 @@ Provider tool_calls
 - JSON 字符串参数会先解析为对象；查询类字符串参数可归一化为 `{ "query": "..." }`。
 - 缺少 required 参数或类型不匹配时，会在工具边界返回可观测错误，不进入底层检索/业务服务。
 - 同一工具重复出现同类参数错误时会提前停止，避免刷满 `maxRounds`。
+- Super Admin 运维读/写优先 `platform_invoke`（allowlist 内 REST 风格，内部调已有 admin handler）；高频 SOP 仍用专属工具名。
+- 会话计划/待办优先 `writeFile` 写入 `.linkloom/plan.md` / `.linkloom/todos.json`（专用 create_plan/create_todos 为兼容 shim）。
 
 回归验证：
 

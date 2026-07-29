@@ -4,10 +4,83 @@ export const SUPER_ADMIN_AGENT_ID = 'super_admin';
 
 const ADMIN_CATEGORY_PREFIX = 'admin-';
 
-/** All admin toolset tool ids (derived from TOOL_CATEGORIES admin-* groups). */
-export const ADMIN_EXCLUSIVE_TOOL_IDS: readonly string[] = TOOL_CATEGORIES.filter((cat) =>
-  cat.id.startsWith(ADMIN_CATEGORY_PREFIX),
-).flatMap((cat) => cat.toolIds);
+/**
+ * Legacy CRUD admin tools still registered for platform_invoke dispatch
+ * and /api/tools/:id/run — not shown as LLM-facing categories, but exclusive.
+ */
+export const ADMIN_DISPATCH_TOOL_IDS: readonly string[] = [
+  'list_schedules',
+  'list_adapters',
+  'list_workflows',
+  'list_unevaluated_news',
+  'list_scored_news',
+  'get_news_item',
+  'list_workflow_runs',
+  'get_system_stats',
+  'list_recent_reports',
+  'update_cron',
+  'delete_cron',
+  'run_schedule_now',
+  'list_task_logs',
+  'get_schedule_detail',
+  'get_adapter_config',
+  'sync_adapter',
+  'clear_adapter_data',
+  'list_processed_news',
+  'get_selection_stats',
+  'query_continuation_report',
+  'delete_news',
+  'batch_reset_scoring',
+  'get_daily_report_json',
+  'list_report_json_dates',
+  'get_digest_context',
+  'refresh_digest_context',
+  'get_aggregated_content',
+  'get_workflow_run_detail',
+  'get_workflow_run',
+  'list_pending_approvals',
+  'get_platform_status',
+  'get_governance_status',
+  'get_agent_metrics',
+  'get_commit_history',
+  'get_publication_items',
+  'republish_report',
+  'delete_commit_history',
+  'backfill_publication_items',
+  'list_agents',
+  'get_agent',
+  'save_agent',
+  'delete_agent',
+  'list_skills',
+  'scan_skills',
+  'list_tools',
+  'list_mcp_configs',
+  'test_mcp',
+  'list_workflow_templates',
+  'list_agent_bindings',
+  'save_workflow',
+  'instantiate_template',
+  'list_kb_categories',
+  'list_kb_documents',
+  'get_kb_content',
+  'list_memory_categories',
+  'get_rag_status',
+  'list_plugin_metadata',
+  'create_kb_category',
+  'delete_kb_document',
+  'get_settings',
+  'update_settings',
+  'test_ai_provider',
+  'create_api_key',
+];
+
+/** All admin toolset tool ids (UI categories + dispatch-only legacy). */
+export const ADMIN_EXCLUSIVE_TOOL_IDS: readonly string[] = [
+  ...TOOL_CATEGORIES.filter((cat) => cat.id.startsWith(ADMIN_CATEGORY_PREFIX)).flatMap(
+    (cat) => cat.toolIds,
+  ),
+  ...ADMIN_DISPATCH_TOOL_IDS,
+];
 
 export const ADMIN_EXCLUSIVE_TOOL_ID_SET = new Set(ADMIN_EXCLUSIVE_TOOL_IDS);
 

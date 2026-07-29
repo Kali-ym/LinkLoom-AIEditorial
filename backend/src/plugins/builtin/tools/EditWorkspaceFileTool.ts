@@ -1,7 +1,16 @@
 import type { ToolExecutionPolicy } from '../../../types/agent.js';
 import type { ToolExecutionContext } from '../../../services/ToolExecutionContext.js';
 import { BaseTool } from '../../base/BaseTool.js';
-import { editWorkspaceFile } from './workspaceFileToolSupport.js';
+import {
+  DEFAULT_WORKSPACE_FILE_EDIT_MAX_BYTES,
+  editWorkspaceFile,
+  readWorkspaceFile,
+} from './workspaceFileToolSupport.js';
+import { syncLinkloomArtifactToSession } from './linkloomWorkspaceSync.js';
+import {
+  isLinkloomPlanPath,
+  isLinkloomTodosPath,
+} from './linkloomWorkspaceArtifacts.js';
 
 export class EditWorkspaceFileTool extends BaseTool {
   readonly id = 'edit_workspace_file';
@@ -10,7 +19,8 @@ export class EditWorkspaceFileTool extends BaseTool {
   readonly scope = 'agent' as const;
   readonly description =
     '对活跃工作区中的 UTF-8 文本文件执行精确查找替换补丁。修改已有文件部分内容时调用，整文件覆盖请用 writeFile。' +
-    '必填：path、search（精确匹配原文）、replace；可选 all=true 替换全部匹配。工具调用名：editFile。';
+    '编辑 `.linkloom/plan.md` / `.linkloom/todos.json` 会同步会话计划与待办 UI。' +
+    '必填：path、search、replace；可选 all=true。工具调用名：editFile。';
   readonly parameters = {
     type: 'object',
     properties: {
@@ -44,6 +54,23 @@ export class EditWorkspaceFileTool extends BaseTool {
     if (typeof args.replace !== 'string') {
       throw new Error('replace is required');
     }
-    return editWorkspaceFile(filePath, args.search, args.replace, args.all === true, context);
+    const result = await editWorkspaceFile(
+      filePath,
+      args.search,
+      args.replace,
+      args.all === true,
+      context
+    );
+    if (isLinkloomPlanPath(filePath) || isLinkloomTodosPath(filePath)) {
+      const read = await readWorkspaceFile(
+        filePath,
+        DEFAULT_WORKSPACE_FILE_EDIT_MAX_BYTES,
+        context
+      );
+      if (read.encoding === 'utf8' && !read.truncated) {
+        await syncLinkloomArtifactToSession(filePath, read.content, context);
+      }
+    }
+    return result;
   }
 }
