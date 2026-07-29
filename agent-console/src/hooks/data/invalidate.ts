@@ -7,6 +7,7 @@ import { resolveActiveTopicIdForAgent } from '../../domain/topicAgentScope';
 import { readStoredTopicModel } from '../../services/topic/topicModelStorage';
 import { queryClient } from '../../layout/SPAGlobalProvider/QueryProvider';
 import { getAgentConsolePorts, isAgentConsoleApiMode } from './ports';
+import { clearTopicSidebarInflight } from '../../adapters/api/topicPort';
 import type { Topic } from '../../domain/types';
 import {
   getAllClientTopics,
@@ -29,7 +30,6 @@ import { agentConsoleQueryKeys } from './queryKeys';
 
 export async function refreshMessagesForTopic(topicId: string): Promise<void> {
   if (!topicId) return;
-  if (isClientOnlyTopicId(topicId)) return;
   if (!isAgentConsoleApiMode()) return;
 
   const localMessages = useChatStore.getState().getMessages(topicId);
@@ -52,6 +52,7 @@ export async function refreshMessagesForTopic(topicId: string): Promise<void> {
     return;
   }
 
+  // 空 temp 草稿残留时 isClientOnlyTopicId 仍为 true；若后端已有消息则清草稿，避免同 id 再被当新话题恢复。
   if (isClientOnlyTopicId(topicId)) {
     if (apiMessages.length === 0) {
       const snapshot = getClientTopic(topicId);
@@ -120,6 +121,11 @@ export async function refreshTopicsForAgent(
 ): Promise<void> {
   if (!agentId) return;
 
+  // 避免复用流式过程中发起的侧栏请求（可能仍把已结束 run 标成 running）。
+  if (isAgentConsoleApiMode()) {
+    clearTopicSidebarInflight(agentId);
+  }
+
   const { topics, threadsByTopicId, elapsedByTopicId } =
     await getAgentConsolePorts().topic.getTopicSidebar(agentId);
 
@@ -138,6 +144,9 @@ export async function refreshTopicsForAgent(
       .filter(([, runtime]) => runtime?.isStreaming)
       .map(([topicId]) => topicId),
   );
+  const localTopicsById = new Map(
+    useTopicStore.getState().topics.map((topic) => [topic.id, topic] as const),
+  );
   const activeTopicId = resolveActiveTopicIdForAgent(mergedTopics, {
     preferredId,
     streamingTopicIds,
@@ -147,7 +156,24 @@ export async function refreshTopicsForAgent(
   if (useAgentStore.getState().activeAgentId !== agentId) return;
 
   useTopicStore.getState().hydrate({
-    topics: mergedTopics.map((topic) => ({ ...topic, active: topic.id === activeTopicId })),
+    topics: mergedTopics.map((topic) => {
+      let status = topic.status;
+      if (streamingTopicIds.has(topic.id)) {
+        status = 'running';
+      } else if (status === 'running') {
+        // 后端尚未 settle 时，保留本地刚写入的终态，避免图标又转回转圈。
+        const local = localTopicsById.get(topic.id);
+        if (
+          local &&
+          (local.status === 'completed' ||
+            local.status === 'failed' ||
+            local.status === 'waiting')
+        ) {
+          status = local.status;
+        }
+      }
+      return { ...topic, status, active: topic.id === activeTopicId };
+    }),
     activeTopicId,
     threadsByTopicId,
     elapsedByTopicId,

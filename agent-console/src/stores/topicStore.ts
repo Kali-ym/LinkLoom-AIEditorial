@@ -307,7 +307,10 @@ export const useTopicStore = create<TopicState>((set, get) => ({
     const existingTemp = state.topics.find(
       (topic) => topic.status === 'temp' && topic.agentId === agentId,
     );
-    const storedEmptyTemp = findEmptyTempClientTopicForAgent(agentId);
+    // 已出现在侧栏的 id（含已落库会话）不得再当空草稿恢复，否则会同 id 双条目双高亮并覆盖旧会话。
+    const storedEmptyTemp = findEmptyTempClientTopicForAgent(agentId, {
+      excludeTopicIds: state.topics.map((topic) => topic.id),
+    });
 
     if (existingTemp) {
       get().selectTopic(existingTemp.id);
@@ -317,11 +320,14 @@ export const useTopicStore = create<TopicState>((set, get) => ({
 
     if (storedEmptyTemp) {
       const restored = clientRecordToTempTopic(storedEmptyTemp, agentId);
+      if (!topicRouteSyncState.suppressStoreToUrl) {
+        markPendingUserTopicSelection(restored.id);
+      }
       set((s) => ({
         topics: [
-          restored,
+          { ...restored, active: true },
           ...s.topics
-            .filter((t) => t.status !== 'temp' || t.id === restored.id)
+            .filter((t) => t.id !== restored.id && t.status !== 'temp')
             .map((t) => ({ ...t, active: false })),
         ],
         activeTopicId: restored.id,
@@ -358,6 +364,9 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       messages: [],
       createdAt: now,
     });
+    if (!topicRouteSyncState.suppressStoreToUrl) {
+      markPendingUserTopicSelection(topicId);
+    }
     set((s) => ({
       topics: [
         tempTopic,
@@ -538,8 +547,9 @@ export const useTopicStore = create<TopicState>((set, get) => ({
   unmarkTopicCompleted: (topicId) =>
     set((s) => ({
       topics: s.topics.map((t) =>
+        // 取消「已完成」后回到可继续对话的中性态（Hash 图标），不要标成 running 转圈。
         t.id === topicId && t.status === 'completed'
-          ? { ...t, status: 'running' as const }
+          ? { ...t, status: 'platform' as const, platform: t.platform }
           : t,
       ),
     })),

@@ -1,4 +1,4 @@
-import { seedStoresFromPorts } from '../adapters/mock/bootstrapSeed';
+import { seedStoresFromPorts, type BootstrapSecondaryFields } from '../adapters/mock/bootstrapSeed';
 import { getMockWorkspaceControlsSeed } from '../adapters/mock/seeds/workspaceControlsSeed';
 import { isAgentConsoleApiMode } from '../adapters/registry';
 import type { AgentConsoleSnapshot } from '../adapters/types';
@@ -118,25 +118,65 @@ function applyHydrate(
   useAgentStore.getState().finishConfigLoad();
 }
 
+/** 后台补齐工作区/配置等次要域；保留 InputMenuHydration 已写入的 @ 菜单。 */
+function applySecondaryHydrate(
+  secondary: BootstrapSecondaryFields,
+  activeTopicId: string,
+  activeAgentId: string,
+): void {
+  const currentInputMenu = useWorkspaceStore.getState().inputMenu;
+  useWorkspaceStore.getState().hydrate(
+    {
+      activeAgentId,
+      todos: secondary.todos,
+      documents: secondary.documents,
+      webPages: secondary.webPages,
+      fileTree: secondary.fileTree,
+      reviewFiles: secondary.reviewFiles,
+      workingDir: secondary.workingDir,
+      skillCatalog: secondary.skillCatalog,
+      staticConversation: secondary.staticConversation,
+      portalContent: secondary.portalContent,
+      inputMenu: currentInputMenu.mentionTopics.length
+        ? currentInputMenu
+        : secondary.inputMenu,
+      showcase: secondary.showcase,
+    },
+    activeTopicId,
+  );
+  useConfigStore.getState().hydrate(secondary);
+  useShareStore.getState().hydrate(secondary);
+  useToolAuthStore.getState().hydrate(secondary.pendingAuthTools);
+}
+
 function runPortBootstrap(): void {
   isBootstrapComplete = false;
   bootstrapCompletePromise = null;
   bootstrapCompleteResolve = null;
   void getBootstrapCompletePromise();
   void seedStoresFromPorts()
-    .then(({ agentListLayout, hydrate }) => {
+    .then(({ agentListLayout, hydrate, loadSecondary }) => {
       applyHydrate(hydrate, agentListLayout);
       if (!isAgentConsoleApiMode()) {
         useWorkspaceControlsStore.getState().hydrateWorkspaceControls(getMockWorkspaceControlsSeed());
       }
       applyUiDefaults(hydrate.activeTopicId);
+      markBootstrapComplete();
+
+      if (loadSecondary) {
+        void loadSecondary()
+          .then((secondary) => {
+            applySecondaryHydrate(secondary, hydrate.activeTopicId, hydrate.activeAgentId);
+          })
+          .catch((error) => {
+            console.error('[agentConsole] secondary bootstrap failed', error);
+          });
+      }
     })
     .catch((error) => {
       console.error('[agentConsole] bootstrap failed', error);
       applyUiDefaults();
       useAgentStore.getState().finishConfigLoad();
-    })
-    .finally(() => {
       markBootstrapComplete();
     });
 }

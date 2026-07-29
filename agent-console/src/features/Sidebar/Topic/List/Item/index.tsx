@@ -16,7 +16,7 @@ import type { Topic } from '../../../../../domain/types';
 import { agentConsoleTopicPath } from '../../../../../constants/agentConsoleRoutes';
 import { useRouteAgentId } from '../../../../../hooks/useRouteAgentId';
 import { NavItem } from '../../../../NavPanel/NavItem';
-import { useTopicStore } from '../../../../../stores';
+import { useStreamingStore, useTopicStore } from '../../../../../stores';
 import { getDirName } from '../../topicListUtils';
 import { useTopicNavigation } from '../../hooks/useTopicNavigation';
 import { TopicItemActions } from './Actions';
@@ -54,6 +54,7 @@ export const TopicItem = memo(function TopicItem({
 
   const editing = Boolean(id && topicRenamingId === id);
   const isLoading = Boolean(id && topicLoadingIds.includes(id));
+  const isStreaming = useStreamingStore((s) => Boolean(id && s.streamsByTopicId[id]?.isStreaming));
   const isActive = id === activeTopicId;
 
   const loadingRingColor = isDarkMode
@@ -85,10 +86,11 @@ export const TopicItem = memo(function TopicItem({
   );
 
   const statusIcon = useMemo(() => {
+    // waiting（审批/暂停）优先于 streaming，避免审批中仍显示转圈。
     if (status === 'waiting') {
       return <Icon color={cssVar.colorInfo} icon={Hand} size="small" />;
     }
-    if (isLoading || status === 'running') {
+    if (isLoading || isStreaming || status === 'running') {
       return (
         <RingLoadingIcon
           ringColor={loadingRingColor}
@@ -113,7 +115,7 @@ export const TopicItem = memo(function TopicItem({
       return <Icon color={cssVar.colorTextDescription} icon={MessageSquareDashed} size="small" />;
     }
     return <Icon color={cssVar.colorTextDescription} icon={Hash} size="small" />;
-  }, [isLoading, loadingRingColor, platform, status, unreadIcon]);
+  }, [isLoading, isStreaming, loadingRingColor, platform, status, unreadIcon]);
 
   if (status === 'temp' || !id) {
     const tempMenu = dropdownMenu.filter((item) => item != null && item.key === 'delete');
@@ -146,7 +148,7 @@ export const TopicItem = memo(function TopicItem({
         contextMenuItems={dropdownMenu}
         description={workingDirectoryNode}
         disabled={editing}
-        extra={status === 'running' ? <RunningElapsedTime topicId={id} /> : undefined}
+        extra={status === 'running' || isStreaming ? <RunningElapsedTime topicId={id} /> : undefined}
         href={href}
         icon={statusIcon}
         title={title}

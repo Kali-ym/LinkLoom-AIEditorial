@@ -30,6 +30,8 @@ import { finalizeStreamTurn } from './finalizeStreamTurn';
 import { mapTopicMessagesToRunContext } from '../../adapters/api/mappers/runContext';
 import { useFollowUpActionStore } from '../../stores/followUpActionStore';
 import { persistTopicModelForSend } from '../topic/topicModelBinding';
+import { removeClientTopic } from '../topic/clientTopicStorage';
+import { markTopicRunning } from '../topic/topicLifecycle';
 
 import {
   buildFilesOnlyPromptFromRefs,
@@ -89,36 +91,14 @@ export async function sendUserMessage(
 
   const activeTopic = useTopicStore.getState().topics.find((topic) => topic.id === topicId);
   if (activeTopic?.status === 'temp') {
-    const now = new Date().toISOString();
-    useTopicStore.setState((state) => ({
-      topics: state.topics.map((topic) =>
-        topic.id === topicId
-          ? {
-              ...topic,
-              status: 'running' as const,
-              title: userFacingText.slice(0, 80) || topic.title,
-              tag: undefined,
-              createdAt: topic.createdAt ?? now,
-              updatedAt: now,
-              active: true,
-            }
-          : topic,
-      ),
-    }));
-  } else if (activeTopic) {
-    const now = new Date().toISOString();
-    useTopicStore.setState((state) => ({
-      topics: state.topics.map((topic) =>
-        topic.id === topicId
-          ? {
-              ...topic,
-              title: userFacingText.slice(0, 80) || topic.title,
-              updatedAt: now,
-              active: true,
-            }
-          : topic,
-      ),
-    }));
+    // 首条消息后会话将落库，清掉空 temp 草稿，避免再次「开启新话题」复用同 id。
+    removeClientTopic(topicId);
+  }
+  if (activeTopic) {
+    markTopicRunning(topicId, {
+      titleHint: userFacingText,
+      clearTempTag: activeTopic.status === 'temp',
+    });
   }
 
   const chat = useChatStore.getState();
@@ -369,6 +349,7 @@ async function regenerateExistingRunStream(
   chat.startStreamingMessage(assistantMessageId, topicId, input);
   chat.remapStreamingAssistantId(topicId, assistantMessageIdForRun(runId));
   const ac = useStreamingStore.getState().beginStreaming(topicId);
+  markTopicRunning(topicId);
   let aborted = false;
   let turnFailed = false;
 

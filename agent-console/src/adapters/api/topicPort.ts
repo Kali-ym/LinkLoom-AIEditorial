@@ -36,6 +36,15 @@ import type { BackendSessionGroupStateDto } from './types/session';
 
 const inflightTopicSidebar = new Map<string, Promise<ReturnType<typeof buildTopicSidebarData>>>();
 
+/** Drop cached sidebar fetch so the next load gets a fresh backend snapshot. */
+export function clearTopicSidebarInflight(agentId?: string): void {
+  if (agentId) {
+    inflightTopicSidebar.delete(agentId);
+    return;
+  }
+  inflightTopicSidebar.clear();
+}
+
 async function loadAgentTopicSidebar(agentId: string) {
   const inflight = inflightTopicSidebar.get(agentId);
   if (inflight) return inflight;
@@ -44,12 +53,16 @@ async function loadAgentTopicSidebar(agentId: string) {
     const activeTopicId = readStoredActiveTopicId(agentId) ?? undefined;
     const page = await listAgentRunsForAgent(agentId);
     return buildTopicSidebarData(page.items, agentId, activeTopicId);
-  })().finally(() => {
-    inflightTopicSidebar.delete(agentId);
-  });
+  })();
 
   inflightTopicSidebar.set(agentId, promise);
-  return promise;
+  try {
+    return await promise;
+  } finally {
+    if (inflightTopicSidebar.get(agentId) === promise) {
+      inflightTopicSidebar.delete(agentId);
+    }
+  }
 }
 
 function findSessionAggregate(agentId: string, topicId: string) {

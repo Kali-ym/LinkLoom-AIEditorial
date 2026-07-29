@@ -36,10 +36,17 @@ export function pruneEmptyTempClientTopicsForAgent(
   }
 }
 
-export function findEmptyTempClientTopicForAgent(agentId: string): ClientTopicRecord | undefined {
+export function findEmptyTempClientTopicForAgent(
+  agentId: string,
+  options?: { excludeTopicIds?: Iterable<string> },
+): ClientTopicRecord | undefined {
   if (!agentId) return undefined;
+  const excluded = new Set(options?.excludeTopicIds ?? []);
   return getAllClientTopics().find(
-    (record) => recordBelongsToAgent(record, agentId) && isEmptyTempDraft(record),
+    (record) =>
+      recordBelongsToAgent(record, agentId) &&
+      isEmptyTempDraft(record) &&
+      !excluded.has(record.id),
   );
 }
 
@@ -57,7 +64,7 @@ export function clientRecordToTempTopic(record: ClientTopicRecord, agentId: stri
 }
 
 export function dedupeEmptyTempTopicsForAgent(topics: Topic[], agentId: string): Topic[] {
-  if (!agentId) return topics;
+  if (!agentId) return dedupeTopicsById(topics);
 
   let keptEmptyTempId: string | undefined;
   const result: Topic[] = [];
@@ -87,5 +94,34 @@ export function dedupeEmptyTempTopicsForAgent(topics: Topic[], agentId: string):
     pruneEmptyTempClientTopicsForAgent(agentId, keptEmptyTempId);
   }
 
+  return dedupeTopicsById(result);
+}
+
+/** 同 id 只保留一条；优先保留非 temp（已落库）条目。 */
+export function dedupeTopicsById(topics: Topic[]): Topic[] {
+  const preferred = new Map<string, Topic>();
+  for (const topic of topics) {
+    if (!topic.id) continue;
+    const existing = preferred.get(topic.id);
+    if (!existing) {
+      preferred.set(topic.id, topic);
+      continue;
+    }
+    if (existing.status === 'temp' && topic.status !== 'temp') {
+      preferred.set(topic.id, topic);
+    }
+  }
+
+  const seen = new Set<string>();
+  const result: Topic[] = [];
+  for (const topic of topics) {
+    if (!topic.id) {
+      result.push(topic);
+      continue;
+    }
+    if (seen.has(topic.id)) continue;
+    seen.add(topic.id);
+    result.push(preferred.get(topic.id) ?? topic);
+  }
   return result;
 }

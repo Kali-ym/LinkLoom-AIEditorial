@@ -4,6 +4,7 @@ import { AgentConsoleApiError } from '../../adapters/api/http';
 import { showToast, showErrorToast } from '../ui/toast';
 import { triggerFollowUpChips } from '../followUp/triggerFollowUpChips';
 import { refreshAfterConversationTurn, refreshMessagesForTopic } from '../../hooks/data/invalidate';
+import { applyTopicStatusAfterStream, markTopicRunning } from '../topic/topicLifecycle';
 import { isTopicStreaming } from './streamingScope';
 import { isRunStreamActive, subscribeAgentRunStream } from './agentStreamService';
 import { shouldConsumeReasoningStream } from './reasoningEnabled';
@@ -130,6 +131,7 @@ export async function continueAgentRunAfterIntervention(input: {
 
   const ac = streaming.beginStreaming(topicId, { preserveMetrics: true });
   streaming.setActiveRunContext(topicId, { runId });
+  markTopicRunning(topicId);
   const runCtx = streaming.getRunContextForTopic(topicId);
   const lastSeq = Math.max(streaming.getLastEventSeq(runId), runCtx?.lastEventSeq ?? 0);
   let turnFailed = false;
@@ -178,6 +180,12 @@ export async function continueAgentRunAfterIntervention(input: {
     }
 
     streaming.endStreaming(topicId);
+    const awaitingApprovalFinal = shouldHydrateMessagesAfterPermissionPause(topicId);
+    applyTopicStatusAfterStream(topicId, {
+      keepForApproval: awaitingApprovalFinal,
+      turnFailed,
+      aborted: false,
+    });
     await refreshMessagesForTopic(topicId);
 
     if (!turnFailed) {

@@ -18,24 +18,29 @@ export async function fetchKbDocumentsForMention(
 ): Promise<MentionMenuItemData[]> {
   try {
     const categories = await agentConsoleGetJson<KbCategoryDto[]>('/api/kb/categories');
-    const docs: Array<{ id: string; name: string; path: string }> = [];
+    if (categories.length === 0) return [];
 
-    for (const category of categories) {
-      if (docs.length >= limit) break;
-      const batch = await agentConsoleGetJson<KbDocumentDto[]>(
-        `/api/kb/documents?categoryId=${encodeURIComponent(category.id)}`,
-      );
-      for (const doc of batch) {
-        if (docs.length >= limit) break;
-        const name = doc.fileName?.trim() || doc.name;
-        docs.push({
-          id: doc.id,
-          name,
-          path: `${category.name}/${name}`,
-        });
-      }
-    }
+    // 远程模式下按类目串行会把 RTT 乘上去；并行拉取后在本地截断。
+    const batches = await Promise.all(
+      categories.map((category) =>
+        agentConsoleGetJson<KbDocumentDto[]>(
+          `/api/kb/documents?categoryId=${encodeURIComponent(category.id)}`,
+        )
+          .then((docs) =>
+            docs.map((doc) => {
+              const name = doc.fileName?.trim() || doc.name;
+              return {
+                id: doc.id,
+                name,
+                path: `${category.name}/${name}`,
+              };
+            }),
+          )
+          .catch(() => [] as Array<{ id: string; name: string; path: string }>),
+      ),
+    );
 
+    const docs = batches.flat().slice(0, limit);
     return mapKbDocumentsToMentionFiles(docs, limit);
   } catch {
     return [];

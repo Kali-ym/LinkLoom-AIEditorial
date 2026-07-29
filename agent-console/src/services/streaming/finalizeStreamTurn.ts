@@ -1,4 +1,5 @@
 import { useChatStore, useStreamingStore } from '../../stores';
+import { applyTopicStatusAfterStream } from '../topic/topicLifecycle';
 import { hasTopicPendingIntervention, syncStaleApprovalContext } from './interventionGate';
 import { shouldHydrateMessagesAfterPermissionPause } from './permissionPauseStream';
 import { settleUnresolvedToolsOnTurnEnd } from './streamSegments';
@@ -58,6 +59,9 @@ export function finalizeStreamTurn({
   } else if (!keepForApproval) {
     useStreamingStore.getState().endStreaming(topicId);
   }
+
+  // 侧栏图标依赖 topic.status；不依赖 refresh，避免失败/审批/滞后快照导致一直转圈。
+  applyTopicStatusAfterStream(topicId, { keepForApproval, turnFailed, aborted });
 
   if (!keepForApproval) {
     syncStaleApprovalContext(topicId);

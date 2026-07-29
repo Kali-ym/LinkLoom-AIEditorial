@@ -14,6 +14,7 @@ import {
   clientRecordToTempTopic,
   dedupeEmptyTempTopicsForAgent,
 } from '../../services/topic/tempTopicDraft';
+import { mapAgentsTopicsToInputMenu } from '../api/mappers/inputMenu';
 import {
   emptyBootstrapSecondaryFields,
   fetchAndMapConsoleBootstrap,
@@ -23,7 +24,11 @@ export interface PortSeedResult {
   activeTopicId: string;
   agentListLayout: AgentConsoleSnapshot['agentListLayout'];
   hydrate: AgentConsoleSnapshot;
+  /** api 聚合成功后：次要域后台补齐，不挡首屏。 */
+  loadSecondary?: () => Promise<BootstrapSecondaryFields>;
 }
+
+export type BootstrapSecondaryFields = ReturnType<typeof emptyBootstrapSecondaryFields>;
 
 /**
  * Resilient single-port resolve for api mode.
@@ -41,64 +46,75 @@ async function settle<T>(promise: Promise<T>, fallback: T): Promise<T> {
   }
 }
 
+async function fetchBootstrapSecondaryFields(
+  activeAgentId: string,
+): Promise<BootstrapSecondaryFields> {
+  const ports = getAgentConsolePorts();
+  const secondaryDefaults = emptyBootstrapSecondaryFields();
+
+  // 不拉 getInputMenu：会重复打 agents/runs/KB；@ 菜单由 store + InputMenuHydration 补齐。
+  const [
+    skillCatalog,
+    documents,
+    webPages,
+    fileTree,
+    reviewFiles,
+    workingDir,
+    portalContent,
+    todos,
+    showcase,
+    staticConversation,
+    config,
+    authorsByUserId,
+    shareByTopicId,
+    pendingAuthTools,
+  ] = await Promise.all([
+    settle(ports.workspace.getSkillCatalog(), secondaryDefaults.skillCatalog),
+    settle(ports.workspace.getWorkspaceDocumentTree(activeAgentId), []),
+    settle(ports.workspace.getWebPages(), []),
+    settle(ports.workspace.getFileTree(), []),
+    settle(ports.workspace.getReviewFiles(), []),
+    settle(ports.workspace.getWorkingDirectory(), ''),
+    settle(ports.workspace.getPortalContent(), secondaryDefaults.portalContent),
+    settle(ports.workspace.getTodos(), []),
+    settle(ports.workspace.getShowcase(), secondaryDefaults.showcase),
+    settle(ports.workspace.getStaticConversation(), secondaryDefaults.staticConversation),
+    settle(ports.runtime.getConsoleConfig(), secondaryDefaults.config),
+    settle(ports.runtime.getAuthorsByUserId(), {}),
+    settle(ports.share.getShareByTopicId(), {}),
+    settle(ports.runtime.getPendingAuthTools(), []),
+  ]);
+
+  return {
+    skillCatalog,
+    documents,
+    webPages,
+    fileTree,
+    reviewFiles,
+    workingDir,
+    portalContent,
+    todos,
+    showcase,
+    staticConversation,
+    inputMenu: secondaryDefaults.inputMenu,
+    config,
+    authorsByUserId,
+    shareByTopicId,
+    pendingAuthTools,
+  };
+}
+
 async function seedFromAggregatedBootstrap(): Promise<PortSeedResult | null> {
   if (!isAgentConsoleApiMode()) return null;
   try {
     const { hydrateCore } = await fetchAndMapConsoleBootstrap();
-    const ports = getAgentConsolePorts();
     const secondaryDefaults = emptyBootstrapSecondaryFields();
-
-    const [
-      skillCatalog,
-      documents,
-      webPages,
-      fileTree,
-      reviewFiles,
-      workingDir,
-      portalContent,
-      todos,
-      showcase,
-      staticConversation,
-      inputMenu,
-      config,
-      authorsByUserId,
-      shareByTopicId,
-      pendingAuthTools,
-    ] = await Promise.all([
-      settle(ports.workspace.getSkillCatalog(), secondaryDefaults.skillCatalog),
-      settle(ports.workspace.getWorkspaceDocumentTree(hydrateCore.activeAgentId), []),
-      settle(ports.workspace.getWebPages(), []),
-      settle(ports.workspace.getFileTree(), []),
-      settle(ports.workspace.getReviewFiles(), []),
-      settle(ports.workspace.getWorkingDirectory(), ''),
-      settle(ports.workspace.getPortalContent(), secondaryDefaults.portalContent),
-      settle(ports.workspace.getTodos(), []),
-      settle(ports.workspace.getShowcase(), secondaryDefaults.showcase),
-      settle(ports.workspace.getStaticConversation(), secondaryDefaults.staticConversation),
-      settle(ports.catalog.getInputMenu(hydrateCore.activeAgentId), secondaryDefaults.inputMenu),
-      settle(ports.runtime.getConsoleConfig(), secondaryDefaults.config),
-      settle(ports.runtime.getAuthorsByUserId(), {}),
-      settle(ports.share.getShareByTopicId(), {}),
-      settle(ports.runtime.getPendingAuthTools(), []),
-    ]);
 
     const hydrate: AgentConsoleSnapshot = {
       ...hydrateCore,
-      skillCatalog,
-      documents,
-      webPages,
-      fileTree,
-      reviewFiles,
-      workingDir,
-      portalContent,
-      todos,
-      showcase,
-      staticConversation,
-      inputMenu,
-      config,
-      authorsByUserId,
-      shareByTopicId,
-      pendingAuthTools,
+      ...secondaryDefaults,
+      // 首屏即可用的 @ 菜单（KB 文档由 InputMenuHydration 后台补）
+      inputMenu: mapAgentsTopicsToInputMenu(hydrateCore.agents, hydrateCore.topics),
     };
 
     mergeClientTopicsIntoHydrate(hydrate, hydrate.activeAgentId);
@@ -108,6 +124,7 @@ async function seedFromAggregatedBootstrap(): Promise<PortSeedResult | null> {
       activeTopicId: hydrate.activeTopicId,
       agentListLayout: hydrate.agentListLayout,
       hydrate,
+      loadSecondary: () => fetchBootstrapSecondaryFields(hydrate.activeAgentId),
     };
   } catch (error) {
     if (import.meta.env.DEV) {

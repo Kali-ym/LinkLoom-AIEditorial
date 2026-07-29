@@ -53,10 +53,10 @@ export class ConsoleBootstrapService {
               { agentId: activeAgentId },
               { field: 'updatedAt', order: 'desc' },
               0,
-              100,
+              40,
             )
-          : Promise.resolve({ items: [], total: 0, offset: 0, limit: 100 }),
-        this.agentRuns.listRuns(undefined, { field: 'updatedAt', order: 'desc' }, 0, 200),
+          : Promise.resolve({ items: [], total: 0, offset: 0, limit: 40 }),
+        this.agentRuns.listRuns(undefined, { field: 'updatedAt', order: 'desc' }, 0, 80),
         this.loadBindingsForAgents(
           agents.map((agent: { id: string }) => agent.id).filter(Boolean),
         ),

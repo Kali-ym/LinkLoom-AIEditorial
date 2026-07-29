@@ -16,6 +16,38 @@ export class AgentConsoleApiError extends Error {
   }
 }
 
+/** Default client timeout for remote backend (bootstrap may override via signal). */
+export const AGENT_CONSOLE_FETCH_TIMEOUT_MS = 30_000;
+
+function mergeAbortSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any(active);
+  }
+  const controller = new AbortController();
+  for (const signal of active) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
+function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  window.setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 export function notImplemented(feature: string): never {
   throw new AgentConsoleApiError(`${feature} is not implemented yet`, {
     code: 'NOT_IMPLEMENTED',
@@ -58,48 +90,68 @@ function maybeEmitUnauthorized(status: number): void {
 
 export async function agentConsoleFetch(
   path: string,
-  init?: RequestInit,
+  init?: RequestInit & { timeoutMs?: number },
 ): Promise<Response> {
-  const response = await fetch(resolveApiUrl(path), {
-    ...init,
-    headers: buildAuthHeaders(init),
-  });
-
-  if (!response.ok) {
-    maybeEmitUnauthorized(response.status);
-    let message = response.statusText || `HTTP ${response.status}`;
-    try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) message = body.error;
-    } catch {
-      // ignore non-JSON error bodies
-    }
-    throw new AgentConsoleApiError(message, {
-      code: 'HTTP_ERROR',
-      status: response.status,
+  const { timeoutMs = AGENT_CONSOLE_FETCH_TIMEOUT_MS, signal, ...rest } = init ?? {};
+  const timed = timeoutSignal(timeoutMs);
+  try {
+    const response = await fetch(resolveApiUrl(path), {
+      ...rest,
+      headers: buildAuthHeaders(rest),
+      signal: mergeAbortSignals(signal ?? undefined, timed),
     });
-  }
 
-  return response;
+    if (!response.ok) {
+      maybeEmitUnauthorized(response.status);
+      let message = response.statusText || `HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { error?: string };
+        if (body.error) message = body.error;
+      } catch {
+        // ignore non-JSON error bodies
+      }
+      throw new AgentConsoleApiError(message, {
+        code: 'HTTP_ERROR',
+        status: response.status,
+      });
+    }
+
+    return response;
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError')
+    ) {
+      throw new AgentConsoleApiError(
+        `请求超时（>${Math.round(timeoutMs / 1000)}s），请检查远程 backend 延迟或网络`,
+        { code: 'TIMEOUT', status: 408 },
+      );
+    }
+    throw error;
+  }
 }
 
 /** Share in-flight GET JSON by path so bootstrap parallel ports don't stampede. */
 const inflightGetJson = new Map<string, Promise<unknown>>();
 
-export async function agentConsoleGetJson<T>(path: string): Promise<T> {
-  const existing = inflightGetJson.get(path);
+export async function agentConsoleGetJson<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number },
+): Promise<T> {
+  const cacheKey = init?.timeoutMs ? `${path}::t${init.timeoutMs}` : path;
+  const existing = inflightGetJson.get(cacheKey);
   if (existing) return existing as Promise<T>;
 
   const promise = (async () => {
     try {
-      const response = await agentConsoleFetch(path);
+      const response = await agentConsoleFetch(path, init);
       return (await response.json()) as T;
     } finally {
-      inflightGetJson.delete(path);
+      inflightGetJson.delete(cacheKey);
     }
   })();
 
-  inflightGetJson.set(path, promise);
+  inflightGetJson.set(cacheKey, promise);
   return promise;
 }
 

@@ -89,12 +89,28 @@ export type ConnectionProbeResult = {
   instance?: { name?: string; version?: string };
 };
 
+export const CONNECTION_PROBE_TIMEOUT_MS = 12_000;
+
 export async function probeConsoleConnection(
   baseUrl: string,
   apiKey: string,
-  init?: { signal?: AbortSignal },
+  init?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<ConnectionProbeResult> {
   const url = resolveConsoleApiUrl('/api/console/connection', baseUrl);
+  const timeoutMs = init?.timeoutMs ?? CONNECTION_PROBE_TIMEOUT_MS;
+  const timed =
+    typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(timeoutMs)
+      : (() => {
+          const controller = new AbortController();
+          setTimeout(() => controller.abort(), timeoutMs);
+          return controller.signal;
+        })();
+  const signal =
+    init?.signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([init.signal, timed])
+      : (init?.signal ?? timed);
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -102,10 +118,20 @@ export async function probeConsoleConnection(
         Authorization: `Bearer ${apiKey}`,
         Accept: 'application/json',
       },
-      signal: init?.signal,
+      signal,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (
+      (err instanceof DOMException &&
+        (err.name === 'TimeoutError' || err.name === 'AbortError')) ||
+      /aborted|timeout/i.test(message)
+    ) {
+      throw new ConsoleConnectionError(
+        `连接超时（>${Math.round(timeoutMs / 1000)}s）。请检查实例地址与网络延迟。`,
+        'network',
+      );
+    }
     if (/Failed to fetch|NetworkError|CORS/i.test(message)) {
       throw new ConsoleConnectionError(
         '无法连接实例。请检查地址，以及 backend 的 CORS_ORIGINS 是否包含本 Console 站点。',

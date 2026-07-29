@@ -120,6 +120,7 @@ export async function fetchAndMapConsoleBootstrap(): Promise<{
   const qs = params.toString();
   const dto = await agentConsoleGetJson<ConsoleBootstrapDto>(
     `/api/console/bootstrap${qs ? `?${qs}` : ''}`,
+    { timeoutMs: 60_000 },
   );
 
   hydrateAgencyConfigs(dto.agents);
