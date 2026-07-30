@@ -90,7 +90,13 @@ import {
 } from './engine/responseContextCache.js';
 import { expandAgentMessageToRuntimeMessages } from './runtime/persistedToolHistory.js';
 import { resolveWorkspacePolicyFromAgent } from './engine/WorkspacePolicyResolver.js';
-import { AgentGovernanceManager, type GovernanceProviderInput, type ProviderRuntimeOptions, type ResolvedAgentProvider } from './managers/AgentGovernanceManager.js';
+import {
+  AgentGovernanceManager,
+  withResolvedProviderModel,
+  type GovernanceProviderInput,
+  type ProviderRuntimeOptions,
+  type ResolvedAgentProvider
+} from './managers/AgentGovernanceManager.js';
 import { AgentRunManager } from './managers/AgentRunManager.js';
 import {
   AgentRunQueueManager,
@@ -707,7 +713,7 @@ export class AgentService {
   ): Promise<AgentExecutionResult> {
     const agentDefRaw = await this.store.getAgent(agentId);
     if (!agentDefRaw) throw new Error(`Agent ${agentId} not found`);
-    const agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, options.metadata);
+    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, options.metadata);
 
     if (!options.silent) {
       LogService.info(`Running agent: ${agentDef.name}${date ? ` for date: ${date}` : ''}`);
@@ -728,6 +734,7 @@ export class AgentService {
       settings,
       { builtinSearch: webSearchPolicy.enableProviderBuiltinSearch ? 'full' : 'off' },
     );
+    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
     // 1. Prepare Skills
     const combinedSkillInstructions = await this.buildTurnSkillInstructions(agentDef, options, input);
@@ -880,7 +887,7 @@ export class AgentService {
   ): AsyncIterable<any> {
     const agentDefRaw = await this.store.getAgent(agentId);
     if (!agentDefRaw) throw new Error(`Agent ${agentId} not found`);
-    const agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, options.metadata);
+    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, options.metadata);
 
     if (!options.silent) {
       LogService.info(`Streaming agent: ${agentDef.name}${date ? ` for date: ${date}` : ''}`);
@@ -900,6 +907,7 @@ export class AgentService {
       settings,
       { builtinSearch: webSearchPolicy.enableProviderBuiltinSearch ? 'full' : 'off' },
     );
+    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
     const combinedSkillInstructions = await this.buildTurnSkillInstructions(agentDef, options, input);
     const tools = await this.materializeAgentLocalTools(toolIdSet);
@@ -1059,9 +1067,10 @@ export class AgentService {
     const resolvedProvider = params.provider
       ? { provider: params.provider, model: params.agentDef.model }
       : await this.resolveProviderForAgent(params.agentDef, params.silent, settings);
+    const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
 
     const runSpec = this.createAgentRunSpec({
-      agentDef: params.agentDef,
+      agentDef,
       input: runtimeMessagePlainText(params.messages.find((m) => m.role === 'user')?.content ?? ''),
       messages: params.messages,
       tools,
@@ -1088,7 +1097,7 @@ export class AgentService {
 
     const provider = this.createGovernedProvider({
       ...resolvedProvider,
-      agentDef: params.agentDef,
+      agentDef,
       runSpec,
       budgetPolicy: runSpec.budgetPolicy,
       settings
@@ -1100,7 +1109,7 @@ export class AgentService {
       runSpec,
       provider,
       runtimeOptions: {
-        agentDef: params.agentDef,
+        agentDef,
         tools,
         mcpConfigs,
         mcpService: this.mcpService,
@@ -1117,7 +1126,7 @@ export class AgentService {
           : undefined,
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
-          resolveAgentKnowledgeScope(params.agentDef, params.toolContextExtras),
+          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras),
         ),
       },
       middleware: params.middleware,
@@ -1153,9 +1162,10 @@ export class AgentService {
     const resolvedProvider = params.provider
       ? { provider: params.provider, model: params.agentDef.model }
       : await this.resolveProviderForAgent(params.agentDef, undefined, settings);
+    const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
 
     const runSpec = this.createAgentRunSpec({
-      agentDef: params.agentDef,
+      agentDef,
       input: runtimeMessagePlainText(params.messages.find((m) => m.role === 'user')?.content ?? ''),
       messages: params.messages,
       tools,
@@ -1182,7 +1192,7 @@ export class AgentService {
 
     const provider = this.createGovernedProvider({
       ...resolvedProvider,
-      agentDef: params.agentDef,
+      agentDef,
       runSpec,
       budgetPolicy: runSpec.budgetPolicy,
       settings
@@ -1197,7 +1207,7 @@ export class AgentService {
       runSpec,
       provider,
       runtimeOptions: {
-        agentDef: params.agentDef,
+        agentDef,
         tools,
         mcpConfigs,
         mcpService: this.mcpService,
@@ -1213,7 +1223,7 @@ export class AgentService {
           : undefined,
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
-          resolveAgentKnowledgeScope(params.agentDef, params.toolContextExtras),
+          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras),
         ),
       },
       middleware: params.middleware,
@@ -1658,13 +1668,15 @@ export class AgentService {
     if (!agentDefRaw) {
       throw new Error(`Agent ${agentId} not found for queued job: ${job.runId}`);
     }
-    const agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
+    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
 
     const settings = await this.store.get('system_settings');
     const noTools = session.metadata?.noTools === true || job.payload?.noTools === true;
     const queueWorkspacePolicy = this.readWorkspacePolicyFromMetadata(
       session.metadata?.workspacePolicy
     );
+    const resolvedProvider = await this.resolveProviderForAgent(agentDef, true, settings);
+    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
     const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
     const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
     const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
@@ -1676,7 +1688,6 @@ export class AgentService {
       mcpConfigs,
       skillInstructions: []
     };
-    const resolvedProvider = await this.resolveProviderForAgent(agentDef, true, settings);
     // useNativeFC gate(同 runAgent/streamAgent):!FC 时不向 provider 传 tools。
     const useNativeFC = isCanUseFC(
       resolvedProvider.providerConfig?.type ?? '',
@@ -1932,11 +1943,12 @@ export class AgentService {
     if (!agentDefRaw) return undefined;
     // Keep the same provider/model as the initial stream run (console topic selection
     // is stored on session.metadata.agentConsole, not on the persisted agent record).
-    const agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
+    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
 
     const noTools = session.metadata?.noTools === true;
     const settings = await this.store.get('system_settings');
     const resolvedProvider = await this.resolveProviderForAgent(agentDef, true, settings);
+    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
     const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
     const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
     const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);

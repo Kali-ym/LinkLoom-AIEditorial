@@ -681,7 +681,7 @@ export class AiBuilderChatService {
         providers[0];
     if (!config) throw new AppError(400, `AI provider not found: ${providerId || '<default>'}`);
     const created = createAIProvider(
-      { ...config, model: model || config.model || config.models?.[0] },
+      { ...config, model: config.models?.[0] || model || config.model },
       this.context.proxyAgent
     );
     if (!created)

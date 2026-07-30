@@ -58,12 +58,13 @@ export class AgentGovernanceManager {
       return {
         provider: this.aiProvider,
         providerConfig,
-        model: model || providerConfig?.models?.[0]
+        model: resolveLiveProviderModel(providerId, providerConfig, model)
       };
     }
 
     const dispatcher = providerConfig.useProxy === true ? this.proxyAgent : undefined;
-    const selectedModel = model || (providerConfig as AIProviderConfig & { model?: string }).model || providerConfig.models?.[0];
+    // Bound providerId → follow live models[0]; stale agent.model snapshots must not win.
+    const selectedModel = resolveLiveProviderModel(providerId, providerConfig, model);
     if (!silent) {
       LogService.info(
         `Initializing AI provider ${providerConfig.id} for agent ${agentDef.name}. Using Proxy: ${!!dispatcher}`
@@ -207,6 +208,30 @@ export class AgentGovernanceManager {
 
 function hasProviderOverride(agentDef: AgentDefinition): boolean {
   return Boolean(String(agentDef.providerId || '').trim() || String(agentDef.model || '').trim());
+}
+
+/** Prefer live provider primary model when agent is bound to a provider config id. */
+export function resolveLiveProviderModel(
+  providerId: string,
+  providerConfig: AIProviderConfig | undefined,
+  agentModel?: string
+): string | undefined {
+  const livePrimary =
+    String(providerConfig?.models?.[0] || '').trim() ||
+    String((providerConfig as AIProviderConfig & { model?: string } | undefined)?.model || '').trim();
+  const snapshot = String(agentModel || '').trim();
+  if (providerId && livePrimary) return livePrimary;
+  return snapshot || livePrimary || undefined;
+}
+
+/** Apply resolved API model onto a per-run agentDef copy so downstream reads stay consistent. */
+export function withResolvedProviderModel(
+  agentDef: AgentDefinition,
+  resolvedModel?: string
+): AgentDefinition {
+  const model = String(resolvedModel || '').trim();
+  if (!model || model === agentDef.model) return agentDef;
+  return { ...agentDef, model };
 }
 
 function hasAgentConsoleChatConfig(agentDef: AgentDefinition): boolean {
