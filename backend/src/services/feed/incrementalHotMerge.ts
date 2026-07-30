@@ -16,6 +16,7 @@ import {
   type ProvisionalCluster
 } from './semanticSoftMerge.js';
 import { cosineSimilarity, type EmbedTextsFn } from './hotEmbed.js';
+import type { LLMMergeJudge } from './llmMergeJudge.js';
 
 type MutableCluster = {
   eventId: string;
@@ -43,6 +44,7 @@ export async function mergeHotStoriesIncremental(
     mergeMode: HotMergeMode;
     embed?: EmbedTextsFn | null;
     similarityMin?: number;
+    llmJudge?: LLMMergeJudge | null;
   }
 ): Promise<IncrementalMergeResult> {
   const byId = new Map<string, HotClusterItem>();
@@ -86,10 +88,19 @@ export async function mergeHotStoriesIncremental(
   // Bootstrap: no prior clusters → full merge (existing behavior once).
   if (sticky.length === 0) {
     const full = await fullMerge(all, opts);
+    // In llm mode, bootstrap fingerprints for each resulting cluster
+    if (opts.mergeMode === 'llm' && opts.llmJudge) {
+      await bootstrapLLMFingerprints(opts.llmJudge, full.clusters);
+      await opts.llmJudge.regenerateDirtyFingerprints();
+    }
     return { ...full, bootstrapped: true };
   }
 
   if (unassigned.length === 0) {
+    // Still regenerate dirty fingerprints for sealed/unsealed clusters
+    if (opts.mergeMode === 'llm' && opts.llmJudge) {
+      await opts.llmJudge.regenerateDirtyFingerprints();
+    }
     return {
       clusters: sticky.map(toMerged),
       mergeModeApplied: opts.mergeMode,
@@ -101,20 +112,64 @@ export async function mergeHotStoriesIncremental(
   const remaining = hardAttachBySignature(sticky, unassigned);
 
   // 2) Cluster remaining newcomers among themselves (never touching sticky membership).
+  //    In llm mode, newcomers still cluster via rules — LLM is only for sticky attach.
+  const newcomerOpts = opts.mergeMode === 'llm'
+    ? { ...opts, mergeMode: 'rules' as HotMergeMode }
+    : opts;
   const { newClusters, mergeModeApplied, fallbackReason } = await clusterNewcomers(
     remaining,
-    opts
+    newcomerOpts
   );
 
   // 3) Soft-attach each newcomer cluster into the best sticky match; else keep as new event.
   const keptNew: MergedStoryCluster[] = [];
-  for (const neu of newClusters) {
-    const attached = await tryAttachToSticky(sticky, neu, {
-      mergeMode: mergeModeApplied,
-      embed: opts.embed,
-      similarityMin: opts.similarityMin ?? 0.78
-    });
-    if (!attached) keptNew.push(neu);
+  const stickyEventIds = sticky.map((s) => s.eventId);
+
+  if (opts.mergeMode === 'llm' && opts.llmJudge) {
+    // LLM mode: use judge for sticky attachment
+    for (const neu of newClusters) {
+      const representative = neu.members[0];
+      if (!representative) {
+        keptNew.push(neu);
+        continue;
+      }
+      const matchedId = await opts.llmJudge.tryAttach(representative, stickyEventIds);
+      if (matchedId) {
+        const idx = sticky.findIndex((s) => s.eventId === matchedId);
+        if (idx >= 0) {
+          sticky[idx].members.push(...neu.members);
+          sticky[idx].signatureNorm = pickNorm(sticky[idx].signatureNorm, neu.signatureNorm);
+          continue;
+        }
+      }
+      keptNew.push(neu);
+    }
+    // Regenerate dirty fingerprints after all attachments
+    await opts.llmJudge.regenerateDirtyFingerprints();
+  } else {
+    // LLM judge unavailable (mergeMode === 'llm') → fallback to rules.
+    // Otherwise (semantic / hybrid / rules) keep the configured mergeMode so
+    // embedding still runs for semantic/hybrid attach.
+    const attachMode: HotMergeMode = opts.mergeMode === 'llm' ? 'rules' : opts.mergeMode;
+    const effectiveFallback =
+      opts.mergeMode === 'llm'
+        ? fallbackReason || 'llm_unavailable'
+        : fallbackReason;
+    const effectiveMode = opts.mergeMode === 'llm' ? 'rules' as HotMergeMode : mergeModeApplied;
+    for (const neu of newClusters) {
+      const attached = await tryAttachToSticky(sticky, neu, {
+        mergeMode: attachMode,
+        embed: opts.embed,
+        similarityMin: opts.similarityMin ?? 0.78
+      });
+      if (!attached) keptNew.push(neu);
+    }
+    return {
+      clusters: [...sticky.map(toMerged), ...keptNew],
+      mergeModeApplied: effectiveMode,
+      fallbackReason: effectiveFallback,
+      bootstrapped: false
+    };
   }
 
   return {
@@ -131,6 +186,7 @@ async function fullMerge(
     mergeMode: HotMergeMode;
     embed?: EmbedTextsFn | null;
     similarityMin?: number;
+    llmJudge?: LLMMergeJudge | null;
   }
 ): Promise<Omit<IncrementalMergeResult, 'bootstrapped'>> {
   const previousEventIds = collectPreviousEventIds(items);
@@ -182,6 +238,7 @@ async function clusterNewcomers(
     mergeMode: HotMergeMode;
     embed?: EmbedTextsFn | null;
     similarityMin?: number;
+    llmJudge?: LLMMergeJudge | null;
   }
 ): Promise<{
   newClusters: MergedStoryCluster[];
@@ -360,4 +417,21 @@ function toMerged(c: MutableCluster): MergedStoryCluster {
 function pickNorm(a: string | null, b: string | null): string | null {
   if (a && b) return a <= b ? a : b;
   return a || b;
+}
+
+/**
+ * Bootstrap fingerprints for clusters produced by fullMerge (bootstrap case).
+ * Each cluster's first member seeds the fingerprint.
+ */
+async function bootstrapLLMFingerprints(
+  judge: LLMMergeJudge,
+  clusters: MergedStoryCluster[]
+): Promise<void> {
+  for (const cluster of clusters) {
+    const seed = cluster.members[0];
+    if (!seed) continue;
+    judge.getOrCreateFingerprint(cluster.eventId, seed);
+    // Mark as dirty so regenerateDirtyFingerprints will process them
+    // (though they were just bootstrapped, they may benefit from LLM distillation)
+  }
 }

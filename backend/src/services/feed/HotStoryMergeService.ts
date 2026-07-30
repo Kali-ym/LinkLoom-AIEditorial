@@ -19,6 +19,8 @@ import {
   resolveEmbeddingServiceById
 } from '../rag/RagSettings.js';
 import { resolveSmallModelConfigForRuntime } from '../settingsSecurity.js';
+import { createAIProvider } from '../AIProvider.js';
+import { LLMMergeJudge } from './llmMergeJudge.js';
 
 const REALTIME_WINDOW_MS = 36 * 3600 * 1000;
 /** Merge assignment lookback — wider than realtime so week/month sticky ids can be (re)built. */
@@ -79,11 +81,21 @@ export class HotStoryMergeService {
         ? createHotEmbedder(resolveSmallModelConfigForRuntime(embedSvc, settings), this.store)
         : null;
 
+    // LLM mode: create judge
+    let llmJudge: LLMMergeJudge | null = null;
+    if (hot.mergeMode === 'llm') {
+      llmJudge = await this.createLLMJudge(settings, hot);
+      if (llmJudge) {
+        await llmJudge.loadFingerprints();
+      }
+    }
+
     const { clusters, mergeModeApplied, fallbackReason, bootstrapped } =
       await mergeHotStoriesIncremental(items, {
         mergeMode: hot.mergeMode,
         embed,
-        similarityMin: hot.similarityMin
+        similarityMin: hot.similarityMin,
+        llmJudge
       });
 
     for (const cluster of clusters) {
@@ -190,7 +202,62 @@ export class HotStoryMergeService {
         : base.embeddingServiceId;
     const similarityMin =
       overrides?.similarityMin !== undefined ? overrides.similarityMin : base.similarityMin;
-    return { mergeMode, embeddingServiceId, similarityMin };
+    const llmProviderId = base.llmProviderId;
+    const llmModelId = base.llmModelId;
+    const llmMaxJudgmentsPerRun = base.llmMaxJudgmentsPerRun;
+    const llmCacheTtlMinutes = base.llmCacheTtlMinutes;
+    return {
+      mergeMode,
+      embeddingServiceId,
+      similarityMin,
+      llmProviderId,
+      llmModelId,
+      llmMaxJudgmentsPerRun,
+      llmCacheTtlMinutes
+    };
+  }
+
+  private async createLLMJudge(
+    settings: SystemSettings,
+    hot: HotConfig
+  ): Promise<LLMMergeJudge | null> {
+    try {
+      const providerId = hot.llmProviderId?.trim() || settings.ACTIVE_AI_PROVIDER_ID;
+      const providerConfig = (settings.AI_PROVIDERS || []).find(
+        (p) => p.id === providerId
+      );
+      if (!providerConfig) {
+        LogService.warn(`LLM judge: provider not found: ${providerId}, falling back to rules`);
+        return null;
+      }
+
+      // If a specific model is configured, override the provider config's model
+      const configWithModel = hot.llmModelId?.trim()
+        ? { ...providerConfig, model: hot.llmModelId.trim() }
+        : providerConfig;
+
+      const provider = createAIProvider(configWithModel as any);
+      if (!provider) {
+        LogService.warn('LLM judge: failed to create provider, falling back to rules');
+        return null;
+      }
+
+      const store = new FingerprintStoreAdapter(this.store);
+      const cache = new JudgmentCacheAdapter();
+
+      return new LLMMergeJudge({
+        provider,
+        store,
+        cache,
+        maxJudgmentsPerRun: hot.llmMaxJudgmentsPerRun ?? 50,
+        cacheTtlMinutes: hot.llmCacheTtlMinutes ?? 360,
+        sealAfterMs: 6 * 3600 * 1000,
+        windowMs: REALTIME_WINDOW_MS
+      });
+    } catch (err) {
+      LogService.warn(`LLM judge: init failed: ${err}`);
+      return null;
+    }
   }
 
   private resolveEmbedService(settings: SystemSettings, hotEmbeddingId: string) {
@@ -238,5 +305,103 @@ export class HotStoryMergeService {
     }
 
     return items;
+  }
+}
+
+// ── Adapters: bridge LocalStore to LLMMergeJudge's storage interfaces ──────
+
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
+import type {
+  ClusterFingerprint,
+  JudgmentResult
+} from './ClusterFingerprint.js';
+import type {
+  FingerprintStore,
+  JudgmentCacheStore
+} from './llmMergeJudge.js';
+
+/**
+ * File-based fingerprint store. Stores all fingerprints in a single JSON file
+ * in the data directory. Simple and atomic — no schema migration needed.
+ * Fingerprints can always be rebuilt from member data if the file is lost.
+ */
+class FingerprintStoreAdapter implements FingerprintStore {
+  private readonly filePath: string;
+  private cache: ClusterFingerprint[] | null = null;
+
+  constructor(private store: LocalStore) {
+    this.filePath = join(store.getDataDir(), 'cluster_fingerprints.json');
+  }
+
+  async loadAll(): Promise<ClusterFingerprint[]> {
+    if (this.cache) return this.cache;
+    try {
+      const raw = await fs.readFile(this.filePath, 'utf8');
+      this.cache = JSON.parse(raw) as ClusterFingerprint[];
+      return this.cache;
+    } catch {
+      this.cache = [];
+      return this.cache;
+    }
+  }
+
+  async save(fp: ClusterFingerprint): Promise<void> {
+    if (!this.cache) await this.loadAll();
+    const idx = this.cache!.findIndex((f) => f.eventId === fp.eventId);
+    if (idx >= 0) {
+      this.cache![idx] = fp;
+    } else {
+      this.cache!.push(fp);
+    }
+    await this.persist();
+  }
+
+  async delete(eventId: string): Promise<void> {
+    if (!this.cache) await this.loadAll();
+    this.cache = this.cache!.filter((f) => f.eventId !== eventId);
+    await this.persist();
+  }
+
+  private async persist(): Promise<void> {
+    try {
+      await fs.mkdir(join(this.filePath, '..'), { recursive: true });
+      await fs.writeFile(this.filePath, JSON.stringify(this.cache, null, 2), 'utf8');
+    } catch (err) {
+      LogService.warn(`FingerprintStore: failed to persist: ${err}`);
+    }
+  }
+}
+
+/**
+ * In-memory judgment cache with optional file persistence.
+ * The cache is ephemeral per process — LLM judgments are cheap and cached
+ * results lose validity when fingerprints are regenerated anyway.
+ */
+class JudgmentCacheAdapter implements JudgmentCacheStore {
+  private readonly cache = new Map<string, { result: JudgmentResult; expiresAt: number }>();
+
+  async get(key: string): Promise<JudgmentResult | null> {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.result;
+  }
+
+  async set(key: string, result: JudgmentResult, ttlMinutes: number): Promise<void> {
+    this.cache.set(key, {
+      result,
+      expiresAt: Date.now() + ttlMinutes * 60 * 1000
+    });
+    // Prune if too large
+    if (this.cache.size > 5000) {
+      const now = Date.now();
+      for (const [k, v] of this.cache) {
+        if (now > v.expiresAt) this.cache.delete(k);
+      }
+    }
   }
 }

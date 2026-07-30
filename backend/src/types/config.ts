@@ -196,15 +196,23 @@ export interface EditorialConfig {
   memoryCategoryId?: string;
 }
 
-export type HotMergeMode = 'rules' | 'semantic' | 'hybrid';
+export type HotMergeMode = 'rules' | 'semantic' | 'hybrid' | 'llm';
 
 export interface HotConfig {
-  /** rules = scored soft-merge; semantic = embedding; hybrid = rules then embedding candidates */
+  /** rules = scored soft-merge; semantic = embedding; hybrid = rules then embedding candidates; llm = LLM cluster-fingerprint judge */
   mergeMode: HotMergeMode;
   /** Empty → ACTIVE_EMBEDDING_SERVICE_ID */
   embeddingServiceId: string;
   /** Cosine similarity floor for semantic / hybrid embedding pass */
   similarityMin: number;
+  /** LLM mode: dedicated provider id (empty → ACTIVE_AI_PROVIDER_ID) */
+  llmProviderId?: string;
+  /** LLM mode: dedicated model id (empty → provider default) */
+  llmModelId?: string;
+  /** LLM mode: max pairwise judgments per merge run (circuit breaker, default 50) */
+  llmMaxJudgmentsPerRun?: number;
+  /** LLM mode: judgment cache TTL in minutes (default 360 = 6h) */
+  llmCacheTtlMinutes?: number;
 }
 
 export interface SystemSettings {
