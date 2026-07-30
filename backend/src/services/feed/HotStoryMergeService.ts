@@ -21,6 +21,8 @@ import {
 import { resolveSmallModelConfigForRuntime } from '../settingsSecurity.js';
 
 const REALTIME_WINDOW_MS = 36 * 3600 * 1000;
+/** Merge assignment lookback — wider than realtime so week/month sticky ids can be (re)built. */
+const MERGE_ASSIGN_WINDOW_MS = 7 * 24 * 3600 * 1000;
 
 function shiftDate(isoDate: string, deltaDays: number): string {
   const d = new Date(`${isoDate}T12:00:00.000Z`);
@@ -200,13 +202,13 @@ export class HotStoryMergeService {
   }
 
   private async loadScoredWindow(now: Date): Promise<UnifiedData[]> {
-    const from = new Date(now.getTime() - 36 * 3600 * 1000).toISOString();
+    const from = new Date(now.getTime() - MERGE_ASSIGN_WINDOW_MS).toISOString();
     let items: UnifiedData[] = [];
     try {
       const listed = await this.store.listSourceData({
         hasAiScored: true,
         publishedFrom: from,
-        limit: 1000,
+        limit: 3000,
         orderByPublishedDesc: true
       });
       items = listed.items;
@@ -216,28 +218,21 @@ export class HotStoryMergeService {
 
     if (items.length === 0) {
       const today = getISODate();
-      const yesterday = shiftDate(today, -1);
-      const dayBefore = shiftDate(today, -2);
-      const [{ items: t }, { items: y }, { items: d }] = await Promise.all([
-        this.store.listSourceData({
-          ingestionDate: today,
-          hasAiScored: true,
-          limit: 500
-        }),
-        this.store.listSourceData({
-          ingestionDate: yesterday,
-          hasAiScored: true,
-          limit: 500
-        }),
-        this.store.listSourceData({
-          ingestionDate: dayBefore,
-          hasAiScored: true,
-          limit: 500
-        })
-      ]);
+      const days = [0, -1, -2, -3, -4, -5, -6].map((d) => shiftDate(today, d));
+      const listed = await Promise.all(
+        days.map((ingestionDate) =>
+          this.store.listSourceData({
+            ingestionDate,
+            hasAiScored: true,
+            limit: 500
+          })
+        )
+      );
       const byId = new Map<string, UnifiedData>();
-      for (const it of [...t, ...y, ...d]) {
-        if (it?.id) byId.set(it.id, it);
+      for (const { items: dayItems } of listed) {
+        for (const it of dayItems) {
+          if (it?.id) byId.set(it.id, it);
+        }
       }
       items = [...byId.values()];
     }

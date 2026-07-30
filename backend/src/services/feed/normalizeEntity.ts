@@ -19,7 +19,10 @@ export const GENERIC_ENTITIES = new Set([
   'alibaba',
   'bytedance',
   'samsung',
-  'openaidevelopers'
+  'openaidevelopers',
+  'huggingface',
+  'claude',
+  'chatgpt'
 ]);
 
 export function normalizeEntityToken(raw: string): string {

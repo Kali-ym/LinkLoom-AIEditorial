@@ -1,13 +1,11 @@
-import type { HotClusterItem } from './hotEvents.js';
 import { specificEntitySet } from './normalizeEntity.js';
 import {
-  MAX_PUBLISH_DELTA_MS,
-  clusterNewestMs,
   collectClusterEntities,
   isLowInfoCompareText,
   pickClusterCompareText,
-  softMergeClustersWith,
-  titleTokenOverlap
+  softMergeScore,
+  titleTokenOverlap,
+  withinClusterPublishWindow
 } from './mergeHotStories.js';
 import { cosineSimilarity, type EmbedTextsFn } from './hotEmbed.js';
 
@@ -15,31 +13,20 @@ const HYBRID_TEXT_CANDIDATE_MIN = 0.2;
 
 export type ProvisionalCluster = {
   signatureNorm: string | null;
-  members: HotClusterItem[];
+  members: import('./hotEvents.js').HotClusterItem[];
 };
 
-function withinTimeWindow(a: ProvisionalCluster, b: ProvisionalCluster): boolean {
-  const ta = clusterNewestMs(a.members);
-  const tb = clusterNewestMs(b.members);
-  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
-  return Math.abs(ta - tb) <= MAX_PUBLISH_DELTA_MS;
-}
-
 export function passesEmbeddingGuards(a: ProvisionalCluster, b: ProvisionalCluster): boolean {
-  if (!withinTimeWindow(a, b)) return false;
+  if (!withinClusterPublishWindow(a.members, b.members)) return false;
   const textA = pickClusterCompareText(a.members);
   const textB = pickClusterCompareText(b.members);
   if (isLowInfoCompareText(textA) || isLowInfoCompareText(textB)) return false;
   return true;
 }
 
-function passesGuards(a: ProvisionalCluster, b: ProvisionalCluster): boolean {
-  return passesEmbeddingGuards(a, b);
-}
-
 /** Hybrid: only embed pairs that already look related by rules-lite signals. */
 export function isEmbeddingCandidate(a: ProvisionalCluster, b: ProvisionalCluster): boolean {
-  if (!passesGuards(a, b)) return false;
+  if (!passesEmbeddingGuards(a, b)) return false;
   const sa = specificEntitySet(collectClusterEntities(a.members));
   const sb = specificEntitySet(collectClusterEntities(b.members));
   let inter = 0;
@@ -52,9 +39,19 @@ export function isEmbeddingCandidate(a: ProvisionalCluster, b: ProvisionalCluste
   return textOverlap >= HYBRID_TEXT_CANDIDATE_MIN;
 }
 
+function oldestPublishMs(members: ProvisionalCluster['members']): number {
+  let min = Number.POSITIVE_INFINITY;
+  for (const m of members) {
+    const t = Date.parse(m.published_date) || 0;
+    if (t > 0 && t < min) min = t;
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
 /**
- * Embedding soft-merge. When `requireCandidateFilter` is true (hybrid),
- * only pairs that pass `isEmbeddingCandidate` are considered.
+ * Embedding soft-merge in chronological attach order.
+ * Vectors are anchored on each cluster's oldest-member text.
+ * Hybrid: candidate filter + skip pairs that rules hard-veto.
  */
 export async function softMergeByEmbedding(
   clusters: ProvisionalCluster[],
@@ -64,29 +61,10 @@ export async function softMergeByEmbedding(
 ): Promise<ProvisionalCluster[] | null> {
   const requireFilter = opts?.requireCandidateFilter === true;
 
-  // Precompute texts + vectors for all clusters
   const texts = clusters.map((c) => pickClusterCompareText(c.members));
   const vectors = await embed(texts);
   if (!vectors) return null;
 
-  const sim = (i: number, j: number): number => {
-    const va = vectors[i];
-    const vb = vectors[j];
-    if (!va?.length || !vb?.length || va.length !== vb.length) return 0;
-    return cosineSimilarity(va, vb);
-  };
-
-  // Index map: after merges, member sets change — recompute by embedding
-  // representative text each round would be expensive; instead greedy on
-  // original indices then map. Simpler approach: iterative with re-embed
-  // of merged cluster text only when merged (cache by text).
-
-  let current = clusters.map((c) => ({
-    signatureNorm: c.signatureNorm,
-    members: [...c.members]
-  }));
-
-  // Build vector cache keyed by compare text
   const vecByText = new Map<string, number[]>();
   for (let i = 0; i < clusters.length; i++) {
     const t = texts[i].trim();
@@ -103,38 +81,54 @@ export async function softMergeByEmbedding(
     return batch[0];
   };
 
-  let merged = true;
-  while (merged) {
-    merged = false;
-    outer: for (let i = 0; i < current.length; i++) {
-      for (let j = i + 1; j < current.length; j++) {
-        const a = current[i];
-        const b = current[j];
-        if (requireFilter) {
-          if (!isEmbeddingCandidate(a, b)) continue;
-        } else if (!passesGuards(a, b)) {
-          continue;
-        }
-        const va = await getVec(a);
-        const vb = await getVec(b);
-        if (!va || !vb) return null;
-        if (cosineSimilarity(va, vb) < similarityMin) continue;
+  const pending = clusters
+    .map((c) => ({
+      signatureNorm: c.signatureNorm,
+      members: [...c.members]
+    }))
+    .sort((a, b) => oldestPublishMs(a.members) - oldestPublishMs(b.members));
 
-        current[i] = {
-          signatureNorm:
-            a.signatureNorm && b.signatureNorm
-              ? a.signatureNorm <= b.signatureNorm
-                ? a.signatureNorm
-                : b.signatureNorm
-              : a.signatureNorm || b.signatureNorm,
-          members: [...a.members, ...b.members]
-        };
-        current.splice(j, 1);
-        merged = true;
-        break outer;
+  const result: ProvisionalCluster[] = [];
+  for (const neu of pending) {
+    let bestIdx = -1;
+    let bestSim = -1;
+    for (let i = 0; i < result.length; i++) {
+      const existing = result[i];
+      if (requireFilter) {
+        if (!isEmbeddingCandidate(existing, neu)) continue;
+        // Do not let embedding override hard rule vetoes (over-merge guards).
+        const rules = softMergeScore(existing, neu);
+        if (rules.reason) continue;
+      } else if (!passesEmbeddingGuards(existing, neu)) {
+        continue;
       }
+
+      const va = await getVec(existing);
+      const vb = await getVec(neu);
+      if (!va || !vb) return null;
+      const sim = cosineSimilarity(va, vb);
+      if (sim < similarityMin) continue;
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      const existing = result[bestIdx];
+      result[bestIdx] = {
+        signatureNorm:
+          existing.signatureNorm && neu.signatureNorm
+            ? existing.signatureNorm <= neu.signatureNorm
+              ? existing.signatureNorm
+              : neu.signatureNorm
+            : existing.signatureNorm || neu.signatureNorm,
+        members: [...existing.members, ...neu.members]
+      };
+    } else {
+      result.push(neu);
     }
   }
 
-  return current;
+  return result;
 }

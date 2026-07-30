@@ -251,7 +251,7 @@ describe('mergeHotStories', () => {
     expect(score.ok).toBe(false);
   });
 
-  it('does not soft-merge when publish delta exceeds 36h', () => {
+  it('does not soft-merge when tip-to-tip publish delta exceeds 36h', () => {
     const clusters = mergeHotStories([
       item({
         id: 'old',
@@ -275,6 +275,240 @@ describe('mergeHotStories', () => {
       })
     ]);
     expect(clusters).toHaveLength(2);
+  });
+
+  it('allows chain growth so total span may exceed 36h when each tip gap is within 36h', () => {
+    // Day0 → Day1 (+24h) → Day2 (+24h): tip-to-tip always 24h, total span 48h.
+    const clusters = mergeHotStories([
+      item({
+        id: 'd0',
+        title: 'OpenAI launches GPT-5 model',
+        published_date: '2026-07-19T12:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-a',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI 发布 GPT-5 模型'
+        }
+      }),
+      item({
+        id: 'd1',
+        title: 'GPT-5 model launched by OpenAI',
+        published_date: '2026-07-20T12:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-b',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI 正式发布 GPT-5 模型'
+        }
+      }),
+      item({
+        id: 'd2',
+        title: 'More GPT-5 launch coverage',
+        published_date: '2026-07-21T12:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-c',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI GPT-5 发布持续报道'
+        }
+      })
+    ]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['d0', 'd1', 'd2']);
+  });
+
+  it('still soft-merges a continuing story within 36h tip-to-tip', () => {
+    const clusters = mergeHotStories([
+      item({
+        id: 'day1',
+        title: 'OpenAI launches GPT-5 model',
+        published_date: '2026-07-19T12:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-a',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI 发布 GPT-5 模型'
+        }
+      }),
+      item({
+        id: 'day1b',
+        title: 'GPT-5 model launched by OpenAI',
+        published_date: '2026-07-20T06:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-b',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI 正式发布 GPT-5 模型'
+        }
+      }),
+      item({
+        id: 'day2',
+        title: 'More GPT-5 launch coverage',
+        published_date: '2026-07-20T20:00:00.000Z',
+        metadata: {
+          event_signature: 'sig-c',
+          entities: ['OpenAI', 'GPT-5'],
+          ai_summary_short: 'OpenAI GPT-5 发布持续报道'
+        }
+      })
+    ]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['day1', 'day1b', 'day2']);
+  });
+
+  it('anchors content similarity on oldest member, not a drifted tip', () => {
+    // Tip drifted toward "AI security alliance"; newcomer matches the tip textually
+    // but not the HF-breach seed — must not soft-merge.
+    const score = softMergeScore(
+      {
+        members: [
+          item({
+            id: 'seed',
+            title: 'OpenAI agent broke into Hugging Face',
+            published_date: '2026-07-19T12:00:00.000Z',
+            metadata: {
+              entities: ['OpenAI', 'Hugging Face', 'ExploitGym'],
+              ai_summary_short: 'OpenAI 模型越界入侵 Hugging Face 评测环境'
+            }
+          }),
+          item({
+            id: 'tip',
+            title: 'Nvidia Microsoft open secure AI alliance',
+            published_date: '2026-07-20T18:00:00.000Z',
+            metadata: {
+              entities: ['Nvidia', 'Microsoft', 'Hugging Face'],
+              ai_summary_short: '英伟达微软组建开放安全 AI 联盟 Hugging Face 加入',
+              ai_score: 99,
+              ai_picked: true
+            }
+          })
+        ]
+      },
+      {
+        members: [
+          item({
+            id: 'newcomer',
+            title: 'Open Secure AI Alliance expands',
+            published_date: '2026-07-21T04:00:00.000Z',
+            metadata: {
+              entities: ['Nvidia', 'Hugging Face'],
+              ai_summary_short: '开放安全 AI 联盟继续扩员 Hugging Face 参与'
+            }
+          })
+        ]
+      }
+    );
+    expect(score.ok).toBe(false);
+  });
+
+  it('chronologically attaches next-day follow-ups without letting late tips block', () => {
+    // Voice mode (unrelated) stays alone; Opus launch + next-day Arena follow-up merge.
+    const clusters = mergeHotStories([
+      item({
+        id: 'voice',
+        title: 'Claude voice mode for Opus and Sonnet',
+        published_date: '2026-07-23T19:00:00.000Z',
+        metadata: {
+          event_signature: 'claude-voice-mode',
+          entities: ['Anthropic', 'Claude', 'Opus', 'Sonnet'],
+          ai_summary_short: 'Anthropic扩展Claude语音模式至Opus和Sonnet',
+          ai_score: 80
+        }
+      }),
+      item({
+        id: 'launch',
+        title: 'Introducing Claude Opus 5',
+        published_date: '2026-07-24T17:00:00.000Z',
+        metadata: {
+          event_signature: 'claude-opus-5-launch',
+          entities: ['Anthropic', 'Claude Opus 5'],
+          ai_summary_short: 'Anthropic发布Claude Opus 5',
+          ai_score: 90
+        }
+      }),
+      item({
+        id: 'api',
+        title: 'Try Opus 5 on Claude API',
+        published_date: '2026-07-24T17:14:00.000Z',
+        metadata: {
+          event_signature: 'claude-opus-5-api',
+          entities: ['Claude Opus 5', 'Claude API'],
+          ai_summary_short: 'Claude Opus 5 开放 API 与 Claude Code 使用',
+          ai_score: 85
+        }
+      }),
+      item({
+        id: 'perf',
+        title: 'Opus 5 high performance low cost',
+        published_date: '2026-07-24T18:36:00.000Z',
+        metadata: {
+          event_signature: 'claude-opus-5-perf',
+          entities: ['Anthropic', 'Claude Opus 5'],
+          ai_summary_short: 'Anthropic发布Claude Opus 5并主打高性能低成本',
+          ai_score: 88
+        }
+      }),
+      item({
+        id: 'arena',
+        title: 'Opus 5 tops ARC-AGI-3',
+        published_date: '2026-07-25T12:00:00.000Z',
+        metadata: {
+          event_signature: 'claude-opus-5-arena',
+          entities: ['Anthropic', 'Claude Opus 5', 'ARC-AGI-3'],
+          ai_summary_short: 'Claude Opus 5在ARC-AGI-3创下新高',
+          ai_score: 82
+        }
+      })
+    ]);
+    const byIds = clusters.map((c) => c.members.map((m) => m.id).sort().join(','));
+    expect(byIds).toContain('voice');
+    expect(byIds.some((s) => s.includes('launch') && s.includes('api') && s.includes('perf'))).toBe(
+      true
+    );
+    const opusCluster = clusters.find((c) => c.members.some((m) => m.id === 'launch'));
+    expect(opusCluster?.members.map((m) => m.id).sort()).toEqual(
+      ['api', 'arena', 'launch', 'perf'].sort()
+    );
+  });
+
+  it('merges Kimi K3 open-weights release with same-day Fireworks deploy coverage', () => {
+    const clusters = mergeHotStories([
+      item({
+        id: 'weights',
+        title: 'Moonshot releases Kimi K3 weights',
+        published_date: '2026-07-27T15:14:40.000Z',
+        metadata: {
+          event_signature: 'moonshot-kimi-k3-weights',
+          entities: ['Kimi.ai', 'Kimi K3', 'Moonshot AI'],
+          ai_summary_short: 'Moonshot发布Kimi K3权重与技术报告',
+          ai_score: 90
+        }
+      }),
+      item({
+        id: 'agentenv',
+        title: 'Kimi AgentENV',
+        published_date: '2026-07-27T15:25:45.000Z',
+        metadata: {
+          event_signature: 'kimi-agentenv',
+          entities: ['Kimi.ai', 'AgentENV', 'Kimi K3'],
+          ai_summary_short: 'Kimi.ai开源AgentENV支撑智能体训练',
+          ai_score: 80
+        }
+      }),
+      item({
+        id: 'fireworks',
+        title: 'Kimi K3 on Fireworks',
+        published_date: '2026-07-27T15:45:31.000Z',
+        metadata: {
+          event_signature: 'kimi-k3-fireworks',
+          entities: ['Kimi.ai', 'Kimi K3', 'FireworksAI'],
+          ai_summary_short: 'Kimi K3上线Fireworks，支持部署与微调',
+          ai_score: 85
+        }
+      })
+    ]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members.map((m) => m.id).sort()).toEqual([
+      'agentenv',
+      'fireworks',
+      'weights'
+    ]);
   });
 
   it('reuses previous event_id when members overlap', () => {

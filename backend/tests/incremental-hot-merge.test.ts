@@ -97,6 +97,94 @@ describe('mergeHotStoriesIncremental', () => {
     expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['newbie', 'old']);
   });
 
+  it('hard-attaches when new tip is within 36h of sticky tip even if span from oldest exceeds 36h', async () => {
+    const { clusters } = await mergeHotStoriesIncremental(
+      [
+        item({
+          id: 'oldest',
+          title: 'Old',
+          source: 'A',
+          published_date: '2026-07-18T12:00:00.000Z',
+          metadata: {
+            event_id: 'evt_nvidia',
+            event_signature: 'nvidia-open-models',
+            ai_summary_short: '英伟达支持开放模型'
+          }
+        }),
+        item({
+          id: 'tip',
+          title: 'Tip',
+          source: 'B',
+          published_date: '2026-07-20T12:00:00.000Z',
+          metadata: {
+            event_id: 'evt_nvidia',
+            event_signature: 'nvidia-open-models',
+            ai_summary_short: '开放模型倡议后续'
+          }
+        }),
+        item({
+          id: 'newbie',
+          title: 'New',
+          source: 'TechCrunch',
+          published_date: '2026-07-21T12:00:00.000Z',
+          metadata: {
+            event_signature: 'NVIDIA/open-models',
+            ai_summary_short: '另一篇关于开放模型'
+          }
+        })
+      ],
+      { mergeMode: 'rules' }
+    );
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].eventId).toBe('evt_nvidia');
+    expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['newbie', 'oldest', 'tip']);
+  });
+
+  it('does not hard-attach when newcomer tip is more than 36h after sticky tip', async () => {
+    const { clusters } = await mergeHotStoriesIncremental(
+      [
+        item({
+          id: 'oldest',
+          title: 'Old',
+          source: 'A',
+          published_date: '2026-07-18T12:00:00.000Z',
+          metadata: {
+            event_id: 'evt_nvidia',
+            event_signature: 'nvidia-open-models',
+            ai_summary_short: '英伟达支持开放模型'
+          }
+        }),
+        item({
+          id: 'tip',
+          title: 'Tip',
+          source: 'B',
+          published_date: '2026-07-19T12:00:00.000Z',
+          metadata: {
+            event_id: 'evt_nvidia',
+            event_signature: 'nvidia-open-models',
+            ai_summary_short: '开放模型倡议后续'
+          }
+        }),
+        item({
+          id: 'newbie',
+          title: 'New',
+          source: 'TechCrunch',
+          published_date: '2026-07-21T12:00:00.000Z',
+          metadata: {
+            event_signature: 'NVIDIA/open-models',
+            ai_summary_short: '另一篇关于开放模型'
+          }
+        })
+      ],
+      { mergeMode: 'rules' }
+    );
+    expect(clusters).toHaveLength(2);
+    const sticky = clusters.find((c) => c.eventId === 'evt_nvidia');
+    const neu = clusters.find((c) => c.eventId !== 'evt_nvidia');
+    expect(sticky?.members.map((m) => m.id).sort()).toEqual(['oldest', 'tip']);
+    expect(neu?.members.map((m) => m.id)).toEqual(['newbie']);
+  });
+
   it('soft-attaches a related newcomer into the sticky cluster', async () => {
     const { clusters } = await mergeHotStoriesIncremental(
       [

@@ -5,6 +5,7 @@ import {
   mergeHotStories,
   pickClusterCompareText,
   softMergeScore,
+  withinClusterPublishWindow,
   type MergedStoryCluster
 } from './mergeHotStories.js';
 import { normalizeEventSignature } from './normalizeEventSignature.js';
@@ -216,6 +217,11 @@ function hardAttachBySignature(
       remaining.push(it);
       continue;
     }
+    // Same signature is not enough once the sticky tip has drifted far from its oldest member.
+    if (!withinClusterPublishWindow(sticky[idx].members, [it])) {
+      remaining.push(it);
+      continue;
+    }
     sticky[idx].members.push(it);
     sticky[idx].signatureNorm = pickNorm(sticky[idx].signatureNorm, norm);
   }
@@ -231,10 +237,10 @@ async function tryAttachToSticky(
     similarityMin: number;
   }
 ): Promise<boolean> {
-  // Hard signature match against sticky
+  // Hard signature match against sticky (still respect publish-window vs oldest member)
   if (neu.signatureNorm) {
     const idx = sticky.findIndex((s) => s.signatureNorm === neu.signatureNorm);
-    if (idx >= 0) {
+    if (idx >= 0 && withinClusterPublishWindow(sticky[idx].members, neu.members)) {
       sticky[idx].members.push(...neu.members);
       return true;
     }

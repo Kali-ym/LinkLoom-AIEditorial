@@ -18,7 +18,7 @@ const ENTITY_JACCARD_FLOOR = 0.25;
 const SCORE_MIN = 0.5;
 const TEXT_OVERLAP_GUARD = 0.15;
 /** When only one specific entity is shared, demand stronger text agreement. */
-const SINGLE_ENTITY_TEXT_MIN = 0.55;
+const SINGLE_ENTITY_TEXT_MIN = 0.5;
 const LOW_INFO_TEXT =
   /转推|广播|直播|话题不明|未说明|未附带|watch now|broadcasts\/|live build/i;
 
@@ -78,19 +78,21 @@ export function softMergeScore(
   a: { members: HotClusterItem[] },
   b: { members: HotClusterItem[] }
 ): SoftMergeScoreBreakdown {
-  const ta = newestMs(a.members);
-  const tb = newestMs(b.members);
-  if (!Number.isFinite(ta) || !Number.isFinite(tb)) {
-    return zeroScore('bad_time');
-  }
-  if (Math.abs(ta - tb) > MAX_PUBLISH_DELTA_MS) {
+  if (!withinClusterPublishWindow(a.members, b.members)) {
+    const ta = newestMs(a.members);
+    const tb = newestMs(b.members);
+    if (!Number.isFinite(ta) || !Number.isFinite(tb) || ta <= 0 || tb <= 0) {
+      return zeroScore('bad_time');
+    }
     return zeroScore('time_window');
   }
 
-  const ea = collectEntities(a.members);
-  const eb = collectEntities(b.members);
-  const na = collectNumbers(a.members);
-  const nb = collectNumbers(b.members);
+  const oldestA = pickOldestMember(a.members);
+  const oldestB = pickOldestMember(b.members);
+  const ea = oldestA ? collectEntities([oldestA]) : [];
+  const eb = oldestB ? collectEntities([oldestB]) : [];
+  const na = oldestA ? collectNumbers([oldestA]) : [];
+  const nb = oldestB ? collectNumbers([oldestB]) : [];
   const hasEntityA = ea.length > 0;
   const hasEntityB = eb.length > 0;
   const hasNumA = na.length > 0;
@@ -100,8 +102,8 @@ export function softMergeScore(
     return zeroScore('no_anchors');
   }
 
-  const textA = pickCompareText(a.members);
-  const textB = pickCompareText(b.members);
+  const textA = oldestA ? memberContentText(oldestA) : '';
+  const textB = oldestB ? memberContentText(oldestB) : '';
   if (isLowInfoText(textA) || isLowInfoText(textB)) {
     return zeroScore('low_info');
   }
@@ -113,10 +115,20 @@ export function softMergeScore(
   for (const t of sa) if (sb.has(t)) interSpecific += 1;
   const ej = setJaccard(sa, sb);
   const entityOverlap = setOverlapRatio(sa, sb);
-  // Shared specific entities are strong even when entity lists have long tails
+  // Versioned product names (kimik3 / claudeopus5 / gpt5) are strong event anchors
+  // even when Chinese summary tokenization yields low text overlap.
+  let strongProduct = false;
+  if (specificAvailable && interSpecific > 0) {
+    for (const t of sa) {
+      if (sb.has(t) && /\d/.test(t)) {
+        strongProduct = true;
+        break;
+      }
+    }
+  }
   let entitySignal = 0;
   if (specificAvailable && interSpecific > 0) {
-    const floor = interSpecific >= 2 ? 0.85 : 0.7;
+    const floor = interSpecific >= 2 || strongProduct ? 0.85 : 0.7;
     entitySignal = Math.max(ej, entityOverlap, floor);
   }
 
@@ -124,11 +136,16 @@ export function softMergeScore(
     return zeroScore('entity_floor');
   }
 
+  // Content similarity anchors on each cluster's oldest solid member (not tip).
   const textOverlap = titleTokenOverlap(textA, textB);
   const numbersOverlap = setOverlapRatio(normalizeNumberSet(na), normalizeNumberSet(nb));
-  const factsOverlap = titleTokenOverlap(joinFacts(a.members), joinFacts(b.members));
+  const factsOverlap = titleTokenOverlap(
+    oldestA ? joinFacts([oldestA]) : '',
+    oldestB ? joinFacts([oldestB]) : ''
+  );
 
   if (
+    !strongProduct &&
     entitySignal >= ENTITY_JACCARD_FLOOR &&
     textOverlap < TEXT_OVERLAP_GUARD &&
     numbersOverlap === 0
@@ -144,7 +161,12 @@ export function softMergeScore(
     };
   }
 
-  if (interSpecific === 1 && textOverlap < SINGLE_ENTITY_TEXT_MIN && numbersOverlap === 0) {
+  if (
+    !strongProduct &&
+    interSpecific === 1 &&
+    textOverlap < SINGLE_ENTITY_TEXT_MIN &&
+    numbersOverlap === 0
+  ) {
     return {
       ok: false,
       score: 0,
@@ -172,9 +194,14 @@ export function softMergeScore(
     wNumbers * numbersOverlap +
     wFacts * factsOverlap;
 
+  // Same versioned product (Kimi K3 / Opus 5) within the tip window is enough —
+  // Chinese token overlap often understates paraphrase of the same release.
+  const ok =
+    score >= SCORE_MIN || (strongProduct && interSpecific >= 1 && entitySignal >= 0.85);
+
   return {
-    ok: score >= SCORE_MIN,
-    score,
+    ok,
+    score: ok ? Math.max(score, SCORE_MIN) : score,
     textOverlap,
     entityJaccard: entitySignal,
     numbersOverlap,
@@ -240,7 +267,7 @@ export function finalizeClusters(
   });
 }
 
-/** Greedy soft-merge using a custom predicate (rules or embedding). */
+/** Greedy pairwise soft-merge using a custom predicate (legacy / tests). */
 export function softMergeClustersWith(
   clusters: Array<{ signatureNorm: string | null; members: HotClusterItem[] }>,
   shouldMerge: (
@@ -271,10 +298,57 @@ export function softMergeClustersWith(
   return result;
 }
 
+/**
+ * Chronological soft-merge: process clusters from oldest seed → newest,
+ * attaching each into the best existing match. Matches the product rule
+ * "new article vs current tip (time) / vs oldest seed (content)" and avoids
+ * pairwise greed where late follow-ups clump first then exceed the tip window.
+ */
+export function softMergeClustersChronological(
+  clusters: Array<{ signatureNorm: string | null; members: HotClusterItem[] }>,
+  scorePair: (
+    existing: { signatureNorm: string | null; members: HotClusterItem[] },
+    incoming: { signatureNorm: string | null; members: HotClusterItem[] }
+  ) => { ok: boolean; score: number }
+): Array<{ signatureNorm: string | null; members: HotClusterItem[] }> {
+  const pending = clusters
+    .map((c) => ({
+      signatureNorm: c.signatureNorm,
+      members: [...c.members]
+    }))
+    .sort((a, b) => oldestMs(a.members) - oldestMs(b.members));
+
+  const result: Array<{ signatureNorm: string | null; members: HotClusterItem[] }> = [];
+  for (const neu of pending) {
+    let bestIdx = -1;
+    let bestScore = -1;
+    for (let i = 0; i < result.length; i++) {
+      const scored = scorePair(result[i], neu);
+      if (!scored.ok) continue;
+      if (scored.score > bestScore) {
+        bestScore = scored.score;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0) {
+      result[bestIdx] = {
+        signatureNorm: pickNorm(result[bestIdx].signatureNorm, neu.signatureNorm),
+        members: [...result[bestIdx].members, ...neu.members]
+      };
+    } else {
+      result.push(neu);
+    }
+  }
+  return result;
+}
+
 function softMergeClusters(
   clusters: Array<{ signatureNorm: string | null; members: HotClusterItem[] }>
 ): Array<{ signatureNorm: string | null; members: HotClusterItem[] }> {
-  return softMergeClustersWith(clusters, (a, b) => softMergeScore(a, b).ok);
+  return softMergeClustersChronological(clusters, (a, b) => {
+    const s = softMergeScore(a, b);
+    return { ok: s.ok, score: s.score };
+  });
 }
 
 function zeroScore(reason: string): SoftMergeScoreBreakdown {
@@ -369,21 +443,40 @@ function joinFacts(members: HotClusterItem[]): string {
   return parts.join(' ');
 }
 
-function pickCompareText(members: HotClusterItem[]): string {
-  const picked = members.filter((m) => m.metadata?.ai_picked === true);
-  const pool = picked.length ? picked : members;
-  const best = [...pool].sort(
-    (a, b) => (Number(b.metadata?.ai_score) || 0) - (Number(a.metadata?.ai_score) || 0)
-  )[0];
-  if (!best) return '';
+function memberContentText(m: HotClusterItem): string {
   const short =
-    typeof best.metadata?.ai_summary_short === 'string'
-      ? best.metadata.ai_summary_short.trim()
-      : '';
-  return short || best.title || '';
+    typeof m.metadata?.ai_summary_short === 'string' ? m.metadata.ai_summary_short.trim() : '';
+  return short || m.title || '';
 }
 
-/** Public alias for embedding text selection. */
+/** Content-similarity anchor: oldest among solid-scored members (event seed).
+ * Tip / time gates still use the true newest member separately.
+ */
+function pickOldestMember(members: HotClusterItem[]): HotClusterItem | undefined {
+  const solid = members.filter((m) => (Number(m.metadata?.ai_score) || 0) >= 70);
+  const pool = solid.length > 0 ? solid : members;
+  let best: HotClusterItem | undefined;
+  let bestMs = Number.POSITIVE_INFINITY;
+  for (const m of pool) {
+    const t = Date.parse(m.published_date) || 0;
+    if (t > 0 && t < bestMs) {
+      bestMs = t;
+      best = m;
+    }
+  }
+  return best ?? members[0];
+}
+
+function pickCompareText(members: HotClusterItem[]): string {
+  const oldest = pickOldestMember(members);
+  return oldest ? memberContentText(oldest) : '';
+}
+
+/**
+ * Text used for content similarity (rules overlap + embedding cosine).
+ * Always the cluster's oldest member — tip drift must not retarget the anchor.
+ * Time gates use withinClusterPublishWindow (tip-vs-tip) separately.
+ */
 export function pickClusterCompareText(members: HotClusterItem[]): string {
   return pickCompareText(members);
 }
@@ -394,6 +487,30 @@ export function isLowInfoCompareText(text: string): boolean {
 
 export function clusterNewestMs(members: HotClusterItem[]): number {
   return newestMs(members);
+}
+
+export function clusterOldestMs(members: HotClusterItem[]): number {
+  return oldestMs(members);
+}
+
+/**
+ * Merge/attach time gate only (not board age / heat / period span).
+ *
+ * Gate: the newer tip must be within MAX_PUBLISH_DELTA_MS of the other
+ * side's current tip (上一条最新). Total cluster span may exceed 36h when
+ * coverage continues in a chain. Board heat / realtime / week-month filters
+ * still use clusterNewestMs.
+ */
+export function withinClusterPublishWindow(
+  a: HotClusterItem[],
+  b: HotClusterItem[]
+): boolean {
+  const newestA = newestMs(a);
+  const newestB = newestMs(b);
+  if (!Number.isFinite(newestA) || !Number.isFinite(newestB) || newestA <= 0 || newestB <= 0) {
+    return false;
+  }
+  return Math.abs(newestA - newestB) <= MAX_PUBLISH_DELTA_MS;
 }
 
 export function collectClusterEntities(members: HotClusterItem[]): string[] {
@@ -407,7 +524,16 @@ function isLowInfoText(text: string): boolean {
 }
 
 function newestMs(members: HotClusterItem[]): number {
-  return Math.max(...members.map((m) => Date.parse(m.published_date) || 0));
+  return Math.max(...members.map((m) => Date.parse(m.published_date) || 0), 0);
+}
+
+function oldestMs(members: HotClusterItem[]): number {
+  let min = Number.POSITIVE_INFINITY;
+  for (const m of members) {
+    const t = Date.parse(m.published_date) || 0;
+    if (t > 0 && t < min) min = t;
+  }
+  return Number.isFinite(min) ? min : 0;
 }
 
 function pickNorm(a: string | null, b: string | null): string | null {
