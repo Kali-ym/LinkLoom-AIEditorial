@@ -342,6 +342,47 @@ const getOpenAIFetch = (name: string, dispatcher?: any) => {
   };
 };
 
+function normalizeProviderJsonSchema(value: unknown): Record<string, unknown> {
+  const source =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const normalized: Record<string, unknown> = { ...source };
+  const type = normalized.type;
+  const isObjectSchema = type === 'object' || type === undefined || 'properties' in normalized;
+
+  if (isObjectSchema) {
+    normalized.type = typeof type === 'string' ? type : 'object';
+    const properties =
+      normalized.properties &&
+      typeof normalized.properties === 'object' &&
+      !Array.isArray(normalized.properties)
+        ? (normalized.properties as Record<string, unknown>)
+        : {};
+    normalized.properties = Object.fromEntries(
+      Object.entries(properties).map(([name, propertySchema]) => [
+        name,
+        normalizeProviderJsonSchema(propertySchema),
+      ]),
+    );
+    normalized.required = Array.isArray(normalized.required)
+      ? normalized.required.filter((name): name is string => typeof name === 'string')
+      : [];
+  }
+
+  if (normalized.items && typeof normalized.items === 'object') {
+    normalized.items = normalizeProviderJsonSchema(normalized.items);
+  }
+  for (const keyword of ['anyOf', 'allOf', 'oneOf']) {
+    const alternatives = normalized[keyword];
+    if (Array.isArray(alternatives)) {
+      normalized[keyword] = alternatives.map((schema) => normalizeProviderJsonSchema(schema));
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeTools(tools?: any[]): any[] | undefined {
   if (!tools || tools.length === 0) {
     return undefined;
@@ -1509,7 +1550,9 @@ export function toMessagesApiTools(tools?: any[]): Array<Record<string, unknown>
   return normalized.map((tool) => ({
     name: tool.name,
     description: tool.description || '',
-    input_schema: tool.schema || tool.parameters || { type: 'object', properties: {} }
+    input_schema: normalizeProviderJsonSchema(
+      tool.schema || tool.parameters || { type: 'object', properties: {} },
+    ),
   }));
 }
 
@@ -2480,7 +2523,9 @@ function toOpenAIApiTools(tools?: any[]): Array<Record<string, unknown>> | undef
     function: {
       name: tool.name,
       description: tool.description || '',
-      parameters: tool.schema || tool.parameters || { type: 'object', properties: {} }
+      parameters: normalizeProviderJsonSchema(
+        tool.schema || tool.parameters || { type: 'object', properties: {} },
+      ),
     }
   }));
 }
@@ -2493,7 +2538,9 @@ export function toResponsesApiTools(tools?: any[]): Array<Record<string, unknown
     type: 'function',
     name: tool.name,
     description: tool.description || '',
-    parameters: tool.schema || tool.parameters || { type: 'object', properties: {} }
+    parameters: normalizeProviderJsonSchema(
+      tool.schema || tool.parameters || { type: 'object', properties: {} },
+    ),
   }));
 }
 

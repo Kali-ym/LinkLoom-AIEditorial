@@ -35,8 +35,10 @@ function readMetadataString(
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-export function aggregateSessionsFromRuns(runs: BackendAgentRunDto[]): SessionAggregate[] {
-  const visibleRuns = runs.filter(
+export function aggregateSessionsFromRuns(
+  runs: BackendAgentRunDto[] | null | undefined,
+): SessionAggregate[] {
+  const visibleRuns = (runs ?? []).filter(
     (run) => run.status !== 'archived' && run.metadata?.topicDeleted !== true,
   );
   const bySession = new Map<string, BackendAgentRunDto[]>();
@@ -153,7 +155,7 @@ export function computeSessionElapsed(run: BackendAgentRunDto): string | undefin
 }
 
 export function buildTopicSidebarData(
-  runs: BackendAgentRunDto[],
+  runs: BackendAgentRunDto[] | null | undefined,
   agentId: string,
   activeTopicId?: string,
 ): {

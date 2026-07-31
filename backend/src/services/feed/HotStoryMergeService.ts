@@ -246,7 +246,7 @@ export class HotStoryMergeService {
     overrides?: HotRebuildOverrides
   ): HotConfig {
     const base = settings.HOT_CONFIG || {
-      mergeMode: 'llm' as HotMergeMode,
+      mergeMode: 'semantic' as HotMergeMode,
       embeddingServiceId: '',
       similarityMin: 0.78
     };

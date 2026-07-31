@@ -5,11 +5,11 @@ import type { PromptBuildContext, PromptContribution, PromptProvider } from '../
 function webSearchHint(mode: WebSearchEffectiveMode): string | null {
   switch (mode) {
     case 'off':
-      return '本轮未开启联网搜索，请勿调用任何网页相关工具。';
+      return null;
     case 'app':
-      return '仅当用户明确要求实时、最新、外部网页信息，或明确要求搜索/打开 URL 时才联网；模型身份、功能说明、对话解释和常识问题不得调用 web_search。需要联网时使用 web_search；已知 URL 用 crawl_pages（可传 url 或 urls）。';
+      return '需要实时外部信息时才使用联网工具；其他问题直接回答。';
     case 'provider':
-      return '优先用 google_search 获取实时信息，用 url_context 读网页；勿调用 web_search。';
+      return '需要实时外部信息时使用内置搜索；已知 URL 可读取页面。';
     default:
       return null;
   }

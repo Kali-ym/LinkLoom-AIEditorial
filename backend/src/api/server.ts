@@ -83,7 +83,10 @@ export async function createServer(existingStore?: LocalStore) {
   assertProductionSettings(context.settings);
 
   fastify.register(formbody);
-  fastify.register(cors, { origin: resolveCorsOrigin });
+  fastify.register(cors, {
+    origin: resolveCorsOrigin,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  });
   fastify.register(jwt, { secret: resolveJwtSecret() });
   fastify.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
   fastify.setErrorHandler(httpErrorHandler);

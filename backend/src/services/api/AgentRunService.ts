@@ -729,7 +729,8 @@ export class AgentRunService {
     const agentService = this.requireAgentService();
     const sessions = await agentService.getSessionRuns(sessionId);
     if (sessions.length === 0) {
-      throw new AppError(404, `Agent session not found: ${sessionId}`);
+      // Idempotent delete: client-only drafts (tpc_*) may never create a backend run.
+      return { sessionId, archivedRunIds: [] };
     }
 
     const reason = typeof body?.reason === 'string' ? body.reason : 'topic_deleted';

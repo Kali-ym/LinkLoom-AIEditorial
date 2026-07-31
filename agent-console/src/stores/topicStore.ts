@@ -36,6 +36,7 @@ import { useChatStore } from './chatStore';
 import { useLayoutStore } from './layoutStore';
 import { useRouteStore } from './routeStore';
 import { suggestTopicTitleFromMessages } from '../utils/suggestTopicTitleFromMessages';
+import { collectClientOnlyTopicIds } from '../services/topic/topicDeletion';
 import {
   type TopicGroupMode,
   type TopicSortBy,
@@ -92,16 +93,37 @@ function applyLocalTopicsRemoval(
   }
 }
 
-async function persistTopicDeletion(topicIds: string[]): Promise<void> {
+async function persistTopicDeletion(
+  topicIds: string[],
+  options?: { clientOnlyIds?: Set<string> },
+): Promise<void> {
   const uniqueIds = [...new Set(topicIds.filter(Boolean))];
   if (!isAgentConsoleApiMode() || uniqueIds.length === 0) return;
 
-  const serverIds = uniqueIds.filter((id) => !isEphemeralTopicId(id));
+  const clientOnlyIds = options?.clientOnlyIds ?? new Set<string>();
+  const serverIds = uniqueIds.filter(
+    (id) => !clientOnlyIds.has(id) && !isEphemeralTopicId(id),
+  );
   if (serverIds.length === 0) return;
 
   await Promise.all(serverIds.map((id) => getAgentConsolePorts().topic.deleteTopic(id)));
   const agentId = useAgentStore.getState().activeAgentId;
   await refreshTopicsForAgent(agentId);
+}
+
+function handleTopicDeletionFailure(
+  topicIds: string[],
+  clientOnlyIds: Set<string>,
+  error: unknown,
+): void {
+  console.error('[agentConsole] delete topic failed', error);
+  const needsServerRollback = topicIds.some((id) => !clientOnlyIds.has(id));
+  if (!needsServerRollback) {
+    showToast('删除话题失败');
+    return;
+  }
+  showToast('删除话题失败，正在恢复列表…');
+  void refreshTopicsForActiveAgent();
 }
 interface TopicState {
   /** @deprecated server list — prefer `useTopics()`; kept for bootstrap + local mutations */
@@ -528,12 +550,11 @@ export const useTopicStore = create<TopicState>((set, get) => ({
 
   removeTopic: (topicId) => {
     if (!topicId) return;
+    const clientOnlyIds = collectClientOnlyTopicIds([topicId], get().topics);
     applyLocalTopicsRemoval(get, set, [topicId]);
 
-    void persistTopicDeletion([topicId]).catch((error) => {
-      console.error('[agentConsole] delete topic failed', error);
-      showToast('删除话题失败，正在恢复列表…');
-      void refreshTopicsForActiveAgent();
+    void persistTopicDeletion([topicId], { clientOnlyIds }).catch((error) => {
+      handleTopicDeletionFailure([topicId], clientOnlyIds, error);
     });
   },
 
@@ -625,13 +646,12 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       .topics.filter((t) => !(t.fav || t.tag === 'fav' || t.status === 'temp'))
       .map((t) => t.id);
     if (removedIds.length === 0) return;
+    const clientOnlyIds = collectClientOnlyTopicIds(removedIds, get().topics);
     applyLocalTopicsRemoval(get, set, removedIds);
-    void persistTopicDeletion(removedIds)
+    void persistTopicDeletion(removedIds, { clientOnlyIds })
       .then(() => showToast('已删除未收藏话题'))
       .catch((error) => {
-        console.error('[agentConsole] delete topics failed', error);
-        showToast('删除话题失败，正在恢复列表…');
-        void refreshTopicsForActiveAgent();
+        handleTopicDeletionFailure(removedIds, clientOnlyIds, error);
       });
   },
 
@@ -640,13 +660,12 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       .topics.filter((t) => t.status !== 'temp')
       .map((t) => t.id);
     if (removedIds.length === 0) return;
+    const clientOnlyIds = collectClientOnlyTopicIds(removedIds, get().topics);
     applyLocalTopicsRemoval(get, set, removedIds);
-    void persistTopicDeletion(removedIds)
+    void persistTopicDeletion(removedIds, { clientOnlyIds })
       .then(() => showToast('已删除全部话题'))
       .catch((error) => {
-        console.error('[agentConsole] delete topics failed', error);
-        showToast('删除话题失败，正在恢复列表…');
-        void refreshTopicsForActiveAgent();
+        handleTopicDeletionFailure(removedIds, clientOnlyIds, error);
       });
   },
 

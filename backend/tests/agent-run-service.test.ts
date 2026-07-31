@@ -1184,4 +1184,19 @@ describe('AgentRunService.compactSessionContext', () => {
     expect(result.compacted).toBe(false);
     expect(saveRunSession).not.toHaveBeenCalled();
   });
+
+  it('archiveSession is idempotent when no backend runs exist', async () => {
+    const store = createStore({ id: 'agent-1' });
+    const service = new AgentRunService(
+      store as any,
+      createContext({
+        getSessionRuns: vi.fn().mockResolvedValue([]),
+      }) as any,
+    );
+
+    await expect(service.archiveSession('tpc_302c5m9lw4')).resolves.toEqual({
+      sessionId: 'tpc_302c5m9lw4',
+      archivedRunIds: [],
+    });
+  });
 });

@@ -52,7 +52,7 @@ async function loadAgentTopicSidebar(agentId: string) {
   const promise = (async () => {
     const activeTopicId = readStoredActiveTopicId(agentId) ?? undefined;
     const page = await listAgentRunsForAgent(agentId);
-    return buildTopicSidebarData(page.items, agentId, activeTopicId);
+    return buildTopicSidebarData(page.items ?? [], agentId, activeTopicId);
   })();
 
   inflightTopicSidebar.set(agentId, promise);

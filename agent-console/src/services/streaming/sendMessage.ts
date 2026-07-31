@@ -182,7 +182,7 @@ export async function sendUserMessage(
       agentId,
       trimmed,
       (event) => {
-        if (ac.signal.aborted && !isPermissionPauseStreamEvent(event)) return;
+        if (ac.signal.aborted && event.type !== 'stop' && !isPermissionPauseStreamEvent(event)) return;
         onStreamEvent(event);
       },
       {
@@ -380,7 +380,7 @@ async function regenerateExistingRunStream(
       runId,
       input,
       (event) => {
-        if (ac.signal.aborted && !isPermissionPauseStreamEvent(event)) return;
+        if (ac.signal.aborted && event.type !== 'stop' && !isPermissionPauseStreamEvent(event)) return;
         onStreamEvent(event);
       },
       { signal: ac.signal, topicId },

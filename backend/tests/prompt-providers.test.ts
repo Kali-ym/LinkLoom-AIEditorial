@@ -275,7 +275,7 @@ describe('ModelHintProvider', () => {
     );
     expect(r?.content).toBe('<model_hint>你可使用 google_search</model_hint>');
   });
-  it('injects off-mode hint when web search disabled', () => {
+  it('does not inject a search hint when web search is disabled', () => {
     const p = new ModelHintProvider();
     const r = p.build(
       makeCtx({
@@ -289,7 +289,7 @@ describe('ModelHintProvider', () => {
         }
       })
     );
-    expect(r?.content).toContain('未开启联网搜索');
+    expect(r).toBeNull();
   });
   it('injects app-mode hint for web_search', () => {
     const p = new ModelHintProvider();
@@ -305,7 +305,7 @@ describe('ModelHintProvider', () => {
         }
       })
     );
-    expect(r?.content).toContain('web_search');
+    expect(r?.content).toContain('实时外部信息');
   });
   it('injects provider-mode hint for google_search', () => {
     const p = new ModelHintProvider();
@@ -321,8 +321,7 @@ describe('ModelHintProvider', () => {
         }
       })
     );
-    expect(r?.content).toContain('google_search');
-    expect(r?.content).toContain('勿调用 web_search');
+    expect(r?.content).toContain('内置搜索');
   });
   it('injects built-in Claude thinking hint when CLAUDE provider and reasoningEffort set', () => {
     const p = new ModelHintProvider();
@@ -378,7 +377,7 @@ describe('ModelHintProvider', () => {
       })
     );
     expect(r?.content).toContain('自定义提示');
-    expect(r?.content).toContain('google_search');
+    expect(r?.content).toContain('内置搜索');
   });
   it('has id model_hint, phase before_first_user, priority 5', () => {
     const p = new ModelHintProvider();

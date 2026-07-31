@@ -751,7 +751,11 @@ describe('endpoint tool adapters', () => {
         type: 'function',
         name: 'query_knowledge',
         description: 'Search KB',
-        parameters: { type: 'object', properties: { query: { type: 'string' } } }
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' } },
+            required: [],
+          }
       }
     ]);
   });
@@ -769,9 +773,36 @@ describe('endpoint tool adapters', () => {
       {
         name: 'query_knowledge',
         description: 'Search KB',
-        input_schema: { type: 'object', properties: { query: { type: 'string' } } }
+        input_schema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: [],
+        }
       }
     ]);
+  });
+
+  it('normalizes a null required field for every provider tool format', () => {
+    const tool = [
+      {
+        name: 'list_dir',
+        description: 'List a directory',
+        schema: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: null,
+        },
+      },
+    ];
+
+    expect(toResponsesApiTools(tool)?.[0]?.parameters).toMatchObject({
+      type: 'object',
+      required: [],
+    });
+    expect(toMessagesApiTools(tool)?.[0]?.input_schema).toMatchObject({
+      type: 'object',
+      required: [],
+    });
   });
 
   it('toMessagesApiMessages omits history reasoning by default for cache stability', () => {
