@@ -1,150 +1,192 @@
-# Hot Story Merge: LLM Cluster Profile Mode
+# Hot Story Merge: LLM Cluster Fingerprint Mode
 
 **Date:** 2026-07-31  
-**Status:** Approved for implementation  
-**Scope:** Add `HotMergeMode = 'llm'` — LLM-maintained cluster signatures for event merge, without replacing `rules` / `semantic` / `hybrid`.
+**Status:** As-built (commit `27b5978`) + product contract  
+**Scope:** `HotMergeMode = 'llm'` — LLM-maintained cluster fingerprints for sticky attach, without replacing `rules` / `semantic` / `hybrid`.
 
 ## Problem
 
-Current hot-event merge (`rules` / `semantic` / `hybrid`) accumulates brittle heuristics: tip-vs-tip time windows, oldest high-score content anchors, entity Jaccard floors, single-entity text guards, versioned-product backdoors (`strongProduct`), and embedding candidate filters. These patches fight the same root issue: **member-level signals have no stable cluster identity**, so same-event paraphrases under-merge and unrelated stories over-merge. Maintainability, recall, and precision all suffer.
+`rules` / `semantic` / `hybrid` soft-merge accumulates brittle heuristics (tip/oldest anchors, entity floors, product-version backdoors, embedding filters). Root cause: **no durable cluster identity**, so paraphrases under-merge and unrelated stories over-merge.
 
 ## Goals
 
-- Elegant: one LLM judgment surface replaces the growing soft-merge score + special cases.
-- Advanced: separate cheap recall from semantic decide; evolve a durable cluster identity.
-- Low cost: dedicated LLM config allowed, but LLM only for gray-zone newcomers (after hard-signature miss + coarse recall); batch + cache; steady-state near zero LLM calls when hard-signature / cache hits dominate.
-- Preserve incremental sticky contract: existing `evt_*` clusters never split; sticky↔sticky never merges.
+- One LLM judgment surface for gray-zone sticky attach, instead of growing soft-merge special cases.
+- Durable, evolvable cluster identity (aliases + grounded facts) replacing regex entity patches.
+- Low cost: dedicated provider/model; LLM only after hard-signature miss + coarse recall; batch + cache + seal; budget circuit breaker.
+- Keep incremental sticky contract: existing `evt_*` never splits; sticky↔sticky never merges.
 
 ## Non-goals
 
-- Do not rewrite or delete `rules` / `semantic` / `hybrid` implementations.
-- Do not change the scoring-stage prompt to assign `evt_*` at write time (future “scheme B”).
+- Do not rewrite or delete `rules` / `semantic` / `hybrid`.
+- Do not assign `evt_*` at scoring-write time.
 - Do not use embeddings for coarse recall in `llm` mode.
 - Do not auto-split sticky clusters or merge two sticky clusters.
 
-## Chosen approach (Scheme D)
+## Verdict on current implementation
 
-**LLM-maintained cluster profile (signature) + multiple-choice attach**, with scheme A’s recall / batch / cache / fallback.
+**Direction is sound and aligned with Scheme D** (LLM-maintained cluster identity + recall → judge → evolve + fallback). The landed model (`ClusterFingerprint` with `pendingClaims` / `sealed`) is a reasonable, in places stronger, refinement of the brainstormed “cluster profile”.
 
-Compared with pairwise-only judging (scheme A): the LLM compares a newcomer mini-profile against **normalized cluster profiles**, not against drifting member tip/oldest text. Judgment shape is multiple-choice per newcomer (`which eventId, or none`), not O(newcomers × clusters) independent pairs (pairs may still be batched internally). Alias lists on the profile replace regex entity-normalization patches.
+**Ship-worthy core:** mode wiring, cold-start bootstrap, entity/alias recall, batched pairwise LLM judge, in-process judgment cache, claim promotion, seal/regen, rules fallback, unit + mock tests.
 
-## Architecture
+**Follow-ups before treating it as finished** are listed under [Known gaps](#known-gaps--follow-ups). They are correctness / coverage issues, not a redesign.
 
-`HotMergeMode` gains `'llm'`. The incremental merge skeleton in `incrementalHotMerge.ts` stays: sticky load → hard signature attach → cluster newcomers → soft-attach to sticky → assign ids.
+## Chosen approach (as-built Scheme D)
 
-Only the soft-attach judgment and post-attach identity update change:
+**Cluster fingerprint as cluster signature + pairwise LLM attach after cheap recall.**
 
-1. Load sticky clusters and their persisted **cluster profiles**.
-2. Unassigned items hard-attach by normalized `event_signature` (existing; zero LLM), still respecting tip time window.
-3. Remaining items form newcomer clusters (hard signature + optional light rules pre-cluster).
-4. **Coarse recall** (no embedding): entity/alias overlap + tip time window → top-K sticky profiles (K ≈ 5).
-5. **LLM multiple-choice judge**: mini-profile × candidate profiles → `event_id | null` + confidence.
-6. On attach: mark cluster dirty; on miss: newcomer becomes a new `evt_*` with cold-start profile.
-7. End of run: regenerate profile once per dirty cluster.
-8. Persist `event_id` on members and updated profiles.
-
-On LLM unavailable / failure / budget exceeded: fall back to `rules` with existing `fallbackReason` (`llm_unavailable` / `llm_failed`), optional `llmTruncated: true` in snapshot meta.
-
-## Data model: Cluster Profile
-
-Persisted separately keyed by `eventId` (not duplicated into every member’s metadata).
-
-Conceptual fields:
-
-| Field | Role |
+| Piece | Role |
 |-------|------|
-| `canonical_title` | Short grounded title for the event |
-| `entities` | Core proper nouns |
-| `aliases` | Alternate surface forms absorbed over time (the anti-regex mechanism) |
-| `key_numbers` | Versions, sizes, dates that discriminate events |
-| `facts` | Short grounded fact strings |
-| `status` | Optional short lifecycle hint (e.g. released) |
+| Hard `event_signature` attach | Zero-LLM fast path (existing) |
+| Rules pre-cluster among newcomers | Cost control; LLM is **not** used to cluster newcomers among themselves |
+| Entity/alias recall (top-K=3) | Candidate generation, no embedding |
+| LLM pairwise judge | `same_event` + `confidence` per (item, candidate) |
+| `onMerge` + optional LLM regen | Evolve aliases / discriminators; seal when stable |
+| Fallback | Judge missing / failed → `rules` + `fallbackReason` |
 
-Size target: ~60–120 tokens of structured JSON, not free-form essays. Field counts and string lengths are schema-capped.
+Sticky incremental skeleton in `incrementalHotMerge.ts` is unchanged in structure.
 
-**Cold start (zero LLM):** first profile for a new cluster is assembled from members’ existing scoring metadata (`event_signature`, `entities`, `numbers`, `key_facts`, `ai_summary_short`). LLM distillation runs only after growth / dirty regeneration.
+## Architecture (runtime)
 
-**Rebuildability:** profiles are derivatives of member metadata; a polluted profile can be recomputed from members (ops path).
+```
+load sticky + fingerprints
+→ hard-attach by signature (existing tip window)
+→ cluster remaining newcomers with rules (llm mode forces rules here)
+→ for each newcomer cluster:
+     representative member → recallTopK → cache → LLM batchJudge
+     match → attach all members of that newcomer cluster; onMerge(fp)
+     miss  → keep as new evt_*
+→ regenerateDirtyFingerprints (seal / grounded LLM distill)
+→ persist fingerprints + member event_id
+```
 
-### Newcomer mini-profile
+Entry: `HotStoryMergeService.runMergeAndSnapshot` when `HOT_CONFIG.mergeMode === 'llm'` constructs `LLMMergeJudge` (or null → rules fallback).
 
-Same distilled shape, built from one item’s metadata only (no raw article body, no LLM): signature, entities, numbers, key_facts, summary_short (~100–200 tokens), plus a content hash for caching.
+### Key modules
+
+| Module | Responsibility |
+|--------|----------------|
+| `ClusterFingerprint.ts` | Types, mini-profile, bootstrap, `onMerge`, recall, seal, cache keys |
+| `llmJudgePrompt.ts` | Judgment + regen system/user prompts |
+| `llmMergeJudge.ts` | `tryAttach`, batch judge, regen, mem cache |
+| `HotStoryMergeService.ts` | Provider wiring; `FingerprintStoreAdapter` (`data/cluster_fingerprints.json`); `JudgmentCacheAdapter` (process memory) |
+| `incrementalHotMerge.ts` | `llm` branch: sticky attach via judge; bootstrap fingerprints on full merge |
+
+## Data model: `ClusterFingerprint`
+
+Persisted in `data/cluster_fingerprints.json` (rebuildable derivative of members).
+
+```ts
+interface ClusterFingerprint {
+  eventId: string;
+  seedFingerprint: string;   // compact grounded identity string
+  discriminators: string[];  // distinguishing facts (often promoted claims)
+  aliases: AliasEntry[];     // surface forms; drives recall
+  pendingClaims: PendingClaim[]; // claim + sources count (cross-verify gate)
+  memberCount: number;
+  lastUpdated: string;
+  sealed: boolean;           // skip regen until unsealed by promotion
+}
+
+interface ItemMiniProfile {
+  itemId, signature, entities, numbers, keyFacts,
+  summaryShort, publishedAt, contentHash
+}
+```
+
+**Cold start (zero LLM):** `bootstrapFingerprint(eventId, seedMiniProfile)` from scoring metadata.
+
+**Evolution (mostly zero LLM):** `onMerge` always appends new alias surfaces; accumulates `pendingClaims`; when `sources >= 2`, promotes claim into `discriminators` and may unseal.
+
+**LLM regen:** only dirty + unsealed + has promotable claims; grounded distill of `seedFingerprint` / `discriminators`; then seal. At most one regen attempt per dirty fp per end-of-run pass.
+
+This is intentionally richer than the brainstormed `{ canonical_title, entities, aliases, key_numbers, facts, status }`. Mapping:
+
+| Brainstorm field | As-built |
+|------------------|----------|
+| `canonical_title` | `seedFingerprint` |
+| `entities` + `aliases` | `aliases[]` (+ bootstrap from seed entities) |
+| `facts` / `key_numbers` | `discriminators` + `pendingClaims` |
+| pollution control | `pendingClaims.sources >= 2` + `sealed` |
 
 ## Config (`HotConfig`)
 
-- `mergeMode`: includes `'llm'`
-- Dedicated LLM binding: `llmProviderId` + optional `llmModelId` (empty provider → fall back to active AI provider; not forced to share the scoring model)
-- `llmMaxJudgmentsPerRun`: circuit breaker (default ~50)
-- Confidence bands (defaults illustrative):
-  - `judgeMin` (e.g. 0.7): below → `event_id = null` (do not merge)
-  - `rewriteMin` (≥ `judgeMin`, e.g. 0.85): merge is allowed at/above `judgeMin`, but only members with confidence ≥ `rewriteMin` participate in profile regeneration
-- `llmCacheTtlMinutes`: judgment cache TTL
-- Admin `rebuildHotSnapshot` overrides accept `mergeMode: 'llm'` and the LLM provider/model ids
+```ts
+mergeMode: 'rules' | 'semantic' | 'hybrid' | 'llm'
+llmProviderId?: string   // empty → ACTIVE_AI_PROVIDER_ID
+llmModelId?: string      // empty → provider default model
+llmMaxJudgmentsPerRun?: number  // default 50
+llmCacheTtlMinutes?: number     // default 360
+```
 
-## Judgment & regeneration prompts
+Hardcoded in judge construction today: `sealAfterMs = 6h`, `windowMs = REALTIME_WINDOW_MS` (36h). Judgment accept threshold: **confidence ≥ 0.6** and `same_event` (prompt also asks model to force `same_event=false` when confidence &lt; 0.6).
 
-### Judge (primary cost)
+## Judgment & regeneration
 
-Batch multiple groups in one call when possible. Each group: newcomer id + mini-profile + list of `{ eventId, profile }`.
+### Judge
 
-Output: compact JSON array, e.g. `{ id, event_id, confidence }`. Rules:
+- Input: one mini-profile + up to K candidate fingerprints (aliases, seed, discriminators).
+- Output JSON: `{ judgments: [{ pair_index, same_event, confidence, reason }] }`.
+- Grouped by item so multiple candidates share one LLM call when uncached.
+- Cache key: `contentHash(item)::fingerprintHash(fp)` (mem + process `JudgmentCacheAdapter`).
+- First positive candidate in iteration order wins (not an exclusive multiple-choice `event_id`).
 
-- `event_id` must be in the candidate list or null
-- Invented ids → treat as null + warn log
-- Confidence `< judgeMin` → null
-- Confidence in `[judgeMin, rewriteMin)` → merge, exclude from regen input
-- Confidence ≥ `rewriteMin` → merge, eligible for regen
+### Regen
 
-### Profile regeneration (secondary cost)
-
-Only dirty clusters; at most **one rewrite per cluster per run**. Input: previous profile + mini-profiles of eligible new members this run. Output: full updated profile. Hard constraint: **grounded** — only entities/numbers/facts present in the input; no invention.
+- Prompt grounded; max short `seedFingerprint`; merge (don’t wipe) discriminators.
+- Fail → keep previous fingerprint; attach already applied.
 
 ## Cost model (order of magnitude)
 
-Example: ~20 LLM-judged newcomers, ~3 candidates each, ~150 + 3×100 tokens → ~9k input tokens, typically **one batched judge call**; ~5 dirty regenerations → **1–2 more calls**. Hard-signature hits and judgment cache hits drive steady-state toward **zero LLM calls**.
+Hard-signature hits and cache hits dominate steady state. Gray-zone: recall K=3, budget `llmMaxJudgmentsPerRun`, regen only on cross-verified dirty clusters. Typical rebuild: small number of judge calls + 0–few regens.
 
-Cache key: `hash(mini-profile) + hash(candidate profile set)` (and/or fingerprint content hash). TTL configurable.
-
-## Error handling & pollution control
+## Error handling
 
 | Case | Behavior |
 |------|----------|
-| No LLM config / provider down | `rules` + `llm_unavailable` |
-| Timeout / bad JSON / schema fail | Batch discarded → `rules`; `llm_failed` |
-| Invalid `event_id` in response | Treat as null |
-| Over `llmMaxJudgmentsPerRun` | Remainder → `rules`; meta `llmTruncated` |
-| Regen fails | Keep previous profile; member `event_id` updates still apply if attach succeeded |
-| Bootstrap (no sticky) | Existing full-merge bootstrap; cold-start profiles for new clusters |
+| Provider missing / init fail | `llmJudge = null` → attach via `rules`, `fallbackReason = llm_unavailable` |
+| Batch LLM throw | `tryAttach` returns null for that path (cluster kept new or later rules path depending on branch) |
+| Bad / empty JSON | Per-pair `same_event: false` |
+| Over max judgments | Warn; further `tryAttach` return null |
+| Regen fail | Log; keep old fp |
 
-Pollution guards:
+## Testing (as-built)
 
-1. Grounded regen + schema caps  
-2. Confidence bands: below `judgeMin` no merge; below `rewriteMin` merge without rewrite participation  
-3. One regen per dirty cluster per run  
-4. Rebuild-from-members escape hatch  
-5. Short structured fields only — no long prose as identity
+- `backend/tests/cluster-fingerprint.test.ts` — mini-profile, bootstrap, overlap, recall, onMerge promotion, seal, cache key.
+- `backend/tests/llm-merge-judge.test.ts` — mock provider attach / reject / cache / budget.
 
-## Testing
+Existing rules/hybrid merge tests remain the regression floor for non-`llm` modes.
 
-**Unit (no LLM):** mini-profile / cold-start assembly; recall ranking + time window; JSON parse edge cases; cache key stability.
+## Known gaps / follow-ups
 
-**Contract (mock LLM):** sticky attach updates `event_id` and marks dirty once; mock failure → rules fallback; low confidence skips rewrite.
+Prioritized against the product contract:
 
-**Regression:** existing `merge-hot-stories` / `incremental-hot-merge` tests stay green for `rules` / `hybrid`. Optional fixture cases for alias-heavy product launches with fixed mock outputs.
+1. **New kept clusters lack fingerprints** — When LLM attach misses, `keptNew` becomes a new `evt_*` but `getOrCreateFingerprint` is not called. Next runs load sticky members without a fingerprint → LLM recall cannot target that event (hard signature still works). **Fix:** bootstrap fingerprint for every kept-new / newly assigned cluster at end of run.
 
-## Implementation touchpoints
+2. **Hard-signature attaches skip `onMerge`** — Members glued by signature do not update aliases / pendingClaims. Fingerprint can lag reality. **Fix:** call `onMerge` (or a lighter alias ingest) on hard-attach paths.
 
-- New: cluster profile types + cold-start assembly + validation; LLM judge (recall + batch judge + regen); store read/write for profiles; judgment cache
-- Change: `incrementalHotMerge.ts` (`llm` branch), `HotStoryMergeService.ts`, `HotConfig` / `HotMergeMode`, admin rebuild overrides
-- Leave unchanged in behavior: `rules` / `semantic` / `hybrid` paths
+3. **No tip publish-window gate on LLM attach** — Recall uses `lastUpdated` / `windowMs * 4` heuristics, not `withinClusterPublishWindow(members, [item])`. Can diverge from rules/hybrid time semantics. **Fix:** apply the same tip-vs-tip gate before judge.
 
-## Relationship to code on `main`
+4. **Representative-only judgment** — Attach decides from `neu.members[0]` then moves the whole newcomer cluster. Mis-clustered newcomers can over-attach. **Mitigation options:** judge oldest solid member; or require majority / refuse attach if members disagree (later).
 
-Commit `27b5978` (`feat: llm-based cluster for hot search`) already introduced `ClusterFingerprint`, `LLMMergeJudge`, and `HotMergeMode = 'llm'`. That work is in the same design family as this spec (aliases, cold start, recall, cache, budget). Where the landed shape differs (e.g. `seedFingerprint` / `pendingClaims` / sealing vs the profile fields above), treat **this document as the product contract**; reconcile or document intentional extensions so naming and behavior stay coherent before further expansion.
+5. **Pairwise vs exclusive choice** — Model may mark multiple candidates `same_event=true`; code takes first hit. Prefer multiple-choice `{ event_id | null }` or argmax confidence among positives.
+
+6. **Confidence bands** — Single 0.6 threshold; no `rewriteMin` band (merge-without-regen). Promotion/`sealed` partially substitutes; document or add explicit band if ops need it.
+
+7. **`seedFingerprint` mutability** — Comments say nearly immutable; regen may overwrite. Treat regen overwrite as intentional distillation; keep comment/docs aligned.
+
+8. **Provider credential path** — `createAIProvider(configWithModel)` must use the same secrets resolution as other runtime AI calls; verify against `settingsSecurity` / small-model helpers if judge fails auth in production.
+
+9. **Ops rebuild-from-members** — Comment claims rebuildability; no first-class rebuild API yet. Optional follow-up.
 
 ## Success criteria
 
-- Gray-zone same-event paraphrases merge without new regex/entity special cases
-- Unrelated events in-window do not glue when LLM confidence is low
-- Typical rebuild stays within a small number of LLM calls; fallback never leaves the board empty
-- Sticky `evt_*` stability unchanged vs current incremental semantics
+- Gray-zone paraphrases merge without new regex/entity special cases.
+- Low-confidence / non-matches do not glue unrelated in-window events.
+- Typical rebuild stays within budget; fallback never empties the board.
+- Sticky `evt_*` stability unchanged vs incremental semantics.
+- Gaps (1)–(3) closed or explicitly accepted with documented workaround.
+
+## Implementation touchpoints (reference)
+
+- As-built: `ClusterFingerprint.ts`, `llmJudgePrompt.ts`, `llmMergeJudge.ts`, `HotStoryMergeService.ts`, `incrementalHotMerge.ts`, `types/config.ts`, tests above.
+- Next edits: prefer closing [Known gaps](#known-gaps--follow-ups) (1)–(3) before further prompt tuning.
