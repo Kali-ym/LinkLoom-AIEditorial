@@ -6,6 +6,7 @@ import {
   judgmentCacheKey,
   onMerge,
   recallTopK,
+  sharedVersionedProduct,
   trySeal,
   type ClusterFingerprint,
   type ItemMiniProfile
@@ -287,6 +288,30 @@ describe('ClusterFingerprint', () => {
 
       const result = recallTopK(item, [fp1], 36 * 3600 * 1000, 3);
       expect(result).toHaveLength(0);
+    });
+
+    it('recalls via shared versioned product even when org tokens differ', () => {
+      const release = bootstrapFingerprint(
+        'evt_release',
+        makeProfile('a', {
+          signature: 'MiniMax-H3-发布',
+          entities: ['MiniMax', 'MiniMax H3'],
+          summary: 'MiniMax发布H3并开放权重'
+        })
+      );
+      const unrelated = bootstrapFingerprint(
+        'evt_other',
+        makeProfile('b', { entities: ['OpenAI', 'GPT-5'] })
+      );
+      const integration = makeProfile('c', {
+        signature: 'MiniMax H3-Vercel-接入',
+        entities: ['MiniMax H3', 'Vercel AI Gateway'],
+        summary: 'MiniMax H3接入Vercel AI Gateway'
+      });
+
+      expect(sharedVersionedProduct(integration, release)).toBe(true);
+      const result = recallTopK(integration, [unrelated, release], 36 * 3600 * 1000, 3);
+      expect(result[0]?.eventId).toBe('evt_release');
     });
   });
 

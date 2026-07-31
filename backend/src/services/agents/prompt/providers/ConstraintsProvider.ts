@@ -9,6 +9,6 @@ export class ConstraintsProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const constraints = ctx.structuredPrompt.constraints?.trim();
     if (!constraints) return null;
-    return { content: wrapTag('constraints', constraints) };
+    return { content: wrapTag('constraints', constraints), cacheClass: 'stable' };
   }
 }

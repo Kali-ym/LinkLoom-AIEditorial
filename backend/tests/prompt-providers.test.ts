@@ -254,10 +254,10 @@ describe('SkillProvider', () => {
     );
     expect(r).toBeNull();
   });
-  it('has id skill, phase system_accumulate, priority 70', () => {
+  it('has id skill, phase before_first_user, priority 70', () => {
     const p = new SkillProvider({} as never);
     expect(p.id).toBe('skill');
-    expect(p.phase).toBe('system_accumulate');
+    expect(p.phase).toBe('before_first_user');
     expect(p.priority).toBe(70);
   });
 });
@@ -380,11 +380,11 @@ describe('ModelHintProvider', () => {
     expect(r?.content).toContain('自定义提示');
     expect(r?.content).toContain('google_search');
   });
-  it('has id model_hint, phase system_accumulate, priority 80', () => {
+  it('has id model_hint, phase before_first_user, priority 5', () => {
     const p = new ModelHintProvider();
     expect(p.id).toBe('model_hint');
-    expect(p.phase).toBe('system_accumulate');
-    expect(p.priority).toBe(80);
+    expect(p.phase).toBe('before_first_user');
+    expect(p.priority).toBe(5);
   });
 });
 
@@ -469,11 +469,11 @@ describe('ToolSystemProvider', () => {
     );
     expect(r?.content).toContain('<tool name="nodesc">no description</tool>');
   });
-  it('has id tool_system, phase system_accumulate, priority 90', () => {
+  it('has id tool_system, phase before_first_user, priority 40', () => {
     const p = new ToolSystemProvider();
     expect(p.id).toBe('tool_system');
-    expect(p.phase).toBe('system_accumulate');
-    expect(p.priority).toBe(90);
+    expect(p.phase).toBe('before_first_user');
+    expect(p.priority).toBe(40);
   });
 });
 

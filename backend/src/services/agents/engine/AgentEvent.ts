@@ -374,6 +374,8 @@ export interface ToolFinishedEvent extends AgentEventBase {
     toolName: string;
     success: boolean;
     content?: string;
+    canonicalMessageContent?: string;
+    canonicalMessageVersion?: string;
     data?: unknown;
     error?: string;
     durationMs?: number;

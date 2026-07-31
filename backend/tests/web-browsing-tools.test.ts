@@ -63,6 +63,19 @@ describe('WebBrowsingService', () => {
       url: 'https://news.example.com/a',
     });
   });
+
+  it('marks outbound network failures as non-retryable for the current run', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+    const service = new WebBrowsingService({ fetchImpl });
+
+    await expect(service.search('linkloom agent')).rejects.toMatchObject({
+      name: 'WebSearchNetworkError',
+      code: 'WEB_SEARCH_NETWORK_UNAVAILABLE',
+      retryable: false,
+    });
+  });
 });
 
 describe('web browsing tools', () => {

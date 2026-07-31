@@ -112,13 +112,20 @@ describe('LLMMergeJudge', () => {
 
     await judge.loadFingerprints();
 
+    const seed = makeItem('a', {
+      entities: ['Moonshot AI', 'Kimi K3'],
+      keyFacts: ['开源权重'],
+      summary: '月之暗面发布 Kimi K3'
+    });
     const newItem = makeItem('b', {
       entities: ['Moonshot AI', 'Kimi K3'],
       keyFacts: ['API 减半'],
       summary: 'Kimi K3 上线'
     });
 
-    const matchedId = await judge.tryAttach(newItem, ['evt_001']);
+    const matchedId = await judge.tryAttach(newItem, [
+      { eventId: 'evt_001', members: [seed] }
+    ]);
     expect(matchedId).toBe('evt_001');
     expect(judge.getJudgmentCount()).toBe(1);
   });
@@ -151,12 +158,18 @@ describe('LLMMergeJudge', () => {
 
     await judge.loadFingerprints();
 
+    const seed = makeItem('a', {
+      entities: ['OpenAI', 'GPT-5'],
+      summary: 'GPT-5 发布'
+    });
     const newItem = makeItem('b', {
       entities: ['OpenAI'],
       summary: 'OpenAI 融资'
     });
 
-    const matchedId = await judge.tryAttach(newItem, ['evt_001']);
+    const matchedId = await judge.tryAttach(newItem, [
+      { eventId: 'evt_001', members: [seed] }
+    ]);
     expect(matchedId).toBeNull();
   });
 
@@ -188,13 +201,17 @@ describe('LLMMergeJudge', () => {
 
     await judge.loadFingerprints();
 
+    const seed = makeItem('a', {
+      entities: ['Moonshot AI', 'Kimi K3'],
+      summary: 'Kimi K3 发布'
+    });
     const item = makeItem('b', {
       entities: ['Moonshot AI', 'Kimi K3'],
       summary: 'Kimi K3 上线'
     });
 
     // First call: LLM is invoked
-    await judge.tryAttach(item, ['evt_001']);
+    await judge.tryAttach(item, [{ eventId: 'evt_001', members: [seed] }]);
     expect(judge.getJudgmentCount()).toBe(1);
 
     // Second call: should hit cache
@@ -244,12 +261,18 @@ describe('LLMMergeJudge', () => {
 
     await judge.loadFingerprints();
 
+    const seed = makeItem('a', {
+      entities: ['Moonshot AI'],
+      summary: 'Kimi K3'
+    });
     const item = makeItem('b', {
       entities: ['Moonshot AI'],
       summary: 'Kimi K3 news'
     });
 
-    const matchedId = await judge.tryAttach(item, ['evt_001']);
+    const matchedId = await judge.tryAttach(item, [
+      { eventId: 'evt_001', members: [seed] }
+    ]);
     expect(matchedId).toBeNull();
   });
 
@@ -281,14 +304,94 @@ describe('LLMMergeJudge', () => {
 
     await judge.loadFingerprints();
 
+    const seed = makeItem('a', {
+      entities: ['Entity'],
+      summary: 'Event'
+    });
     const item = makeItem('b', {
       entities: ['Entity'],
       summary: 'Event follow-up'
     });
 
-    const matchedId = await judge.tryAttach(item, ['evt_001']);
+    const matchedId = await judge.tryAttach(item, [
+      { eventId: 'evt_001', members: [seed] }
+    ]);
     expect(matchedId).toBeNull();
     expect(provider.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('rejects candidates outside tip publish window without calling LLM', async () => {
+    const seed = makeItem('a', {
+      entities: ['Moonshot AI', 'Kimi K3'],
+      summary: 'Kimi K3 发布',
+      publishedAt: '2026-07-28T12:00:00.000Z'
+    });
+    const fp = bootstrapFingerprint('evt_001', extractMiniProfile(seed));
+
+    const provider = createMockProvider(
+      JSON.stringify({
+        judgments: [
+          { pair_index: 0, same_event: true, confidence: 0.99, reason: 'should not run' }
+        ]
+      })
+    );
+
+    const judge = new LLMMergeJudge({
+      provider,
+      store: createMockStore([fp]),
+      cache: createMockCache(),
+      maxJudgmentsPerRun: 50,
+      cacheTtlMinutes: 360,
+      sealAfterMs: 6 * 3600 * 1000,
+      windowMs: 36 * 3600 * 1000
+    });
+    await judge.loadFingerprints();
+
+    const late = makeItem('b', {
+      entities: ['Moonshot AI', 'Kimi K3'],
+      summary: 'Kimi K3 后续',
+      publishedAt: '2026-07-30T12:00:00.000Z' // 48h after tip → outside 36h window
+    });
+
+    const matchedId = await judge.tryAttach(late, [
+      { eventId: 'evt_001', members: [seed] }
+    ]);
+    expect(matchedId).toBeNull();
+    expect(provider.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('ingestAttachedMembers updates aliases without LLM', async () => {
+    const seed = makeItem('a', {
+      entities: ['Moonshot AI'],
+      keyFacts: ['开源'],
+      summary: 'Kimi K3'
+    });
+    const fp = bootstrapFingerprint('evt_001', extractMiniProfile(seed));
+    const judge = new LLMMergeJudge({
+      provider: createMockProvider('{}'),
+      store: createMockStore([fp]),
+      cache: createMockCache(),
+      maxJudgmentsPerRun: 50,
+      cacheTtlMinutes: 360,
+      sealAfterMs: 6 * 3600 * 1000,
+      windowMs: 36 * 3600 * 1000
+    });
+    await judge.loadFingerprints();
+
+    judge.ingestAttachedMembers('evt_001', [
+      makeItem('b', {
+        entities: ['Kimi K3', '月之暗面'],
+        keyFacts: ['开源'],
+        summary: 'follow-up'
+      })
+    ]);
+
+    const updated = judge.getFingerprints().find((f) => f.eventId === 'evt_001')!;
+    expect(updated.aliases.some((a) => a.surface === 'Kimi K3')).toBe(true);
+    expect(updated.aliases.some((a) => a.surface === '月之暗面')).toBe(true);
+    expect(updated.memberCount).toBe(2);
+    // Same claim seen twice → promoted into discriminators
+    expect(updated.discriminators).toContain('开源');
   });
 
   it('bootstraps a new fingerprint when getOrCreateFingerprint is called', () => {

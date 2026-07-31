@@ -7,7 +7,7 @@ function webSearchHint(mode: WebSearchEffectiveMode): string | null {
     case 'off':
       return '本轮未开启联网搜索，请勿调用任何网页相关工具。';
     case 'app':
-      return '使用 web_search 搜索；已知 URL 用 crawl_pages（可传 url 或 urls）。';
+      return '仅当用户明确要求实时、最新、外部网页信息，或明确要求搜索/打开 URL 时才联网；模型身份、功能说明、对话解释和常识问题不得调用 web_search。需要联网时使用 web_search；已知 URL 用 crawl_pages（可传 url 或 urls）。';
     case 'provider':
       return '优先用 google_search 获取实时信息，用 url_context 读网页；勿调用 web_search。';
     default:
@@ -24,8 +24,9 @@ function webSearchHint(mode: WebSearchEffectiveMode): string | null {
  */
 export class ModelHintProvider implements PromptProvider {
   id = 'model_hint';
-  phase = 'system_accumulate' as const;
-  priority = 80;
+  // Search/reasoning hints can vary per turn, so keep them after the stable prefix.
+  phase = 'before_first_user' as const;
+  priority = 5;
 
   build(ctx: PromptBuildContext): PromptContribution | null {
     const providerId = (ctx.providerId || '').toUpperCase();
@@ -61,6 +62,9 @@ export class ModelHintProvider implements PromptProvider {
     }
 
     if (hints.length === 0) return null;
-    return { content: hints.map((h) => wrapTag('model_hint', h)).join('\n') };
+    return {
+      content: hints.map((h) => wrapTag('model_hint', h)).join('\n'),
+      cacheClass: 'dynamic'
+    };
   }
 }

@@ -42,6 +42,7 @@ export class SingleAgentStepExecutor {
     while (attempt <= maxRetries) {
       const agentResult = await this.agentService.runAgent(step.agentId!, inputText, date, {
         ...agentOpts,
+        promptCachePolicy: 'isolated',
         runSource: agentOpts.runSource ?? 'workflow',
         metadata: {
           ...(agentOpts.metadata ?? {}),

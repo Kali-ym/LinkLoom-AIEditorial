@@ -235,6 +235,44 @@ describe('Provider Governance', () => {
     });
   });
 
+  it('uses cached input pricing when the provider reports cache usage', async () => {
+    const governed = createProviderGovernanceProvider({
+      primary: {
+        provider: createProvider('cache-cost-provider', async () => ({
+          content: 'cached answer',
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            prompt_cache: {
+              cacheStatus: 'hit',
+              cachedInputTokens: 800,
+              cacheWriteInputTokens: 0,
+              uncachedInputTokens: 200,
+              requested: true
+            }
+          }
+        })),
+        providerId: 'cache-cost',
+        model: 'cache-cost-model',
+        cost: {
+          inputUsdPer1M: 2,
+          cachedInputUsdPer1M: 0.5,
+          outputUsdPer1M: 4
+        }
+      },
+      policy: { enabled: true }
+    });
+
+    const result = await governed.generateContent([{ role: 'user', content: 'hello' }], []);
+
+    expect(result.usage).toMatchObject({
+      estimated_cost_usd: 0.0028,
+      cost: { input_usd: 0.0008, output_usd: 0.002, total_usd: 0.0028 },
+      prompt_cache: { estimatedCacheSavingsUsd: 0.0012 }
+    });
+  });
+
   it('wraps temporary external providers for budget governance', async () => {
     const externalProvider = createProvider('external-provider', vi.fn(async () => ({ content: 'nope' })));
     const service = createService(createAgent(), createProvider('default-provider', async () => ({ content: 'default' })));

@@ -26,6 +26,7 @@ export type ToolExecutionErrorCode =
   | 'aborted'
   | 'not_found'
   | 'sandbox_denied'
+  | 'network_unavailable'
   | 'execution_error';
 
 export interface ToolExecutionEnvelopeRetryPolicy
@@ -354,7 +355,10 @@ function toExecutionErrorTrace(error: unknown, attempt: number): ToolExecutionEr
   return {
     code,
     message,
-    retryable: code === 'timeout' || code === 'execution_error',
+    retryable:
+      typeof record.retryable === 'boolean'
+        ? record.retryable
+        : code === 'timeout' || code === 'execution_error',
     attempt,
     details: record.details
   };
@@ -368,6 +372,9 @@ function classifyToolExecutionError(error: unknown): ToolExecutionErrorCode {
   const message = error instanceof Error ? error.message : String(error || '');
   const normalized = `${name} ${code} ${message}`.toLowerCase();
   if (code === 'SANDBOX_DENIED' || name === 'WorkspaceSandboxDeniedError') return 'sandbox_denied';
+  if (code === 'WEB_SEARCH_NETWORK_UNAVAILABLE' || name === 'WebSearchNetworkError') {
+    return 'network_unavailable';
+  }
   if (normalized.includes('timeout') || normalized.includes('timed out')) return 'timeout';
   if (name === 'AbortError' || code === 'ABORT_ERR' || normalized.includes('abort')) return 'aborted';
   if (normalized.includes('not found') || normalized.includes('未找到')) return 'not_found';

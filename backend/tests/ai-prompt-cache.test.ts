@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyAnthropicPromptCache,
+  attachPromptCacheUsage,
   extractMessagesApiResult,
   markAnthropicToolsCacheControl,
   parseChatCompletionsStreamPayload,
@@ -161,6 +162,53 @@ describe('ai prompt cache usage parsing', () => {
     it('returns undefined for empty or undefined tools', () => {
       expect(markAnthropicToolsCacheControl(undefined, cacheKey)).toBeUndefined();
       expect(markAnthropicToolsCacheControl([], cacheKey)).toBeUndefined();
+    });
+  });
+
+  it('emits unified cache usage for a provider cache hit', () => {
+    const response = attachPromptCacheUsage(
+      {
+        content: 'ok',
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 5,
+          total_tokens: 105,
+          cached_tokens: 80,
+        },
+      },
+      {
+        enableStore: true,
+        cacheKey: 'pc:v1:global:openai:gpt-5',
+        cacheNamespace: 'pc:v1:global:openai:gpt-5',
+        cacheEligibility: true,
+        cacheContractVersion: 'prompt-cache-v1',
+        providerId: 'provider-openai',
+      },
+    );
+
+    expect(response.usage?.prompt_cache).toMatchObject({
+      cacheStatus: 'hit',
+      cachedInputTokens: 80,
+      uncachedInputTokens: 20,
+      cacheNamespace: 'pc:v1:global:openai:gpt-5',
+      cacheContractVersion: 'prompt-cache-v1',
+    });
+  });
+
+  it('records unsupported instead of sending a false cache hit', () => {
+    const response = attachPromptCacheUsage(
+      { content: 'ok' },
+      {
+        enableStore: false,
+        cacheEligibility: false,
+        cacheDisableReason: 'GEMINI provider adapter does not expose prompt cache controls',
+      },
+    );
+
+    expect(response.usage?.prompt_cache).toMatchObject({
+      cacheStatus: 'unsupported',
+      requested: false,
+      cachedInputTokens: 0,
     });
   });
 });

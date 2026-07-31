@@ -173,6 +173,8 @@ export interface ReActRuntimeOptions {
   agentDef: AgentDefinition;
   provider: AIProvider;
   tools: ToolDefinition[];
+  /** Tool definitions sent to the provider; execution tools remain in `tools`. */
+  providerTools?: ToolDefinition[];
   mcpConfigs: MCPServerConfig[];
   mcpService: MCPService;
   toolRegistry: ToolRegistry;
@@ -190,6 +192,11 @@ export interface ReActRuntimeOptions {
   responseCache?: ResponseCacheRequest;
   /** Live SSE chunks during permission resume (tool result + model continuation). */
   onStreamChunk?: (chunk: unknown) => void | Promise<void>;
+  /** Persist the canonical tool-message content before the next model call. */
+  onToolObservation?: (
+    observation: AgentToolObservation,
+    round: number,
+  ) => void | Promise<void>;
   /** Token counter for pre-call context usage measurement */
   tokenCounter?: TokenCounter;
   /** Builder to classify messages into categories for token counting */
@@ -438,6 +445,23 @@ export function formatFinalContent(finalContent: unknown, lastToolResult: unknow
   return finalString;
 }
 
+function formatToolFailureForUser(observation: AgentToolObservation): string {
+  const detail = (observation.error || observation.content || '未知错误').trim();
+  const conciseDetail = detail.length > 600 ? `${detail.slice(0, 600)}…` : detail;
+  return `工具「${observation.toolName}」执行失败：${conciseDetail}\n已停止继续重试，请检查工作区配置或网络连接后再试。`;
+}
+
+function findLastFailedObservation(trace: AgentRunTrace): AgentToolObservation | undefined {
+  for (let roundIndex = trace.rounds.length - 1; roundIndex >= 0; roundIndex -= 1) {
+    const observations = trace.rounds[roundIndex].observations;
+    for (let observationIndex = observations.length - 1; observationIndex >= 0; observationIndex -= 1) {
+      const observation = observations[observationIndex];
+      if (!observation.success) return observation;
+    }
+  }
+  return undefined;
+}
+
 function resolveMcpToolIdentity(
   toolName: string,
   tools: ToolDefinition[]
@@ -542,8 +566,24 @@ function toRoundBudgetTrace(governance: Record<string, any>): AgentRunRound['bud
     inputTokens: typeof cumulative?.promptTokens === 'number' ? cumulative.promptTokens : undefined,
     outputTokens:
       typeof cumulative?.completionTokens === 'number' ? cumulative.completionTokens : undefined,
+    cachedInputTokens:
+      typeof cumulative?.cachedInputTokens === 'number'
+        ? cumulative.cachedInputTokens
+        : undefined,
+    cacheWriteInputTokens:
+      typeof cumulative?.cacheWriteInputTokens === 'number'
+        ? cumulative.cacheWriteInputTokens
+        : undefined,
+    uncachedInputTokens:
+      typeof cumulative?.uncachedInputTokens === 'number'
+        ? cumulative.uncachedInputTokens
+        : undefined,
     estimatedCostUsd:
       typeof cumulative?.estimatedCostUsd === 'number' ? cumulative.estimatedCostUsd : undefined,
+    estimatedCacheSavingsUsd:
+      typeof cumulative?.estimatedCacheSavingsUsd === 'number'
+        ? cumulative.estimatedCacheSavingsUsd
+        : undefined,
     limits: budget?.limits && typeof budget.limits === 'object' ? budget.limits : undefined,
     exceeded: Array.isArray(budget?.exceeded) ? budget.exceeded : undefined
   };
@@ -686,7 +726,7 @@ export class ReActRuntime {
 
   private resolveProviderResponseCache(roundIndex: number): ResponseCacheRequest | undefined {
     void roundIndex;
-    return this.options.responseCache ?? { enableStore: true };
+    return this.options.responseCache;
   }
 
   private captureProviderResponseId(response?: Pick<AIResponse, 'response_id'>): void {
@@ -731,6 +771,7 @@ export class ReActRuntime {
   async run(): Promise<AgentExecutionResult> {
     const { agentDef, provider, tools, messages, silent, budgetPolicy, observationPolicy } =
       this.options;
+    const providerTools = this.options.providerTools ?? tools;
 
     const mode = getRuntimeMode(agentDef);
     const maxRounds = getMaxRounds(agentDef, budgetPolicy);
@@ -775,7 +816,7 @@ export class ReActRuntime {
       });
       let response: AIResponse;
       try {
-        response = await provider.generateContent(modelInput, tools, undefined, {
+        response = await provider.generateContent(modelInput, providerTools, undefined, {
           signal: this.options.signal,
           responseCache: this.resolveProviderResponseCache(roundIndex)
         });
@@ -869,6 +910,7 @@ export class ReActRuntime {
           if (guard && guard.action !== 'allow') {
             const observation = this.createObservationGuardObservation(tc, guard);
             round.observations.push(observation);
+            await this.notifyToolObservation(observation, round.index);
             messages.push({
               role: 'tool',
               tool_call_id: tc.id,
@@ -903,6 +945,7 @@ export class ReActRuntime {
               observation
             });
             round.observations.push(observation);
+            await this.notifyToolObservation(observation, round.index);
             messages.push({
               role: 'tool',
               tool_call_id: tc.id,
@@ -972,7 +1015,7 @@ export class ReActRuntime {
                 permission: permission.decision,
                 result: { success: false, error: toolOutcome.errorMessage }
               });
-              const failureResult = this.recordFailedToolCall({
+              const failureResult = await this.recordFailedToolCall({
                 tc,
                 errorMessage: toolOutcome.errorMessage,
                 envelope: toolOutcome.envelope,
@@ -1019,6 +1062,7 @@ export class ReActRuntime {
               observation
             });
             round.observations.push(observation);
+            await this.notifyToolObservation(observation, round.index);
 
             if (!silent) {
               LogService.info(`[Agent ${agentDef.name}] Round ${roundIndex} Tool Result Success`);
@@ -1028,7 +1072,7 @@ export class ReActRuntime {
               role: 'tool',
               tool_call_id: tc.id,
               name: tc.name,
-              content: this.createToolMessageContent(toolContext, observation)
+              content: observation.canonicalMessageContent ?? observation.content
             });
 
             lastToolResult = toolContext.data ?? result;
@@ -1053,6 +1097,7 @@ export class ReActRuntime {
                 getToolExecutionEnvelopeFromError(error)
               );
               round.observations.push(observation);
+              await this.notifyToolObservation(observation, round.index);
               trace.rounds.push(round);
               trace.finishedAt = new Date().toISOString();
               return this.toResult(
@@ -1072,6 +1117,7 @@ export class ReActRuntime {
                 getToolExecutionEnvelopeFromError(error)
               );
               round.observations.push(observation);
+              await this.notifyToolObservation(observation, round.index);
               trace.rounds.push(round);
               trace.finishedAt = new Date().toISOString();
               return this.toResult(
@@ -1089,7 +1135,7 @@ export class ReActRuntime {
               permission: resolvedPermission,
               result: { success: false, error: errorMessage }
             });
-            const failureResult = this.recordFailedToolCall({
+            const failureResult = await this.recordFailedToolCall({
               tc,
               errorMessage,
               envelope: getToolExecutionEnvelopeFromError(error),
@@ -1198,6 +1244,7 @@ export class ReActRuntime {
         startedAt
       );
       resumeRound.observations.push(observation);
+      await this.notifyToolObservation(observation, resumeRound.index);
       await this.emitStreamChunk({
         type: 'trace_observation',
         round: resumeRound.index,
@@ -1230,7 +1277,7 @@ export class ReActRuntime {
             permission: input.decision,
             result: { success: false, error: toolOutcome.errorMessage }
           });
-          const failureResult = this.recordFailedToolCall({
+          const failureResult = await this.recordFailedToolCall({
             tc: pendingToolCall,
             errorMessage: toolOutcome.errorMessage,
             envelope: toolOutcome.envelope,
@@ -1278,6 +1325,7 @@ export class ReActRuntime {
             observation
           });
           resumeRound.observations.push(observation);
+          await this.notifyToolObservation(observation, resumeRound.index);
           await this.emitStreamChunk({
             type: 'trace_observation',
             round: resumeRound.index,
@@ -1287,7 +1335,7 @@ export class ReActRuntime {
             role: 'tool',
             tool_call_id: pendingToolCall.id,
             name: pendingToolCall.name,
-            content: this.createToolMessageContent(toolContext, observation)
+            content: observation.canonicalMessageContent ?? observation.content
           });
           lastToolResult = toolContext.data ?? result;
         }
@@ -1300,7 +1348,7 @@ export class ReActRuntime {
           permission: input.decision,
           result: { success: false, error: errorMessage }
         });
-        const failureResult = this.recordFailedToolCall({
+        const failureResult = await this.recordFailedToolCall({
           tc: pendingToolCall,
           errorMessage,
           envelope: getToolExecutionEnvelopeFromError(error),
@@ -1394,6 +1442,7 @@ export class ReActRuntime {
       startedAt
     );
     resumeRound.observations.push(observation);
+    await this.notifyToolObservation(observation, resumeRound.index);
     await this.emitStreamChunk({
       type: 'trace_observation',
       round: resumeRound.index,
@@ -1509,6 +1558,7 @@ export class ReActRuntime {
 
   async *stream(): AsyncIterable<any> {
     const { agentDef, provider, tools, messages, budgetPolicy, observationPolicy } = this.options;
+    const providerTools = this.options.providerTools ?? tools;
     if (!provider.streamContent) {
       throw new Error(`Provider ${provider.name} does not support streaming`);
     }
@@ -1552,7 +1602,7 @@ export class ReActRuntime {
         model: agentDef.model
       });
 
-      const stream = provider.streamContent(modelInput, tools, undefined, {
+      const stream = provider.streamContent(modelInput, providerTools, undefined, {
         signal: this.options.signal,
         responseCache: this.resolveProviderResponseCache(round)
       });
@@ -1804,11 +1854,12 @@ export class ReActRuntime {
                 permission: permission.decision,
                 result: { success: false, error: toolOutcome.errorMessage }
               });
-              const failureResult = this.recordFailedToolCall({
+              const failureResult = await this.recordFailedToolCall({
                 tc,
                 errorMessage: toolOutcome.errorMessage,
                 envelope: toolOutcome.envelope,
                 startedAt,
+                roundIndex: round,
                 messages,
                 observationTracker,
                 toolFailureCounts,
@@ -1817,9 +1868,16 @@ export class ReActRuntime {
                 agentName: agentDef.name,
                 permission: resolvedPermission
               });
-              yield { type: 'tool_error', tool: tc.name, error: toolOutcome.errorMessage, round };
+              yield {
+                type: 'tool_error',
+                tool: tc.name,
+                toolCallId: tc.id,
+                error: toolOutcome.errorMessage,
+                round
+              };
               yield { type: 'trace_observation', round, observation: failureResult.observation };
               if (failureResult.stopReason) {
+                yield { type: 'content', content: formatToolFailureForUser(failureResult.observation) };
                 yield { type: 'final_trace', stopReason: failureResult.stopReason };
                 return;
               }
@@ -1851,11 +1909,12 @@ export class ReActRuntime {
               arguments: tc.arguments,
               observation
             });
+            await this.notifyToolObservation(observation, round);
             messages.push({
               role: 'tool',
               tool_call_id: tc.id,
               name: tc.name,
-              content: this.createToolMessageContent(toolContext, observation)
+              content: observation.canonicalMessageContent ?? observation.content
             });
             yield { type: 'trace_observation', round, observation };
           } catch (error: any) {
@@ -1881,6 +1940,7 @@ export class ReActRuntime {
                 error.message,
                 getToolExecutionEnvelopeFromError(error)
               );
+              await this.notifyToolObservation(observation, round);
               yield { type: 'trace_observation', round, observation };
               yield { type: 'final_trace', stopReason: 'permission_required' };
               return;
@@ -1894,17 +1954,19 @@ export class ReActRuntime {
                 error.message,
                 getToolExecutionEnvelopeFromError(error)
               );
+              await this.notifyToolObservation(observation, round);
               yield { type: 'trace_observation', round, observation };
               yield { type: 'final_trace', stopReason: 'needs_input' };
               return;
             }
 
             const errorMessage = toolFailureMessage(error);
-            const failureResult = this.recordFailedToolCall({
+            const failureResult = await this.recordFailedToolCall({
               tc,
               errorMessage,
               envelope: getToolExecutionEnvelopeFromError(error),
               startedAt,
+              roundIndex: round,
               messages,
               observationTracker,
               toolFailureCounts,
@@ -1913,9 +1975,16 @@ export class ReActRuntime {
               agentName: agentDef.name,
               permission: resolvedPermission
             });
-            yield { type: 'tool_error', tool: tc.name, error: errorMessage, round };
+            yield {
+              type: 'tool_error',
+              tool: tc.name,
+              toolCallId: tc.id,
+              error: errorMessage,
+              round
+            };
             yield { type: 'trace_observation', round, observation: failureResult.observation };
             if (failureResult.stopReason) {
+              yield { type: 'content', content: formatToolFailureForUser(failureResult.observation) };
               yield { type: 'final_trace', stopReason: failureResult.stopReason };
               return;
             }
@@ -2182,6 +2251,9 @@ export class ReActRuntime {
         outcome.envelope
       );
       input.round?.observations.push(observation);
+      if (input.round) {
+        await this.notifyToolObservation(observation, input.round.index);
+      }
       input.observationTracker?.recordObservation({
         toolName: outcome.toolCall.name,
         arguments: outcome.toolCall.arguments,
@@ -2193,7 +2265,7 @@ export class ReActRuntime {
         name: outcome.toolCall.name,
         content:
           outcome.success && toolContext
-            ? this.createToolMessageContent(toolContext, observation)
+            ? observation.canonicalMessageContent ?? observation.content
             : observation.content
       });
       if (outcome.success) {
@@ -2224,12 +2296,13 @@ export class ReActRuntime {
     return input.toolCalls.every((toolCall) => isExplicitParallelToolCall(toolCall, this.options.tools));
   }
 
-  private recordFailedToolCall(input: {
+  private async recordFailedToolCall(input: {
     tc: NormalizedToolCall;
     errorMessage: string;
     envelope?: ToolExecutionEnvelope;
     startedAt: number;
-    round?: { observations: AgentToolObservation[] };
+    round?: { index?: number; observations: AgentToolObservation[] };
+    roundIndex?: number;
     messages: AIMessage[];
     observationTracker?: ObservationPolicyTracker;
     toolFailureCounts: Map<string, number>;
@@ -2238,7 +2311,7 @@ export class ReActRuntime {
     agentName: string;
     silent?: boolean;
     permission?: PermissionDecision | PermissionRequest;
-  }): { stopReason: AgentExecutionResult['stopReason'] | null; observation: AgentToolObservation } {
+  }): Promise<{ stopReason: AgentExecutionResult['stopReason'] | null; observation: AgentToolObservation }> {
     void input.permission;
     if (!input.silent) {
       LogService.error(`[Agent ${input.agentName}] Tool ${input.tc.name} failed: ${input.errorMessage}`);
@@ -2257,6 +2330,10 @@ export class ReActRuntime {
       observation
     });
     input.round?.observations.push(observation);
+    await this.notifyToolObservation(
+      observation,
+      input.round?.index ?? input.roundIndex ?? 0,
+    );
     input.messages.push({
       role: 'tool',
       tool_call_id: input.tc.id,
@@ -2271,9 +2348,23 @@ export class ReActRuntime {
     );
     const failureCount = (input.toolFailureCounts.get(failureSignature) || 0) + 1;
     input.toolFailureCounts.set(failureSignature, failureCount);
-    if (input.stopOnRepeatedToolError && failureCount >= input.maxRepeatedToolErrors) {
+    const toolErrorSignature = JSON.stringify({
+      toolName: input.tc.name,
+      errorMessage: input.errorMessage
+    });
+    const toolErrorCount = (input.toolFailureCounts.get(toolErrorSignature) || 0) + 1;
+    input.toolFailureCounts.set(toolErrorSignature, toolErrorCount);
+    const nonRetryable =
+      input.envelope?.error?.retryable === false && input.envelope.error.code !== 'validation_error';
+    if (
+      nonRetryable ||
+      (input.stopOnRepeatedToolError &&
+        (failureCount >= input.maxRepeatedToolErrors || toolErrorCount >= input.maxRepeatedToolErrors))
+    ) {
       return {
-        stopReason: isInvalidToolArgumentsMessage(input.errorMessage)
+        stopReason: nonRetryable
+          ? 'tool_error'
+          : isInvalidToolArgumentsMessage(input.errorMessage)
           ? 'invalid_tool_arguments'
           : 'repeated_tool_error',
         observation
@@ -2426,7 +2517,7 @@ export class ReActRuntime {
       ? applyToolObservationAssessment(rawContent, assessment)
       : rawContent;
 
-    return {
+    const observation: AgentToolObservation = {
       toolCallId: tc.id,
       toolName: tc.name,
       success: observationSuccess,
@@ -2440,6 +2531,18 @@ export class ReActRuntime {
       artifactId: toolContext?.artifact?.artifactId,
       execution: envelope ? toolExecutionEnvelopeToTrace(envelope) : undefined
     };
+    observation.canonicalMessageContent = toolContext
+      ? this.createToolMessageContent(toolContext, observation)
+      : content;
+    return observation;
+  }
+
+  private async notifyToolObservation(
+    observation: AgentToolObservation,
+    round: number,
+  ): Promise<void> {
+    observation.canonicalMessageContent ??= observation.content;
+    await this.options.onToolObservation?.(observation, round);
   }
 
   private createToolMessageContent(
@@ -2593,7 +2696,12 @@ export class ReActRuntime {
     stopReason: AgentExecutionResult['stopReason']
   ): AgentExecutionResult {
     const finalString = formatFinalContent(finalContent, lastToolResult);
-    if (!finalString.trim()) {
+    const failureFallback =
+      !finalString.trim() && stopReason !== 'final'
+        ? findLastFailedObservation(trace)
+        : undefined;
+    const content = finalString || (failureFallback ? formatToolFailureForUser(failureFallback) : '');
+    if (!content.trim()) {
       LogService.error(
         `[Agent ${this.options.agentDef.name}] Failed to generate any content after ${trace.rounds.length} rounds.`
       );
@@ -2601,7 +2709,7 @@ export class ReActRuntime {
 
     const toolCalls = trace.rounds.flatMap((round) => round.toolCalls);
     return {
-      content: finalString || 'No response generated (AI returned empty content)',
+      content: content || 'No response generated (AI returned empty content)',
       toolCalls,
       data: lastToolResult,
       usage: trace.rounds.map((round) => round.usage).filter(Boolean),

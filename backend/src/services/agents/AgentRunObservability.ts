@@ -26,6 +26,18 @@ export interface AgentRunMetrics {
     totalTokens: number;
     promptTokens: number;
     completionTokens: number;
+    cachedInputTokens: number;
+    cacheWriteInputTokens: number;
+    uncachedInputTokens: number;
+    cacheHits: number;
+    cacheWrites: number;
+    cacheMisses: number;
+    cacheUnsupported: number;
+    cacheDisabled: number;
+    cacheUnsafe: number;
+    cacheHitRate: number;
+    cacheDisableReasons: Record<string, number>;
+    estimatedCacheSavingsUsd: number;
     modelCallCount: number;
   };
   generatedAt: string;
@@ -72,6 +84,17 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
   let totalTokens = 0;
   let promptTokens = 0;
   let completionTokens = 0;
+  let cachedInputTokens = 0;
+  let cacheWriteInputTokens = 0;
+  let uncachedInputTokens = 0;
+  let cacheHits = 0;
+  let cacheWrites = 0;
+  let cacheMisses = 0;
+  let cacheUnsupported = 0;
+  let cacheDisabled = 0;
+  let cacheUnsafe = 0;
+  const cacheDisableReasons = new Map<string, number>();
+  let estimatedCacheSavingsUsd = 0;
   let modelCallCount = 0;
 
   for (const session of sessions) {
@@ -84,6 +107,22 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
         totalTokens += usage.totalTokens;
         promptTokens += usage.promptTokens;
         completionTokens += usage.completionTokens;
+        cachedInputTokens += usage.cachedInputTokens;
+        cacheWriteInputTokens += usage.cacheWriteInputTokens;
+        uncachedInputTokens += usage.uncachedInputTokens;
+        cacheHits += usage.cacheStatus === 'hit' ? 1 : 0;
+        cacheWrites += usage.cacheStatus === 'write' ? 1 : 0;
+        cacheMisses += usage.cacheStatus === 'miss' ? 1 : 0;
+        cacheUnsupported += usage.cacheStatus === 'unsupported' ? 1 : 0;
+        cacheDisabled += usage.cacheStatus === 'disabled' ? 1 : 0;
+        cacheUnsafe += usage.cacheStatus === 'unsafe' ? 1 : 0;
+        if (usage.cacheDisableReason) {
+          cacheDisableReasons.set(
+            usage.cacheDisableReason,
+            (cacheDisableReasons.get(usage.cacheDisableReason) ?? 0) + 1,
+          );
+        }
+        estimatedCacheSavingsUsd += usage.estimatedCacheSavingsUsd;
       }
       if (event.type === 'tool_finished') {
         const toolName = event.payload.toolName || 'unknown';
@@ -126,6 +165,23 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
       totalTokens,
       promptTokens,
       completionTokens,
+      cachedInputTokens,
+      cacheWriteInputTokens,
+      uncachedInputTokens,
+      cacheHits,
+      cacheWrites,
+      cacheMisses,
+      cacheUnsupported,
+      cacheDisabled,
+      cacheUnsafe,
+      cacheHitRate:
+        cacheHits + cacheWrites + cacheMisses > 0
+          ? roundRatio(cacheHits / (cacheHits + cacheWrites + cacheMisses))
+          : 0,
+      cacheDisableReasons: Object.fromEntries(
+        [...cacheDisableReasons.entries()].sort((left, right) => right[1] - left[1]),
+      ),
+      estimatedCacheSavingsUsd: roundCost(estimatedCacheSavingsUsd),
       modelCallCount
     },
     generatedAt: new Date().toISOString()
@@ -144,16 +200,71 @@ function extractTokenUsage(usage: unknown): {
   totalTokens: number;
   promptTokens: number;
   completionTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  uncachedInputTokens: number;
+  cacheStatus?: 'hit' | 'write' | 'miss' | 'unsupported' | 'disabled' | 'unsafe';
+  cacheDisableReason?: string;
+  estimatedCacheSavingsUsd: number;
 } {
   if (!usage || typeof usage !== 'object') {
-    return { totalTokens: 0, promptTokens: 0, completionTokens: 0 };
+    return {
+      totalTokens: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      uncachedInputTokens: 0,
+      estimatedCacheSavingsUsd: 0
+    };
   }
   const record = usage as Record<string, unknown>;
   const prompt = Number(record.prompt_tokens ?? record.promptTokens ?? record.input_tokens ?? 0) || 0;
   const completion =
     Number(record.completion_tokens ?? record.completionTokens ?? record.output_tokens ?? 0) || 0;
   const total = Number(record.total_tokens ?? record.totalTokens ?? prompt + completion) || 0;
-  return { totalTokens: total, promptTokens: prompt, completionTokens: completion };
+  const promptCache =
+    record.prompt_cache && typeof record.prompt_cache === 'object'
+      ? (record.prompt_cache as Record<string, unknown>)
+      : undefined;
+  const cachedInputTokens =
+    Number(promptCache?.cachedInputTokens ?? promptCache?.read_tokens ?? 0) || 0;
+  const cacheWriteInputTokens =
+    Number(promptCache?.cacheWriteInputTokens ?? promptCache?.write_tokens ?? 0) || 0;
+  const uncachedInputTokens =
+    Number(
+      promptCache?.uncachedInputTokens ??
+        Math.max(0, prompt - cachedInputTokens - cacheWriteInputTokens),
+    ) || 0;
+  const cacheStatus =
+    promptCache?.cacheStatus === 'hit' ||
+    promptCache?.cacheStatus === 'write' ||
+    promptCache?.cacheStatus === 'miss' ||
+    promptCache?.cacheStatus === 'unsupported' ||
+    promptCache?.cacheStatus === 'disabled' ||
+    promptCache?.cacheStatus === 'unsafe'
+      ? promptCache.cacheStatus
+      : undefined;
+  const cacheDisableReason =
+    typeof promptCache?.cacheDisableReason === 'string'
+      ? promptCache.cacheDisableReason
+      : undefined;
+  const savings = Number(promptCache?.estimatedCacheSavingsUsd ?? 0) || 0;
+  return {
+    totalTokens: total,
+    promptTokens: prompt,
+    completionTokens: completion,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    uncachedInputTokens,
+    cacheStatus,
+    cacheDisableReason,
+    estimatedCacheSavingsUsd: savings
+  };
+}
+
+function roundCost(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 export function computeAgentRunAlerts(runs: AgentRun[], sessions: AgentSession[]): AgentRunAlert[] {

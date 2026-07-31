@@ -8,6 +8,78 @@ export type SettingsSection = {
   fields: Array<{ label: string; key: string; type: string } & Record<string, unknown>>;
 };
 
+/** Composite value for hot LLM picker: `providerId::model` */
+export const HOT_LLM_MODEL_BINDING_KEY = 'HOT_CONFIG.llmModelBinding';
+
+export function buildHotLlmModelOptions(settings: Record<string, unknown>) {
+  const closed = new Set((settings.CLOSED_PLUGINS as string[]) || []);
+  const providers = ((settings.AI_PROVIDERS as any[]) || []).filter(
+    (p) => p?.id && !closed.has(p.id)
+  );
+  const options: Array<{ label: string; value: string }> = [
+    { label: '使用全局 ACTIVE AI 提供商', value: '' }
+  ];
+
+  const modelCounts = new Map<string, number>();
+  for (const p of providers) {
+    const models =
+      Array.isArray(p.models) && p.models.length > 0
+        ? p.models.filter((m: unknown) => typeof m === 'string' && m.trim())
+        : [];
+    const list = models.length > 0 ? models : [typeof p.name === 'string' ? p.name.trim() : ''];
+    for (const model of list) {
+      if (!model) continue;
+      modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
+    }
+  }
+
+  for (const p of providers) {
+    const models =
+      Array.isArray(p.models) && p.models.length > 0
+        ? p.models.filter((m: unknown) => typeof m === 'string' && m.trim())
+        : [];
+    const list = models.length > 0 ? models : [typeof p.name === 'string' ? p.name.trim() : ''];
+    for (const model of list) {
+      if (!model) continue;
+      const dup = (modelCounts.get(model) || 0) > 1;
+      options.push({
+        label: dup ? `${p.name || p.id} · ${model}` : model,
+        value: `${p.id}::${model}`
+      });
+    }
+  }
+  return options;
+}
+
+export function parseHotLlmModelBinding(binding: string): {
+  llmProviderId: string;
+  llmModelId: string;
+} {
+  if (!binding?.trim()) return { llmProviderId: '', llmModelId: '' };
+  const sep = binding.indexOf('::');
+  if (sep < 0) return { llmProviderId: binding.trim(), llmModelId: '' };
+  return {
+    llmProviderId: binding.slice(0, sep).trim(),
+    llmModelId: binding.slice(sep + 2).trim()
+  };
+}
+
+export function formatHotLlmModelBinding(
+  hot: { llmProviderId?: string; llmModelId?: string } | undefined,
+  settings: Record<string, unknown>
+): string {
+  const providerId = hot?.llmProviderId?.trim() || '';
+  if (!providerId) return '';
+  let modelId = hot?.llmModelId?.trim() || '';
+  if (!modelId) {
+    const provider = ((settings.AI_PROVIDERS as any[]) || []).find((p) => p.id === providerId);
+    modelId =
+      (Array.isArray(provider?.models) && provider.models[0]) ||
+      (typeof provider?.name === 'string' ? provider.name : '');
+  }
+  return modelId ? `${providerId}::${modelId}` : providerId;
+}
+
 export function buildTabs(pluginMetadata: {
   aiProviders: unknown[];
   adapters: unknown[];
@@ -190,18 +262,33 @@ export function buildSections(settings: Record<string, unknown>): SettingsSectio
       tab: 'system',
       title: '热搜合并',
       description:
-        '配置今日热搜事件成团策略。规则合并用摘要/实体打分；语义合并用 Embedding；混合为默认（规则后再对候选对做语义二判）。',
+        '配置今日热搜事件成团策略。LLM 为默认（簇指纹 + 语义裁决）；也可选规则、Embedding 语义或混合模式。',
       fields: [
         {
           label: '合并模式',
           key: 'HOT_CONFIG.mergeMode',
           type: 'select',
           options: [
+            { label: 'LLM（簇指纹裁决）', value: 'llm' },
             { label: '混合（规则 + 语义候选）', value: 'hybrid' },
             { label: '仅规则', value: 'rules' },
             { label: '仅语义（Embedding）', value: 'semantic' }
           ],
-          defaultValue: 'hybrid'
+          defaultValue: 'llm'
+        },
+        {
+          label: '热搜 LLM 模型',
+          key: HOT_LLM_MODEL_BINDING_KEY,
+          type: 'select',
+          options: buildHotLlmModelOptions(settings),
+          defaultValue: ''
+        },
+        {
+          label: 'LLM 裁决上限（次/轮）',
+          key: 'HOT_CONFIG.llmMaxJudgmentsPerRun',
+          type: 'number',
+          defaultValue: 50,
+          placeholder: '默认 50'
         },
         {
           label: '热搜 Embedding 服务',

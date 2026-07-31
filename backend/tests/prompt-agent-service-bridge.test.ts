@@ -36,7 +36,7 @@ function build(agent: AgentDefinition, opts: { skillInstructions?: string; date?
   return assembleSystemMessages(ctx);
 }
 
-describe('bridge equivalence: old concat vs new pipeline', () => {
+describe('prompt boundary bridge: stable system vs dynamic messages', () => {
   it('string systemPrompt with no skills no date -> systemMessage contains identity', () => {
     const assembled = build(makeAgent());
     expect(assembled.systemMessage.content).toContain('You are X');
@@ -45,12 +45,15 @@ describe('bridge equivalence: old concat vs new pipeline', () => {
     expect(assembled.tailMessages).toEqual([]);
   });
 
-  it('string systemPrompt with skills -> systemMessage contains skill block', () => {
+  it('string systemPrompt with skills -> preUserMessages contains dynamic skill block', () => {
     const assembled = build(makeAgent({ skillIds: ['s1'] }), {
       skillInstructions: '## Available Skills\n### Skill: s1'
     });
-    expect(assembled.systemMessage.content).toContain('<available_skills>');
-    expect(assembled.systemMessage.content).toContain('s1');
+    expect(assembled.systemMessage.content).not.toContain('<available_skills>');
+    expect(assembled.preUserMessages.map((message) => message.content).join('\n')).toContain(
+      '<available_skills>',
+    );
+    expect(assembled.preUserMessages.map((message) => message.content).join('\n')).toContain('s1');
     expect(assembled.systemMessage.content).toContain('You are X');
   });
 
@@ -117,7 +120,9 @@ describe('bridge equivalence: old concat vs new pipeline', () => {
       }
     });
     const assembled = assembleSystemMessages(ctx);
-    expect(assembled.systemMessage.content).toContain('google_search');
-    expect(assembled.systemMessage.content).toContain('<model_hint>');
+    const preUserContent = assembled.preUserMessages.map((message) => message.content).join('\n');
+    expect(assembled.systemMessage.content).not.toContain('google_search');
+    expect(preUserContent).toContain('google_search');
+    expect(preUserContent).toContain('<model_hint>');
   });
 });

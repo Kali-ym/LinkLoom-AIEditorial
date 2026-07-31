@@ -33,6 +33,6 @@ export class BaseAgentProvider implements PromptProvider {
     // base 模板内可能含 {{#fragment:xxx}} 引用,渲染展开
     const rendered = registry.renderString(body);
     if (!rendered.text.trim()) return null;
-    return { content: wrapTagRaw('base', rendered.text) };
+    return { content: wrapTagRaw('base', rendered.text), cacheClass: 'stable' };
   }
 }

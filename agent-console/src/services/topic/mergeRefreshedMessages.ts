@@ -197,6 +197,65 @@ function userMatchKey(message: Message): string {
   return `${message.content.trim()}::${message.createdAt?.slice(0, 16) ?? ''}`;
 }
 
+function messageTimestamp(message: Message): number | undefined {
+  if (!message.createdAt) return undefined;
+  const timestamp = Date.parse(message.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+/**
+ * The optimistic Console user id (`u-*`) is replaced by the backend's
+ * session/run id after refresh. If the refresh crosses a minute boundary,
+ * the old minute-based key fails and both bubbles remain visible.
+ */
+function removeRefreshedCopiesOfOptimisticUsers(
+  apiMessages: Message[],
+  localMessages: Message[],
+): Message[] {
+  const optimisticUsers = localMessages.filter(
+    (message) => message.role === 'user' && message.id.startsWith('u-') && message.content.trim(),
+  );
+  if (optimisticUsers.length === 0) return apiMessages;
+
+  const matchedLocalIndexes = new Set<number>();
+  const result: Message[] = [];
+
+  for (const apiMessage of apiMessages) {
+    if (apiMessage.role !== 'user' || !apiMessage.content.trim()) {
+      result.push(apiMessage);
+      continue;
+    }
+
+    const apiTimestamp = messageTimestamp(apiMessage);
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    optimisticUsers.forEach((localMessage, localIndex) => {
+      if (matchedLocalIndexes.has(localIndex)) return;
+      if (localMessage.content.trim() !== apiMessage.content.trim()) return;
+      const localTimestamp = messageTimestamp(localMessage);
+      const distance =
+        apiTimestamp !== undefined && localTimestamp !== undefined
+          ? Math.abs(apiTimestamp - localTimestamp)
+          : Number.POSITIVE_INFINITY;
+      if (distance < bestDistance) {
+        bestIndex = localIndex;
+        bestDistance = distance;
+      }
+    });
+
+    // A persisted copy normally has a nearly identical timestamp. The
+    // generous bound only covers slow tool runs; repeated questions remain
+    // separate once they are farther apart than one turn.
+    if (bestIndex >= 0 && (bestDistance <= 10 * 60 * 1000 || !Number.isFinite(bestDistance))) {
+      matchedLocalIndexes.add(bestIndex);
+      continue;
+    }
+    result.push(apiMessage);
+  }
+
+  return result;
+}
+
 /** API 快照滞后时保留本地 user 气泡，避免 post-stream refresh 清空己方消息。 */
 export function preserveMissingLocalUserMessages(merged: Message[], localMessages: Message[]): Message[] {
   if (localMessages.length === 0) return merged;
@@ -256,6 +315,15 @@ export function mergeRefreshedMessages(localMessages: Message[], apiMessages: Me
 
   const localById = new Map(localMessages.map((message) => [message.id, message]));
   const apiIds = new Set(apiMessages.map((message) => message.id));
+  const matchedLocalAssistantIds = new Set(
+    apiMessages
+      .filter((message) => message.role === 'assistant')
+      .map((apiMessage) =>
+        findLocalAssistantPeer(apiMessage, apiMessages, localMessages, apiIds, localById),
+      )
+      .filter((message): message is Message => Boolean(message))
+      .map((message) => message.id),
+  );
 
   const merged = apiMessages.map((apiMessage) => {
     if (apiMessage.role !== 'assistant') return apiMessage;
@@ -308,11 +376,15 @@ export function mergeRefreshedMessages(localMessages: Message[], apiMessages: Me
     (message) =>
       message.role === 'assistant' &&
       !apiIds.has(message.id) &&
+      !matchedLocalAssistantIds.has(message.id) &&
       (Boolean(message.turnSegments?.length) ||
         Boolean(message.content?.trim()) ||
         hasAssistantTools(message)),
   );
   const withTrailingAssistants =
     trailingAssistants.length === 0 ? merged : [...merged, ...trailingAssistants];
-  return preserveMissingLocalUserMessages(withTrailingAssistants, localMessages);
+  return preserveMissingLocalUserMessages(
+    removeRefreshedCopiesOfOptimisticUsers(withTrailingAssistants, localMessages),
+    localMessages,
+  );
 }

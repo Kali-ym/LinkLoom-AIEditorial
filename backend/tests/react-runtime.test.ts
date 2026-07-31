@@ -278,7 +278,8 @@ describe('ReActRuntime', () => {
           policy: {
             compactionStrategy: 'summarize',
             maxMessages: 3,
-            summarizeOlderThanMessages: 3
+            summarizeOlderThanMessages: 3,
+            maxInputTokens: 16
           },
           summarizer,
           onContextCompacted: (record) => {
@@ -832,6 +833,36 @@ describe('ReActRuntime', () => {
     expect(result.trace?.rounds[0].observations[0]).toMatchObject({
       success: false
     });
+  });
+
+  it('stops repeated tool failures across different arguments with a visible fallback', async () => {
+    const { runtime, provider } = createRuntime(
+      [
+        {
+          content: '',
+          tool_calls: [{ id: 'call-1', name: 'list_dir', arguments: { path: '/tmp/a' } }]
+        },
+        {
+          content: '',
+          tool_calls: [{ id: 'call-2', name: 'list_dir', arguments: { path: '/tmp/b' } }]
+        },
+        { content: '不应继续调用模型' }
+      ],
+      {
+        mode: 'react',
+        maxRounds: 5,
+        returnTrace: true,
+        maxRepeatedToolErrors: 2,
+        stopOnRepeatedToolError: true
+      }
+    );
+
+    const result = await runtime.run();
+
+    expect(provider.calls).toBe(2);
+    expect(result.stopReason).toBe('repeated_tool_error');
+    expect(result.content).toContain('工具「list_dir」执行失败');
+    expect(result.content).toContain('已停止继续重试');
   });
 
   it('pauses on ask_user_question and resumes with user input', async () => {

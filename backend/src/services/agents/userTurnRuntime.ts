@@ -76,7 +76,7 @@ export async function buildRuntimeUserContent(input: {
   imageList?: ChatImageItem[];
   dynamicSuffix?: string;
   supportsVision: boolean;
-  uploadService: AgentUploadService;
+  uploadService?: AgentUploadService;
 }): Promise<AIMessage['content']> {
   const textBody = appendUserTurnRuntimeText(input.message, input.fileList, input.dynamicSuffix);
   const imageList = input.imageList ?? [];
@@ -89,6 +89,12 @@ export async function buildRuntimeUserContent(input: {
     LogService.warn(
       '[UserTurn] Model does not support vision; degrading image attachments to markdown links',
     );
+    const fallback = buildVisionFallbackMarkdown(imageList);
+    return [textBody, fallback].filter(Boolean).join('\n\n');
+  }
+
+  if (!input.uploadService) {
+    LogService.warn('[UserTurn] Upload service unavailable; degrading images to markdown links');
     const fallback = buildVisionFallbackMarkdown(imageList);
     return [textBody, fallback].filter(Boolean).join('\n\n');
   }

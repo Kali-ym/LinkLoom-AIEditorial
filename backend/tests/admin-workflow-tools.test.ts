@@ -94,7 +94,12 @@ describe('admin workflow tools', () => {
 
   it('workflow tools declare medium riskLevel', () => {
     for (const t of workflowTools) {
-      expect((t as { execution: { riskLevel: string } }).execution.riskLevel).toBe('medium');
+      if (!t.execution) {
+        expect(t.id).toBe('dry_run_workflow_step');
+        continue;
+      }
+      const expectedRisk = t.id === 'delete_workflow' ? 'high' : 'medium';
+      expect((t as { execution: { riskLevel: string } }).execution.riskLevel).toBe(expectedRisk);
       expect((t as { execution: { readonly: boolean } }).execution.readonly).toBe(false);
     }
   });

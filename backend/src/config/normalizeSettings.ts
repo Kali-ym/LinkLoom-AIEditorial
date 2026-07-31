@@ -113,10 +113,15 @@ function normalizeHotConfig(value: unknown): HotConfig {
   const raw = value && typeof value === 'object' ? (value as Partial<HotConfig>) : {};
   const modeRaw = String(raw.mergeMode || base.mergeMode);
   const mergeMode: HotMergeMode =
-    modeRaw === 'rules' || modeRaw === 'semantic' || modeRaw === 'hybrid'
+    modeRaw === 'rules' ||
+    modeRaw === 'semantic' ||
+    modeRaw === 'hybrid' ||
+    modeRaw === 'llm'
       ? modeRaw
       : base.mergeMode;
   const sim = Number(raw.similarityMin);
+  const maxJudgments = Number(raw.llmMaxJudgmentsPerRun);
+  const cacheTtl = Number(raw.llmCacheTtlMinutes);
   return {
     mergeMode,
     embeddingServiceId:
@@ -125,7 +130,16 @@ function normalizeHotConfig(value: unknown): HotConfig {
         : base.embeddingServiceId,
     similarityMin: Number.isFinite(sim)
       ? Math.min(0.99, Math.max(0.5, sim))
-      : base.similarityMin
+      : base.similarityMin,
+    llmProviderId:
+      typeof raw.llmProviderId === 'string' ? raw.llmProviderId.trim() : base.llmProviderId,
+    llmModelId: typeof raw.llmModelId === 'string' ? raw.llmModelId.trim() : base.llmModelId,
+    llmMaxJudgmentsPerRun: Number.isFinite(maxJudgments)
+      ? Math.max(1, Math.floor(maxJudgments))
+      : base.llmMaxJudgmentsPerRun,
+    llmCacheTtlMinutes: Number.isFinite(cacheTtl)
+      ? Math.max(1, Math.floor(cacheTtl))
+      : base.llmCacheTtlMinutes
   };
 }
 

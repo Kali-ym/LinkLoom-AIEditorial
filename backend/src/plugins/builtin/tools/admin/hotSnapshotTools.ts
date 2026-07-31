@@ -26,7 +26,7 @@ class RebuildHotSnapshotTool extends BaseTool {
     properties: {
       mergeMode: {
         type: 'string',
-        enum: ['rules', 'semantic', 'hybrid'],
+        enum: ['rules', 'semantic', 'hybrid', 'llm'],
         description: '覆盖 HOT_CONFIG.mergeMode'
       },
       embeddingServiceId: {
@@ -36,6 +36,10 @@ class RebuildHotSnapshotTool extends BaseTool {
       similarityMin: {
         type: 'number',
         description: '覆盖 HOT_CONFIG.similarityMin（0.5～0.99）'
+      },
+      fullRebuild: {
+        type: 'boolean',
+        description: 'true 时清空近窗 evt_* 分配与簇指纹，从头全量合并（非增量）'
       }
     },
     additionalProperties: false
@@ -46,6 +50,7 @@ class RebuildHotSnapshotTool extends BaseTool {
       mergeMode?: HotMergeMode;
       embeddingServiceId?: string;
       similarityMin?: number;
+      fullRebuild?: boolean;
     },
     toolCtx?: ToolExecutionContext
   ) {
@@ -57,7 +62,8 @@ class RebuildHotSnapshotTool extends BaseTool {
         similarityMin:
           typeof args?.similarityMin === 'number' && Number.isFinite(args.similarityMin)
             ? args.similarityMin
-            : undefined
+            : undefined,
+        fullRebuild: args?.fullRebuild === true
       };
       const result = await new HotStoryMergeService(store).runMergeAndSnapshot(
         new Date(),

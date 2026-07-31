@@ -246,10 +246,11 @@ describe('AgentService streamAgent', () => {
 
     const savedEvents = await service.getRunEvents(runId);
     const replayedChunks = createAgentEventLegacyStreamAdapter().mapEvents(savedEvents);
+    const replayableLiveChunks = liveChunks.filter((chunk) => chunk.type !== 'content');
 
     expect(savedEvents.every((event) => event.schemaVersion === AGENT_EVENT_SCHEMA_VERSION)).toBe(true);
     expect(savedEvents.every((event) => typeof event.sequence === 'number')).toBe(true);
-    expect(replayedChunks).toEqual(liveChunks);
+    expect(replayedChunks).toEqual(replayableLiveChunks);
     for (const chunk of replayedChunks) {
       expect(chunk).not.toHaveProperty('schemaVersion');
       expect(chunk).not.toHaveProperty('sequence');

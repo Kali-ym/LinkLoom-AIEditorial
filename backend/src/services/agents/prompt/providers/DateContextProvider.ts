@@ -12,6 +12,9 @@ export class DateContextProvider implements PromptProvider {
 
   build(ctx: PromptBuildContext): PromptContribution | null {
     if (!ctx.date) return null;
-    return { content: `<context>当前处理日期为: ${ctx.date}</context>` };
+    return {
+      content: `<context>当前处理日期为: ${ctx.date}</context>`,
+      cacheClass: 'dynamic'
+    };
   }
 }

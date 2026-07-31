@@ -1,4 +1,5 @@
 import type {
+  AssembledPromptContribution,
   AssembledMessages,
   PromptBuildContext,
   PromptContribution,
@@ -21,11 +22,16 @@ export class PromptPipeline {
     const systemParts = this.collect(byPhase, 'system_accumulate', ctx);
     const preUser = this.collect(byPhase, 'before_first_user', ctx);
     const tail = this.collect(byPhase, 'tail_guidance', ctx);
+    const contributions = [...systemParts, ...preUser, ...tail];
 
     return {
-      systemMessage: { role: 'system', content: systemParts.join('\n\n') },
-      preUserMessages: preUser.map((content) => ({ role: 'system', content })),
-      tailMessages: tail.map((content) => ({ role: 'system', content }))
+      systemMessage: {
+        role: 'system',
+        content: systemParts.map((item) => item.content).join('\n\n')
+      },
+      preUserMessages: preUser.map((item) => ({ role: 'system', content: item.content })),
+      tailMessages: tail.map((item) => ({ role: 'system', content: item.content })),
+      contributions
     };
   }
 
@@ -47,12 +53,24 @@ export class PromptPipeline {
     byPhase: Record<PromptPhase, PromptProvider[]>,
     phase: PromptPhase,
     ctx: PromptBuildContext
-  ): string[] {
-    const out: string[] = [];
+  ): AssembledPromptContribution[] {
+    const out: AssembledPromptContribution[] = [];
     for (const provider of byPhase[phase]) {
       const contrib: PromptContribution | null = provider.build(ctx);
-      if (contrib && contrib.content) out.push(contrib.content);
+      if (contrib && contrib.content) {
+        out.push({
+          providerId: provider.id,
+          phase,
+          content: contrib.content,
+          cacheClass: contrib.cacheClass ?? defaultCacheClassForPhase(phase),
+          variantKey: contrib.variantKey
+        });
+      }
     }
     return out;
   }
+}
+
+function defaultCacheClassForPhase(phase: PromptPhase): AssembledPromptContribution['cacheClass'] {
+  return phase === 'system_accumulate' ? 'stable' : 'dynamic';
 }

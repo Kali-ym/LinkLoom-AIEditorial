@@ -81,14 +81,27 @@ import {
 import { createLLMSummarizer } from './engine/LLMSummarizer.js';
 import { ReActAgentEngine } from './engine/ReActAgentEngine.js';
 import {
-  buildPromptCacheKey,
   buildResponseCacheRequest,
   normalizeRuntimeMessageContent,
   pickRicherRuntimeHistory,
   resolveResponseCacheFromSessions,
   type ResponseCacheRequest
 } from './engine/responseContextCache.js';
-import { expandAgentMessageToRuntimeMessages } from './runtime/persistedToolHistory.js';
+import {
+  canonicalizeToolDefinitions,
+  CANONICAL_MESSAGE_SERIALIZATION_VERSION,
+  hashString,
+  sortToolDefinitions
+} from './engine/canonicalMessageSerializer.js';
+import {
+  buildPromptCacheContract,
+  type PromptCacheContract,
+  type PromptCachePolicy,
+  type PromptCacheRuntimeMode
+} from './engine/promptCacheContract.js';
+import { resolvePromptCacheCapability } from './engine/promptCacheCapabilities.js';
+import { applyMultiAgentPromptCachePolicy } from './engine/multiAgentPromptCache.js';
+import { rehydratePersistedAgentMessage, rehydratePersistedMessages } from './engine/runtimeHistoryRehydrator.js';
 import { resolveWorkspacePolicyFromAgent } from './engine/WorkspacePolicyResolver.js';
 import {
   AgentGovernanceManager,
@@ -147,6 +160,9 @@ export interface AgentRunOptions {
   messages?: AIMessage[];
   attachments?: AgentRunSpec['input']['attachments'];
   userTurnMetadata?: UserTurnMessageMetadata;
+  promptCachePolicy?: PromptCachePolicy;
+  parentPromptCacheContract?: PromptCacheContract;
+  promptCacheMode?: PromptCacheRuntimeMode;
 }
 
 type ResumeRuntimeContext = {
@@ -754,7 +770,7 @@ export class AgentService {
     }
 
     const mcpTools = options.noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    const combinedTools = [...tools, ...mcpTools];
+    const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
 
     // useNativeFC gate:!FC 时不向 provider 传 tools 数组,只靠 ToolSystemProvider 的 XML 注入,
     // 避免双重工具描述(系统 XML + provider bindTools)。工具仍注册到 runSpec 供 toolRegistry 执行。
@@ -770,7 +786,7 @@ export class AgentService {
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
       providerConfig: resolvedProvider.providerConfig,
-      model: agentDef.model,
+      model: resolvedProvider.model ?? agentDef.model,
       tools,
       skills: [],
       mcpTools,
@@ -800,7 +816,21 @@ export class AgentService {
       providerConfig: resolvedProvider.providerConfig,
       variables: ctxInputs.variables,
     });
-    const responseCache = await this.resolveResponseCacheForRun(options, agentDef, messages);
+    const cacheContract = this.buildPromptCacheContractForRun(
+      options,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      assembled,
+      combinedTools,
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      options,
+      agentDef,
+      messages,
+      cacheContract,
+    );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
     const resolvedContextPolicy = options.contextPolicy
@@ -829,6 +859,7 @@ export class AgentService {
         noTools: !!options.noTools,
         noSkills: !!options.noSkills,
         agentId: agentDef.id,
+        promptCacheContract: cacheContract,
         ...(workspacePolicy ? { workspacePolicy } : {}),
         ...(options.metadata ?? {})
       }
@@ -851,7 +882,8 @@ export class AgentService {
       provider,
       runtimeOptions: {
         agentDef,
-        tools: providerTools,
+        tools: combinedTools,
+        providerTools,
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
@@ -920,7 +952,7 @@ export class AgentService {
       }
     }
     const mcpTools = options.noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    const combinedTools = [...tools, ...mcpTools];
+    const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
 
     // useNativeFC gate(同 runAgent):!FC 时不向 provider 传 tools,避免双重工具描述。
     const useNativeFC = isCanUseFC(
@@ -935,7 +967,7 @@ export class AgentService {
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
       providerConfig: resolvedProvider.providerConfig,
-      model: agentDef.model,
+      model: resolvedProvider.model ?? agentDef.model,
       tools,
       skills: [],
       mcpTools,
@@ -957,7 +989,21 @@ export class AgentService {
       providerConfig: resolvedProvider.providerConfig,
       variables: ctxInputs.variables,
     });
-    const responseCache = await this.resolveResponseCacheForRun(options, agentDef, messages);
+    const cacheContract = this.buildPromptCacheContractForRun(
+      options,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      assembled,
+      combinedTools,
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      options,
+      agentDef,
+      messages,
+      cacheContract,
+    );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
     const resolvedContextPolicy = options.contextPolicy
@@ -986,6 +1032,7 @@ export class AgentService {
         noTools: !!options.noTools,
         noSkills: !!options.noSkills,
         agentId: agentDef.id,
+        promptCacheContract: cacheContract,
         ...(workspacePolicy ? { workspacePolicy } : {}),
         ...(options.metadata ?? {})
       }
@@ -1011,7 +1058,8 @@ export class AgentService {
       provider,
       runtimeOptions: {
         agentDef,
-        tools: providerTools,
+        tools: combinedTools,
+        providerTools,
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
@@ -1060,14 +1108,39 @@ export class AgentService {
     sessionId?: string;
     silent?: boolean;
     summarizer?: ContextSummarizer;
+    promptCachePolicy?: PromptCachePolicy;
+    parentPromptCacheContract?: PromptCacheContract;
+    promptCacheMode?: PromptCacheRuntimeMode;
   }): Promise<AgentExecutionResult> {
     const tools = params.tools ?? [];
     const mcpConfigs = params.mcpConfigs ?? [];
     const settings = await this.store.get('system_settings');
     const resolvedProvider = params.provider
-      ? { provider: params.provider, model: params.agentDef.model }
+      ? { provider: params.provider, model: params.agentDef.model, providerConfig: undefined }
       : await this.resolveProviderForAgent(params.agentDef, params.silent, settings);
     const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
+    const cacheOptions: AgentRunOptions = {
+      sessionId: params.sessionId,
+      promptCachePolicy: params.promptCachePolicy,
+      parentPromptCacheContract: params.parentPromptCacheContract,
+      promptCacheMode: params.promptCacheMode,
+      metadata: params.metadata
+    };
+    const cacheContract = this.buildPromptCacheContractForMessages(
+      cacheOptions,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      params.messages,
+      tools,
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      cacheOptions,
+      agentDef,
+      params.messages,
+      cacheContract,
+    );
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -1089,6 +1162,7 @@ export class AgentService {
         noTools: tools.length === 0,
         noSkills: true,
         temporaryAgent: true,
+        promptCacheContract: cacheContract,
         ...params.metadata
       }
     });
@@ -1115,6 +1189,7 @@ export class AgentService {
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
         messages: params.messages.map((message) => ({ ...message })),
+        responseCache,
         silent: params.silent,
         context: runSpec.contextPolicy
           ? {
@@ -1155,14 +1230,39 @@ export class AgentService {
     threadId?: string;
     sessionId?: string;
     summarizer?: ContextSummarizer;
+    promptCachePolicy?: PromptCachePolicy;
+    parentPromptCacheContract?: PromptCacheContract;
+    promptCacheMode?: PromptCacheRuntimeMode;
   }): AsyncIterable<any> {
     const tools = params.tools ?? [];
     const mcpConfigs = params.mcpConfigs ?? [];
     const settings = await this.store.get('system_settings');
     const resolvedProvider = params.provider
-      ? { provider: params.provider, model: params.agentDef.model }
+      ? { provider: params.provider, model: params.agentDef.model, providerConfig: undefined }
       : await this.resolveProviderForAgent(params.agentDef, undefined, settings);
     const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
+    const cacheOptions: AgentRunOptions = {
+      sessionId: params.sessionId,
+      promptCachePolicy: params.promptCachePolicy,
+      parentPromptCacheContract: params.parentPromptCacheContract,
+      promptCacheMode: params.promptCacheMode,
+      metadata: params.metadata
+    };
+    const cacheContract = this.buildPromptCacheContractForMessages(
+      cacheOptions,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      params.messages,
+      tools,
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      cacheOptions,
+      agentDef,
+      params.messages,
+      cacheContract,
+    );
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -1184,6 +1284,7 @@ export class AgentService {
         noTools: tools.length === 0,
         noSkills: true,
         temporaryAgent: true,
+        promptCacheContract: cacheContract,
         ...params.metadata
       }
     });
@@ -1213,6 +1314,7 @@ export class AgentService {
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
         messages: params.messages.map((message) => ({ ...message })),
+        responseCache,
         context: runSpec.contextPolicy
           ? {
               runId: runSpec.runId,
@@ -1680,7 +1782,7 @@ export class AgentService {
     const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
     const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
     const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    const combinedTools = [...tools, ...mcpTools];
+    const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
     const budgetPolicy = this.resolveResumeBudgetPolicy(agentDef, session);
     const runSpec: AgentRunSpec = {
       ...this.runSpecFromSessionForGovernance(session, agentDef, budgetPolicy),
@@ -1708,7 +1810,8 @@ export class AgentService {
       provider,
       runtimeOptions: {
         agentDef,
-        tools: providerTools,
+        tools: combinedTools,
+        providerTools,
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
@@ -2191,7 +2294,11 @@ export class AgentService {
       totalTokens: this.nonNegativeInteger(
         (lastBudget?.inputTokens ?? 0) + (lastBudget?.outputTokens ?? 0)
       ),
-      estimatedCostUsd: this.nonNegativeNumber(lastBudget?.estimatedCostUsd)
+      cachedInputTokens: this.nonNegativeInteger(lastBudget?.cachedInputTokens),
+      cacheWriteInputTokens: this.nonNegativeInteger(lastBudget?.cacheWriteInputTokens),
+      uncachedInputTokens: this.nonNegativeInteger(lastBudget?.uncachedInputTokens),
+      estimatedCostUsd: this.nonNegativeNumber(lastBudget?.estimatedCostUsd),
+      estimatedCacheSavingsUsd: this.nonNegativeNumber(lastBudget?.estimatedCacheSavingsUsd)
     };
   }
 
@@ -2386,7 +2493,9 @@ export class AgentService {
     providerConfig?: AIProviderConfig;
     variables?: Record<string, string>;
   }): Promise<AIMessage[]> {
-    const uploadService = new AgentUploadService(this.store);
+    const uploadService = input.options.userTurnMetadata?.imageList?.length
+      ? new AgentUploadService(this.store)
+      : undefined;
     const supportsVision = resolveSupportsVision(input.agentDef, input.providerConfig);
     const dynamicSuffix = resolveInputTemplateSuffix(input.agentDef, input.options.metadata, input.variables);
     const turnContent = await buildRuntimeUserContent({
@@ -2459,27 +2568,146 @@ export class AgentService {
     );
   }
 
+  private buildPromptCacheContractForRun(
+    options: AgentRunOptions,
+    agentDef: AgentDefinition,
+    providerConfig: AIProviderConfig | undefined,
+    provider: AIProvider,
+    providerModel: string | undefined,
+    assembled: AssembledMessages,
+    tools: ToolDefinition[],
+  ): PromptCacheContract {
+    const providerId = String(providerConfig?.id ?? agentDef.providerId ?? '').trim();
+    const providerType = String(providerConfig?.type ?? providerId).trim();
+    const reasoningMode = String(
+      (providerConfig as { reasoningEffort?: string } | undefined)?.reasoningEffort ?? 'none',
+    );
+    const contributions = assembled.contributions ?? [];
+    const unsafeReasons = contributions
+      .filter((contribution) =>
+        contribution.phase === 'system_accumulate' &&
+        contribution.cacheClass !== 'stable',
+      )
+      .map((contribution) => `unstable_system_contribution:${contribution.providerId}`);
+    const variantParts = contributions
+      .filter((contribution) => contribution.cacheClass === 'variant')
+      .map((contribution) => ({
+        providerId: contribution.providerId,
+        variantKey: contribution.variantKey,
+        content: contribution.content,
+      }));
+
+    const contract = buildPromptCacheContract({
+      providerId,
+      model: providerModel ?? agentDef.model,
+      endpoint: providerConfig?.apiEndpoint,
+      reasoningMode,
+      stablePrefix: assembled.systemMessage.content,
+      variantParts,
+      toolset: canonicalizeToolDefinitions(tools),
+      capability:
+        provider.promptCacheCapability ??
+        resolvePromptCacheCapability(providerType, providerConfig?.apiEndpoint),
+      cacheRequested:
+        (options.promptCacheMode ?? 'enforced') !== 'disabled' &&
+        !this.isResponseCacheDisabled(options),
+      cachePolicy: options.promptCachePolicy,
+      cacheMode: options.promptCacheMode,
+      sessionId: options.sessionId,
+      unsafeReasons,
+    });
+    return applyMultiAgentPromptCachePolicy(
+      contract,
+      options.promptCachePolicy ?? 'isolated',
+      options.parentPromptCacheContract,
+    );
+  }
+
+  private buildPromptCacheContractForMessages(
+    options: AgentRunOptions,
+    agentDef: AgentDefinition,
+    providerConfig: AIProviderConfig | undefined,
+    provider: AIProvider,
+    providerModel: string | undefined,
+    messages: AIMessage[],
+    tools: ToolDefinition[],
+  ): PromptCacheContract {
+    const systemMessages = messages.filter((message) => message.role === 'system');
+    const assembled: AssembledMessages = {
+      systemMessage: {
+        role: 'system',
+        content: normalizeRuntimeMessageContent(
+          systemMessages[0]?.content ?? 'You are a helpful assistant.',
+        ),
+      },
+      preUserMessages: [],
+      tailMessages: [],
+      contributions: systemMessages.map((message, index) => ({
+        providerId: `temporary_system_${index}`,
+        phase: 'system_accumulate' as const,
+        content: normalizeRuntimeMessageContent(message.content),
+        cacheClass: index === 0 ? ('stable' as const) : ('dynamic' as const),
+      })),
+    };
+    return this.buildPromptCacheContractForRun(
+      options,
+      agentDef,
+      providerConfig,
+      provider,
+      providerModel,
+      assembled,
+      tools,
+    );
+  }
+
   private async resolveResponseCacheForRun(
     options: AgentRunOptions,
     agentDef: AgentDefinition,
-    messages: AIMessage[]
+    messages: AIMessage[],
+    contract: PromptCacheContract,
   ): Promise<ResponseCacheRequest | undefined> {
-    if (this.isResponseCacheDisabled(options)) return undefined;
+    if (this.isResponseCacheDisabled(options) || !contract.cacheEligibility) {
+      return disabledResponseCacheRequest(
+        contract,
+        contract.cacheDisableReason ?? 'cache_ineligible',
+      );
+    }
+    if (contract.cacheMode === 'shadow') {
+      return disabledResponseCacheRequest(contract, 'shadow_mode');
+    }
 
     const sessionId = normalizeRuntimeId(options.sessionId);
-    if (!sessionId) return { enableStore: true };
-
-    const sessions = await this.getSessionRuns(sessionId);
-    const cacheEntry = resolveResponseCacheFromSessions(
-      sessions,
-      agentDef.model,
-      agentDef.providerId,
-      sessionId,
-    );
+    const sessions = sessionId ? await this.getSessionRuns(sessionId) : [];
+    if (
+      hasLegacyToolHistory(sessions) ||
+      messages.some(
+        (message) =>
+          (message.role === 'tool' ||
+            (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)) &&
+          message.canonical_message_version !== CANONICAL_MESSAGE_SERIALIZATION_VERSION,
+      )
+    ) {
+      return disabledResponseCacheRequest(
+        contract,
+        hasLegacyToolHistory(sessions) ? 'legacy_tool_history' : 'legacy_runtime_messages',
+      );
+    }
+    const cacheEntry = sessionId
+      ? resolveResponseCacheFromSessions(
+          sessions,
+          contract.model,
+          contract.providerId,
+          sessionId,
+        )
+      : undefined;
     return buildResponseCacheRequest(messages, cacheEntry, {
       enableStore: true,
       roundIndex: 1,
-      cacheKey: buildPromptCacheKey(sessionId, agentDef.model, agentDef.providerId),
+      // OpenAI-compatible gateways cap prompt_cache_key at 64 characters.
+      // Keep the descriptive namespace in observability, but send a bounded
+      // deterministic key to the provider.
+      cacheKey: hashString(contract.cacheNamespace, 64),
+      contract,
     });
   }
 
@@ -2527,41 +2755,77 @@ export class AgentService {
     }
 
     if (message.role === 'assistant') {
-      return expandAgentMessageToRuntimeMessages(message);
+      return rehydratePersistedAgentMessage(message).messages;
     }
 
-    return [
-      {
-        role: message.role,
-        content:
-          typeof message.content === 'string'
-            ? message.content
-            : JSON.stringify(message.content),
-        name: message.name,
-        tool_call_id: message.toolCallId,
-        tool_calls: Array.isArray(message.metadata?.toolCalls) ? message.metadata.toolCalls : undefined,
-        raw_parts: Array.isArray(message.metadata?.rawParts) ? message.metadata.rawParts : undefined,
-      },
-    ];
+    return rehydratePersistedAgentMessage(message).messages;
   }
 
   private toRuntimeMessages(messages: AgentMessage[]): AIMessage[] {
-    return messages
-      .filter((message) => message.role === 'system' || message.role === 'user' || message.role === 'assistant' || message.role === 'tool')
-      .map((message) => ({
-        role: message.role as AIMessage['role'],
-        content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
-        name: message.name,
-        tool_call_id: message.toolCallId,
-        tool_calls: Array.isArray(message.metadata?.toolCalls) ? message.metadata.toolCalls : undefined,
-        raw_parts: Array.isArray(message.metadata?.rawParts) ? message.metadata.rawParts : undefined
-      }));
+    return rehydratePersistedMessages(
+      messages.filter(
+        (message) =>
+          message.role === 'system' ||
+          message.role === 'user' ||
+          message.role === 'assistant' ||
+          message.role === 'tool',
+      ),
+    ).messages;
   }
 
 }
 
 function isRecoverableQueueSessionStatus(status: AgentSession['status']): boolean {
   return status === 'queued' || status === 'running';
+}
+
+function disabledResponseCacheRequest(
+  contract: PromptCacheContract,
+  reason: string,
+): ResponseCacheRequest {
+  return {
+    enableStore: false,
+    cacheEligibility: false,
+    cacheNamespace: contract.cacheNamespace,
+    cacheContractVersion: contract.contractVersion,
+    cacheDisableReason: reason,
+    providerId: contract.providerId,
+    model: contract.model,
+    cachePolicy: contract.cachePolicy,
+    cacheMode: contract.cacheMode,
+  };
+}
+
+function hasLegacyToolHistory(sessions: AgentSession[]): boolean {
+  for (const session of sessions) {
+    for (const event of session.events) {
+      if (event.type !== 'tool_finished') continue;
+      const payload = event.payload as Record<string, unknown>;
+      if (
+        typeof payload.content === 'string' &&
+        typeof payload.canonicalMessageContent !== 'string'
+      ) {
+        return true;
+      }
+    }
+
+    for (const message of session.messages) {
+      if (message.role !== 'assistant' || !Array.isArray(message.metadata?.toolCalls)) {
+        continue;
+      }
+      if (
+        message.metadata.toolCalls.some(
+          (toolCall) =>
+            !toolCall ||
+            typeof toolCall !== 'object' ||
+            typeof (toolCall as Record<string, unknown>).canonicalMessageContent !== 'string',
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function readString(value: unknown): string | undefined {

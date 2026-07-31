@@ -50,7 +50,11 @@ export interface ProviderGovernanceLedger {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  uncachedInputTokens: number;
   estimatedCostUsd: number;
+  estimatedCacheSavingsUsd: number;
 }
 
 export interface ProviderGovernanceAttemptTrace {
@@ -215,7 +219,14 @@ export function createProviderGovernanceProvider(options: ProviderGovernanceOpti
     promptTokens: normalizeNonNegativeInteger(options.initialLedger?.promptTokens) ?? 0,
     completionTokens: normalizeNonNegativeInteger(options.initialLedger?.completionTokens) ?? 0,
     totalTokens: normalizeNonNegativeInteger(options.initialLedger?.totalTokens) ?? 0,
-    estimatedCostUsd: normalizeNonNegativeNumber(options.initialLedger?.estimatedCostUsd) ?? 0
+    cachedInputTokens: normalizeNonNegativeInteger(options.initialLedger?.cachedInputTokens) ?? 0,
+    cacheWriteInputTokens:
+      normalizeNonNegativeInteger(options.initialLedger?.cacheWriteInputTokens) ?? 0,
+    uncachedInputTokens:
+      normalizeNonNegativeInteger(options.initialLedger?.uncachedInputTokens) ?? 0,
+    estimatedCostUsd: normalizeNonNegativeNumber(options.initialLedger?.estimatedCostUsd) ?? 0,
+    estimatedCacheSavingsUsd:
+      normalizeNonNegativeNumber(options.initialLedger?.estimatedCacheSavingsUsd) ?? 0
   };
 
   const candidates = [options.primary, ...fallbacks];
@@ -223,6 +234,7 @@ export function createProviderGovernanceProvider(options: ProviderGovernanceOpti
   const governed: AIProvider = {
     name,
     dispatcher: options.primary.provider.dispatcher,
+    promptCacheCapability: options.primary.provider.promptCacheCapability,
     generateContent: (prompt, tools, systemInstruction, callOptions) =>
       generateWithGovernance({
         options,
@@ -445,11 +457,21 @@ function attachGovernanceMetadata(
       total_usd: cost.total_usd
     };
   }
+  if (cost.estimated_cache_savings_usd !== undefined && nextUsage.prompt_cache) {
+    nextUsage.prompt_cache = {
+      ...nextUsage.prompt_cache,
+      estimatedCacheSavingsUsd: cost.estimated_cache_savings_usd
+    };
+  }
 
   input.ledger.promptTokens += usage.prompt_tokens;
   input.ledger.completionTokens += usage.completion_tokens;
   input.ledger.totalTokens += usage.total_tokens;
   input.ledger.estimatedCostUsd += cost.total_usd ?? 0;
+  input.ledger.cachedInputTokens += response.usage?.prompt_cache?.cachedInputTokens ?? 0;
+  input.ledger.cacheWriteInputTokens += response.usage?.prompt_cache?.cacheWriteInputTokens ?? 0;
+  input.ledger.uncachedInputTokens += response.usage?.prompt_cache?.uncachedInputTokens ?? usage.prompt_tokens;
+  input.ledger.estimatedCacheSavingsUsd += cost.estimated_cache_savings_usd ?? 0;
 
   const exceeded = findBudgetExceeded(input.ledger, input.limits);
   const metadata: ProviderGovernanceResponseMetadata = {
@@ -572,7 +594,12 @@ function resolveCost(
   usage: Required<Pick<AIUsage, 'prompt_tokens' | 'completion_tokens' | 'total_tokens'>>,
   cost?: ProviderModelCostConfig,
   originalUsage?: AIUsage
-): { input_usd?: number; output_usd?: number; total_usd?: number } {
+): {
+  input_usd?: number;
+  output_usd?: number;
+  total_usd?: number;
+  estimated_cache_savings_usd?: number;
+} {
   const originalTotal = toNonNegativeNumber(
     originalUsage?.estimated_cost_usd ?? originalUsage?.cost?.total_usd
   );
@@ -580,14 +607,34 @@ function resolveCost(
   if (!cost) return {};
 
   const inputRate = toNonNegativeNumber(cost.inputUsdPer1M) ?? 0;
+  const cachedInputRate = toNonNegativeNumber(cost.cachedInputUsdPer1M);
   const outputRate = toNonNegativeNumber(cost.outputUsdPer1M) ?? 0;
-  const inputUsd = (usage.prompt_tokens / 1_000_000) * inputRate;
+  const cachedInputTokens = toNonNegativeNumber(
+    originalUsage?.prompt_cache?.cachedInputTokens,
+  ) ?? 0;
+  const uncachedInputTokens = toNonNegativeNumber(
+    originalUsage?.prompt_cache?.uncachedInputTokens,
+  ) ?? Math.max(0, usage.prompt_tokens - cachedInputTokens);
+  const inputUsd =
+    cachedInputRate !== undefined && cachedInputTokens > 0
+      ? (uncachedInputTokens / 1_000_000) * inputRate +
+        (cachedInputTokens / 1_000_000) * cachedInputRate
+      : (usage.prompt_tokens / 1_000_000) * inputRate;
   const outputUsd = (usage.completion_tokens / 1_000_000) * outputRate;
-  return {
+  const result = {
     input_usd: roundCost(inputUsd),
     output_usd: roundCost(outputUsd),
     total_usd: roundCost(inputUsd + outputUsd)
   };
+  if (cachedInputRate !== undefined && cachedInputTokens > 0 && inputRate > cachedInputRate) {
+    return {
+      ...result,
+      estimated_cache_savings_usd: roundCost(
+        (cachedInputTokens / 1_000_000) * (inputRate - cachedInputRate),
+      )
+    };
+  }
+  return result;
 }
 
 function orderCandidatesByHealth(

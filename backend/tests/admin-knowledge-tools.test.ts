@@ -123,7 +123,7 @@ describe('admin knowledge tools', () => {
     }
   });
 
-  it('has exactly 8 tools', () => {
-    expect(knowledgeTools).toHaveLength(8);
+  it('has the complete knowledge and RAG tool set', () => {
+    expect(knowledgeTools).toHaveLength(13);
   });
 });

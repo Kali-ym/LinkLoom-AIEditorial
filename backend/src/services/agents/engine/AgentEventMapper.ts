@@ -8,6 +8,7 @@ import type { AiBuildStreamEvent } from '../../../types/aiBuilder.js';
 import type { WorkflowProgressPayload } from '../WorkflowEngine.js';
 import { normalizeAgentEvent, type AgentEvent } from './AgentEvent.js';
 import type { AgentRunSpec } from './AgentRunSpec.js';
+import { CANONICAL_MESSAGE_SERIALIZATION_VERSION } from './canonicalMessageSerializer.js';
 
 export interface AgentEventMappingContext {
   runId: string;
@@ -56,6 +57,18 @@ export function mapTraceToAgentEvents(
   }
 
   return events;
+}
+
+export function mapToolObservationToAgentEvents(
+  observation: AgentToolObservation,
+  round: number,
+  ctx: AgentEventMappingContext,
+): AgentEvent[] {
+  const sequence = ctx.sequenceStart ?? 1;
+  return [
+    createToolFinishedEvent(ctx, sequence, round, observation),
+    createObservationAddedEvent(ctx, sequence + 1, round, observation),
+  ];
 }
 
 export function mapStreamChunkToAgentEvents(
@@ -323,6 +336,7 @@ export function mapStreamChunkToAgentEvents(
         }),
         withLegacyChunk(
           baseEvent(ctx, 'tool_finished', sequence + 1, {
+            toolCallId: asOptionalString(payload.toolCallId),
             toolName: asString(payload.tool),
             success: false,
             error: asOptionalString(payload.error),
@@ -570,6 +584,10 @@ function createToolFinishedEvent(
     toolName: observation.toolName,
     success: observation.success,
     content: observation.content,
+    canonicalMessageContent: observation.canonicalMessageContent,
+    canonicalMessageVersion: observation.canonicalMessageContent
+      ? CANONICAL_MESSAGE_SERIALIZATION_VERSION
+      : undefined,
     data: observation.data,
     error: observation.error,
     durationMs: observation.durationMs,
@@ -644,8 +662,24 @@ function budgetTracePayload(budget: Record<string, any>): Record<string, unknown
     inputTokens: typeof cumulative.promptTokens === 'number' ? cumulative.promptTokens : undefined,
     outputTokens:
       typeof cumulative.completionTokens === 'number' ? cumulative.completionTokens : undefined,
+    cachedInputTokens:
+      typeof cumulative.cachedInputTokens === 'number'
+        ? cumulative.cachedInputTokens
+        : undefined,
+    cacheWriteInputTokens:
+      typeof cumulative.cacheWriteInputTokens === 'number'
+        ? cumulative.cacheWriteInputTokens
+        : undefined,
+    uncachedInputTokens:
+      typeof cumulative.uncachedInputTokens === 'number'
+        ? cumulative.uncachedInputTokens
+        : undefined,
     estimatedCostUsd:
       typeof cumulative.estimatedCostUsd === 'number' ? cumulative.estimatedCostUsd : undefined,
+    estimatedCacheSavingsUsd:
+      typeof cumulative.estimatedCacheSavingsUsd === 'number'
+        ? cumulative.estimatedCacheSavingsUsd
+        : undefined,
     limits: Object.keys(asRecord(budget.limits)).length > 0 ? asRecord(budget.limits) : undefined
   };
 }

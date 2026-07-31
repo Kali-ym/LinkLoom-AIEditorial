@@ -1,8 +1,10 @@
 export type {
+  AssembledPromptContribution,
   AssembledMessages,
   FewShotExample,
   ModelHints,
   PromptBuildContext,
+  PromptCacheClass,
   PromptContribution,
   PromptPhase,
   PromptProvider,

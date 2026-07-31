@@ -251,6 +251,42 @@ describe('mergeHotStories', () => {
     expect(score.ok).toBe(false);
   });
 
+  it('rejects stray versioned entity without text overlap (rules fallback)', () => {
+    const score = softMergeScore(
+      {
+        members: [
+          item({
+            id: 'gpt',
+            title: 'OpenAI GPT-5.6 price cut',
+            published_date: '2026-07-30T21:06:37.000Z',
+            metadata: {
+              event_signature: 'OpenAI-GPT-5.6-价格下调',
+              entities: ['OpenAI', 'GPT-5.6 Luna', 'GPT-5.6 Terra'],
+              ai_summary_short: 'Arena 转述 OpenAI 下调 GPT-5.6 API 价格'
+            }
+          })
+        ]
+      },
+      {
+        members: [
+          item({
+            id: 'llm-release',
+            title: 'llm 0.32rc2',
+            published_date: '2026-07-30T22:52:06.000Z',
+            source: "Simon Willison's Weblog",
+            metadata: {
+              event_signature: 'Simon Willison-LLM 0.32rc2-发布',
+              entities: ['Simon Willison', 'LLM', 'GPT-5.6 Luna'],
+              ai_summary_short: 'Simon Willison 发布 LLM 0.32rc2'
+            }
+          })
+        ]
+      }
+    );
+    expect(score.ok).toBe(false);
+    expect(score.reason).toBe('signature_diverge');
+  });
+
   it('does not soft-merge when tip-to-tip publish delta exceeds 36h', () => {
     const clusters = mergeHotStories([
       item({

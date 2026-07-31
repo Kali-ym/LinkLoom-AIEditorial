@@ -55,7 +55,7 @@ export interface BuildContextInput {
 export function buildPromptPipelineContext(input: BuildContextInput): PromptBuildContext {
   const registry = input.registry ?? PromptRegistry.getInstance();
   const raw = normalizeSystemPrompt(input.agentDef.systemPrompt);
-  const structuredPrompt = expandStructuredPrompt(raw, registry);
+  const structuredPrompt = expandStructuredPrompt(raw, registry, input.variables);
   return {
     agentDef: input.agentDef,
     structuredPrompt,

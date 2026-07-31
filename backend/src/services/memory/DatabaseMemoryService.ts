@@ -253,7 +253,8 @@ export class DatabaseMemoryService implements IMemoryService {
       });
 
       const result = await this.agentService.runAgent(tempAgentId, summaryPrompt, undefined, {
-        silent: true
+        silent: true,
+        promptCachePolicy: 'isolated'
       });
       const content = result.content;
       if (!content?.trim() || content === 'No response generated (AI returned empty content)') {

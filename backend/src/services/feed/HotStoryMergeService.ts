@@ -49,6 +49,8 @@ export interface HotRebuildOverrides {
   mergeMode?: HotMergeMode;
   embeddingServiceId?: string;
   similarityMin?: number;
+  /** Strip evt_* assignments + fingerprints and run a one-shot full merge. */
+  fullRebuild?: boolean;
 }
 
 export interface HotRebuildResult {
@@ -62,6 +64,8 @@ export interface HotRebuildResult {
   weekEventCount?: number;
   monthEventCount?: number;
   bootstrapped?: boolean;
+  fullRebuild?: boolean;
+  clearedAssignments?: number;
 }
 
 export class HotStoryMergeService {
@@ -73,7 +77,18 @@ export class HotStoryMergeService {
   ): Promise<HotRebuildResult> {
     const settings = await this.loadSettings();
     const hot = this.resolveHotConfig(settings, overrides);
-    const items = await this.loadScoredWindow(now);
+    let items = await this.loadScoredWindow(now);
+
+    const fullRebuild = overrides?.fullRebuild === true;
+    let clearedAssignments = 0;
+    if (fullRebuild) {
+      clearedAssignments = await this.clearHotAssignments(items);
+      items = this.stripHotAssignments(items);
+      await this.clearClusterFingerprints();
+      LogService.info(
+        `Hot story full rebuild: cleared ${clearedAssignments} evt_* assignments, fingerprints reset`
+      );
+    }
 
     const embedSvc = this.resolveEmbedService(settings, hot.embeddingServiceId);
     const embed =
@@ -153,14 +168,16 @@ export class HotStoryMergeService {
         version: HOT_SNAPSHOT_SCHEMA_VERSION,
         mergeModeApplied,
         fallbackReason,
-        incremental: true,
+        incremental: !fullRebuild,
         bootstrapped,
+        fullRebuild,
+        clearedAssignments: fullRebuild ? clearedAssignments : undefined,
         boardFilter: 'cluster_newest'
       }
     });
 
     LogService.info(
-      `Hot story merge (incremental): mode=${mergeModeApplied}` +
+      `Hot story merge${fullRebuild ? ' (full rebuild)' : ' (incremental)'}: mode=${mergeModeApplied}` +
         (fallbackReason ? `(${fallbackReason})` : '') +
         (bootstrapped ? ' bootstrap' : '') +
         ` items=${items.length} clusters=${clusters.length}` +
@@ -177,8 +194,46 @@ export class HotStoryMergeService {
       fallbackReason,
       weekEventCount: week.length,
       monthEventCount: month.length,
-      bootstrapped
+      bootstrapped,
+      fullRebuild,
+      clearedAssignments: fullRebuild ? clearedAssignments : undefined
     };
+  }
+
+  private stripHotAssignments(items: UnifiedData[]): UnifiedData[] {
+    return items.map((it) => {
+      if (!it.metadata?.event_id && !it.metadata?.event_signature_norm) return it;
+      const metadata = { ...it.metadata };
+      delete metadata.event_id;
+      delete metadata.event_signature_norm;
+      return { ...it, metadata };
+    });
+  }
+
+  private async clearHotAssignments(items: UnifiedData[]): Promise<number> {
+    let cleared = 0;
+    for (const it of items) {
+      const eid = it.metadata?.event_id;
+      if (typeof eid !== 'string' || !eid.startsWith('evt_')) continue;
+      const current = await this.store.getSourceData(it.id);
+      if (!current?.metadata) continue;
+      const metadata = { ...current.metadata };
+      if (!metadata.event_id && !metadata.event_signature_norm) continue;
+      delete metadata.event_id;
+      delete metadata.event_signature_norm;
+      await this.store.updateSourceDataMetadata(it.id, metadata);
+      cleared += 1;
+    }
+    return cleared;
+  }
+
+  private async clearClusterFingerprints(): Promise<void> {
+    const fpPath = join(this.store.getDataDir(), 'cluster_fingerprints.json');
+    try {
+      await fs.unlink(fpPath);
+    } catch {
+      // missing file is fine
+    }
   }
 
   private async loadSettings(): Promise<SystemSettings> {
@@ -191,7 +246,7 @@ export class HotStoryMergeService {
     overrides?: HotRebuildOverrides
   ): HotConfig {
     const base = settings.HOT_CONFIG || {
-      mergeMode: 'hybrid' as HotMergeMode,
+      mergeMode: 'llm' as HotMergeMode,
       embeddingServiceId: '',
       similarityMin: 0.78
     };

@@ -144,11 +144,18 @@ export function softMergeScore(
     oldestB ? joinFacts([oldestB]) : ''
   );
 
-  if (
-    !strongProduct &&
-    entitySignal >= ENTITY_JACCARD_FLOOR &&
+  const sigA = oldestA ? normalizeEventSignature(oldestA.metadata?.event_signature) : null;
+  const sigB = oldestB ? normalizeEventSignature(oldestB.metadata?.event_signature) : null;
+  const signaturesDiverge = Boolean(sigA && sigB && sigA !== sigB);
+  const weakTextSingleEntity =
+    interSpecific === 1 &&
     textOverlap < TEXT_OVERLAP_GUARD &&
-    numbersOverlap === 0
+    numbersOverlap === 0;
+
+  // Rules fallback only: one shared entity + low text is too weak (incl. stray product names).
+  if (
+    weakTextSingleEntity &&
+    (signaturesDiverge || (!strongProduct && entitySignal >= ENTITY_JACCARD_FLOOR))
   ) {
     return {
       ok: false,
@@ -157,7 +164,7 @@ export function softMergeScore(
       entityJaccard: entitySignal,
       numbersOverlap,
       factsOverlap,
-      reason: 'overmerge_guard'
+      reason: signaturesDiverge ? 'signature_diverge' : 'overmerge_guard'
     };
   }
 
@@ -197,7 +204,8 @@ export function softMergeScore(
   // Same versioned product (Kimi K3 / Opus 5) within the tip window is enough —
   // Chinese token overlap often understates paraphrase of the same release.
   const ok =
-    score >= SCORE_MIN || (strongProduct && interSpecific >= 1 && entitySignal >= 0.85);
+    score >= SCORE_MIN ||
+    (strongProduct && interSpecific >= 1 && entitySignal >= 0.85);
 
   return {
     ok,
@@ -256,46 +264,27 @@ export function finalizeClusters(
   previousEventIds?: Map<string, string>
 ): MergedStoryCluster[] {
   const claimed = new Set<string>();
-  return clusters.map((c) => {
-    const eventId = assignEventId(c.members, c.signatureNorm, previousEventIds, claimed);
-    claimed.add(eventId);
-    return {
-      eventId,
-      signatureNorm: c.signatureNorm,
-      members: c.members
-    };
-  });
+  return clusters.map((c) => finalizeOneCluster(c, previousEventIds, claimed));
 }
 
-/** Greedy pairwise soft-merge using a custom predicate (legacy / tests). */
-export function softMergeClustersWith(
-  clusters: Array<{ signatureNorm: string | null; members: HotClusterItem[] }>,
-  shouldMerge: (
-    a: { signatureNorm: string | null; members: HotClusterItem[] },
-    b: { signatureNorm: string | null; members: HotClusterItem[] }
-  ) => boolean
-): Array<{ signatureNorm: string | null; members: HotClusterItem[] }> {
-  const result = clusters.map((c) => ({
-    signatureNorm: c.signatureNorm,
-    members: [...c.members]
-  }));
-  let merged = true;
-  while (merged) {
-    merged = false;
-    outer: for (let i = 0; i < result.length; i++) {
-      for (let j = i + 1; j < result.length; j++) {
-        if (!shouldMerge(result[i], result[j])) continue;
-        result[i] = {
-          signatureNorm: pickNorm(result[i].signatureNorm, result[j].signatureNorm),
-          members: [...result[i].members, ...result[j].members]
-        };
-        result.splice(j, 1);
-        merged = true;
-        break outer;
-      }
-    }
-  }
-  return result;
+/** Assign a stable evt_* id to a single cluster (shared `claimed` avoids collisions in a run). */
+export function finalizeOneCluster(
+  cluster: { signatureNorm: string | null; members: HotClusterItem[] },
+  previousEventIds?: Map<string, string>,
+  claimed?: Set<string>
+): MergedStoryCluster {
+  const eventId = assignEventId(
+    cluster.members,
+    cluster.signatureNorm,
+    previousEventIds,
+    claimed
+  );
+  claimed?.add(eventId);
+  return {
+    eventId,
+    signatureNorm: cluster.signatureNorm,
+    members: cluster.members
+  };
 }
 
 /**
@@ -452,7 +441,7 @@ function memberContentText(m: HotClusterItem): string {
 /** Content-similarity anchor: oldest among solid-scored members (event seed).
  * Tip / time gates still use the true newest member separately.
  */
-function pickOldestMember(members: HotClusterItem[]): HotClusterItem | undefined {
+export function pickClusterSeedMember(members: HotClusterItem[]): HotClusterItem | undefined {
   const solid = members.filter((m) => (Number(m.metadata?.ai_score) || 0) >= 70);
   const pool = solid.length > 0 ? solid : members;
   let best: HotClusterItem | undefined;
@@ -467,8 +456,12 @@ function pickOldestMember(members: HotClusterItem[]): HotClusterItem | undefined
   return best ?? members[0];
 }
 
+function pickOldestMember(members: HotClusterItem[]): HotClusterItem | undefined {
+  return pickClusterSeedMember(members);
+}
+
 function pickCompareText(members: HotClusterItem[]): string {
-  const oldest = pickOldestMember(members);
+  const oldest = pickClusterSeedMember(members);
   return oldest ? memberContentText(oldest) : '';
 }
 

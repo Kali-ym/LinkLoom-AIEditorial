@@ -13,6 +13,11 @@ import { agentService } from '../../services/agentService';
 import { useToast } from '../../context/ToastContext.js';
 import { useMessageDialog } from '../../context/MessageDialogContext';
 import type { PluginMetadata, SettingsFieldContext } from './settingsFieldTypes';
+import {
+  formatHotLlmModelBinding,
+  HOT_LLM_MODEL_BINDING_KEY,
+  parseHotLlmModelBinding
+} from './sectionsConfig';
 
 type UseSettingsFieldHandlersArgs = {
   settings: Record<string, any>;
@@ -81,6 +86,17 @@ export function useSettingsFieldHandlers({
   const handleFieldChange = useCallback(
     (key: string, value: any) => {
       setSettings((prev) => {
+        if (key === HOT_LLM_MODEL_BINDING_KEY) {
+          const { llmProviderId, llmModelId } = parseHotLlmModelBinding(String(value ?? ''));
+          return {
+            ...prev,
+            HOT_CONFIG: {
+              ...(prev.HOT_CONFIG || {}),
+              llmProviderId,
+              llmModelId
+            }
+          };
+        }
         if (key.includes('.')) {
           const [parent, child] = key.split('.');
           return {
@@ -100,6 +116,9 @@ export function useSettingsFieldHandlers({
   const getFieldValue = useCallback(
     (key: string, defaultValue?: any) => {
       if (!key) return defaultValue;
+      if (key === HOT_LLM_MODEL_BINDING_KEY) {
+        return formatHotLlmModelBinding(settings.HOT_CONFIG, settings);
+      }
       if (key.includes('.')) {
         const [parent, child] = key.split('.');
         return settings[parent]?.[child] ?? defaultValue;

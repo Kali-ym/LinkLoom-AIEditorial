@@ -9,6 +9,6 @@ export class RoleProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const role = ctx.structuredPrompt.role?.trim();
     if (!role) return null;
-    return { content: wrapTag('role', role) };
+    return { content: wrapTag('role', role), cacheClass: 'stable' };
   }
 }

@@ -8,6 +8,7 @@ export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'ma
 
 export interface ProviderModelCostConfig {
   inputUsdPer1M?: number;
+  cachedInputUsdPer1M?: number;
   outputUsdPer1M?: number;
 }
 

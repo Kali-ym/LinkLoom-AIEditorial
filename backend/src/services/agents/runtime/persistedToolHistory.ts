@@ -1,12 +1,14 @@
 import type { AIMessage } from '../../../types/index.js';
 import type { AgentMessage } from '../engine/AgentRunSpec.js';
 import { normalizeRuntimeMessageContent } from '../engine/responseContextCache.js';
+import { CANONICAL_MESSAGE_SERIALIZATION_VERSION } from '../engine/canonicalMessageSerializer.js';
 
 interface PersistedToolCallRecord {
   id: string;
   name: string;
   arguments?: unknown;
   content?: string;
+  canonicalMessageContent?: string;
   data?: unknown;
   error?: string;
   success?: boolean;
@@ -26,6 +28,10 @@ function readPersistedToolCalls(metadata: AgentMessage['metadata']): PersistedTo
         name,
         arguments: record.arguments,
         content: typeof record.content === 'string' ? record.content : undefined,
+        canonicalMessageContent:
+          typeof record.canonicalMessageContent === 'string'
+            ? record.canonicalMessageContent
+            : undefined,
         data: record.data,
         error: typeof record.error === 'string' ? record.error : undefined,
         success: record.success === false ? false : record.success === true ? true : undefined,
@@ -50,6 +56,9 @@ function readAssistantReasoning(metadata: AgentMessage['metadata']): string | un
 }
 
 function formatPersistedToolResult(toolCall: PersistedToolCallRecord): string {
+  if (typeof toolCall.canonicalMessageContent === 'string') {
+    return toolCall.canonicalMessageContent;
+  }
   if (typeof toolCall.content === 'string' && toolCall.content.trim()) {
     return toolCall.content;
   }
@@ -72,6 +81,10 @@ function formatPersistedToolResult(toolCall: PersistedToolCallRecord): string {
 /** Expand persisted assistant toolCalls into assistant + tool AIMessages for provider APIs. */
 export function expandAgentMessageToRuntimeMessages(message: AgentMessage): AIMessage[] {
   if (message.role !== 'assistant') {
+    const canonicalMessageVersion =
+      typeof message.metadata?.canonicalMessageVersion === 'string'
+        ? message.metadata.canonicalMessageVersion
+        : undefined;
     return [
       {
         role: message.role,
@@ -85,6 +98,7 @@ export function expandAgentMessageToRuntimeMessages(message: AgentMessage): AIMe
           ? message.metadata.toolCalls
           : undefined,
         raw_parts: Array.isArray(message.metadata?.rawParts) ? message.metadata.rawParts : undefined,
+        canonical_message_version: canonicalMessageVersion,
       },
     ];
   }
@@ -92,6 +106,9 @@ export function expandAgentMessageToRuntimeMessages(message: AgentMessage): AIMe
   const toolCalls = readPersistedToolCalls(message.metadata);
   const reasoning = readAssistantReasoning(message.metadata);
   const content = normalizeRuntimeMessageContent(message.content);
+  const canonicalToolHistory =
+    toolCalls.length === 0 ||
+    toolCalls.every((toolCall) => typeof toolCall.canonicalMessageContent === 'string');
   const runtimeToolCalls = toolCalls.map((toolCall) => ({
     id: toolCall.id,
     name: toolCall.name,
@@ -106,6 +123,9 @@ export function expandAgentMessageToRuntimeMessages(message: AgentMessage): AIMe
       reasoning,
       tool_calls: runtimeToolCalls.length > 0 ? runtimeToolCalls : undefined,
       raw_parts: Array.isArray(message.metadata?.rawParts) ? message.metadata.rawParts : undefined,
+      canonical_message_version: canonicalToolHistory
+        ? CANONICAL_MESSAGE_SERIALIZATION_VERSION
+        : undefined,
     },
   ];
 
@@ -115,6 +135,10 @@ export function expandAgentMessageToRuntimeMessages(message: AgentMessage): AIMe
       tool_call_id: toolCall.id,
       name: toolCall.name,
       content: formatPersistedToolResult(toolCall),
+      canonical_message_version:
+        typeof toolCall.canonicalMessageContent === 'string'
+          ? CANONICAL_MESSAGE_SERIALIZATION_VERSION
+          : undefined,
     });
   }
 

@@ -288,9 +288,10 @@ export class FeedRouteService {
   }
 
   async rebuildHotSnapshot(body?: {
-    mergeMode?: 'rules' | 'semantic' | 'hybrid';
+    mergeMode?: 'rules' | 'semantic' | 'hybrid' | 'llm';
     embeddingServiceId?: string;
     similarityMin?: number;
+    fullRebuild?: boolean;
   }): Promise<{
     eventCount: number;
     generatedAt: string;

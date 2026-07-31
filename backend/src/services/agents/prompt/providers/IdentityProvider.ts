@@ -13,7 +13,7 @@ export class IdentityProvider implements PromptProvider {
     if (typeof identity === 'string') {
       const trimmed = identity.trim();
       if (!trimmed) return null;
-      return { content: wrapTag('identity', trimmed) };
+      return { content: wrapTag('identity', trimmed), cacheClass: 'stable' };
     }
     return null;
   }

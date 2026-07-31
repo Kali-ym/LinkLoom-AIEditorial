@@ -12,6 +12,14 @@ import type { OpenAIApiEndpointMode, ReasoningEffort } from '../types/config.js'
 import type { AIResponse, AIMessage } from '../types/index.js';
 import type { ResponseCacheRequest } from './agents/engine/responseContextCache.js';
 import {
+  resolvePromptCacheCapability,
+  type PromptCacheCapability
+} from './agents/engine/promptCacheCapabilities.js';
+import {
+  sortToolDefinitions,
+  stableStringify
+} from './agents/engine/canonicalMessageSerializer.js';
+import {
   extractProviderContextIds,
   extractProviderResponseId,
   normalizeRuntimeMessageContent,
@@ -27,6 +35,7 @@ export type AIProviderCallOptions = {
 export interface AIProvider {
   name: string;
   dispatcher?: any;
+  promptCacheCapability?: PromptCacheCapability;
   generateContent(
     prompt: string | AIMessage[],
     tools: any[],
@@ -338,7 +347,7 @@ function normalizeTools(tools?: any[]): any[] | undefined {
     return undefined;
   }
 
-  return tools.map((tool) => {
+  return sortToolDefinitions(tools).map((tool) => {
     if (tool && typeof tool === 'object' && 'name' in tool && 'parameters' in tool) {
       return {
         name: tool.name,
@@ -402,11 +411,81 @@ function parseOpenAIUsage(usage?: Record<string, unknown>) {
   return result;
 }
 
+export function attachPromptCacheUsage(
+  response: AIResponse,
+  responseCache?: ResponseCacheRequest,
+): AIResponse {
+  if (!responseCache) return response;
+  const usage = response.usage ?? {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0
+  };
+  const cachedTokens = Number(
+    usage.cached_tokens ?? usage.cache_read_input_tokens ?? 0,
+  );
+  const writeTokens = Number(usage.cache_creation_input_tokens ?? 0);
+  const promptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const requested = Boolean(responseCache.enableStore && responseCache.cacheKey);
+  const status = resolvePromptCacheStatus(
+    responseCache,
+    cachedTokens,
+    writeTokens,
+  );
+  usage.prompt_cache = {
+    ...(usage.prompt_cache ?? {}),
+    cacheStatus: status,
+    cachedInputTokens: cachedTokens,
+    cacheWriteInputTokens: writeTokens,
+    uncachedInputTokens: Math.max(0, promptTokens - cachedTokens - writeTokens),
+    cacheNamespace: responseCache.cacheNamespace,
+    cacheContractVersion: responseCache.cacheContractVersion,
+    cacheDisableReason: responseCache.cacheDisableReason,
+    requested,
+    eligible: responseCache.cacheEligibility,
+    hit: cachedTokens > 0 ? true : undefined,
+    cache_key: responseCache.cacheKey,
+    cache_namespace: responseCache.cacheNamespace,
+    contract_version: responseCache.cacheContractVersion,
+    policy: responseCache.cachePolicy,
+    mode: responseCache.cacheMode,
+    provider: responseCache.providerId,
+    read_tokens: cachedTokens > 0 ? cachedTokens : undefined,
+    write_tokens: writeTokens > 0 ? writeTokens : undefined
+  };
+  response.usage = usage;
+  return response;
+}
+
+function resolvePromptCacheStatus(
+  responseCache: ResponseCacheRequest,
+  cachedTokens: number,
+  writeTokens: number,
+): NonNullable<NonNullable<AIResponse['usage']>['prompt_cache']>['cacheStatus'] {
+  if (
+    responseCache.cacheDisableReason?.includes('unsupported') ||
+    responseCache.cacheDisableReason?.includes('does not expose') ||
+    responseCache.cacheDisableReason?.includes('Unknown provider')
+  ) {
+    return 'unsupported';
+  }
+  if (
+    responseCache.cacheDisableReason?.includes('cache_disabled') ||
+    responseCache.cacheDisableReason?.includes('shadow_mode')
+  ) {
+    return 'disabled';
+  }
+  if (responseCache.cacheDisableReason) return 'unsafe';
+  if (cachedTokens > 0) return 'hit';
+  if (writeTokens > 0) return 'write';
+  return 'miss';
+}
+
 function stableToolArguments(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value == null) return '{}';
   try {
-    return JSON.stringify(value);
+    return stableStringify(value);
   } catch {
     return '{}';
   }
@@ -2537,6 +2616,7 @@ export type GeminiThinkingConfig = {
 
 export class GeminiProvider implements AIProvider {
   name = 'Gemini';
+  promptCacheCapability = resolvePromptCacheCapability('GEMINI');
   private apiUrl: string;
   private apiKey: string;
   private model: string;
@@ -2639,21 +2719,21 @@ export class GeminiProvider implements AIProvider {
     prompt: string | AIMessage[],
     tools: any[],
     systemInstruction?: string,
-    options?: { signal?: AbortSignal }
+    options?: AIProviderCallOptions
   ): Promise<AIResponse> {
     const input = this.toGeminiInput(prompt, systemInstruction);
     const res = await this.getLLM(tools).invoke(
       input,
       options?.signal ? { signal: options.signal } : undefined
     );
-    return fromLangChainMessage(res);
+    return attachPromptCacheUsage(fromLangChainMessage(res), options?.responseCache);
   }
 
   async *streamContent(
     prompt: string | AIMessage[],
     tools?: any[],
     systemInstruction?: string,
-    options?: { signal?: AbortSignal }
+    options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
     const input = this.toGeminiInput(prompt, systemInstruction);
     const stream = await this.getLLM(tools).stream(
@@ -2662,7 +2742,7 @@ export class GeminiProvider implements AIProvider {
     );
     for await (const chunk of stream) {
       if (options?.signal?.aborted) break;
-      yield fromLangChainMessage(chunk);
+      yield attachPromptCacheUsage(fromLangChainMessage(chunk), options?.responseCache);
     }
   }
 
@@ -2688,6 +2768,10 @@ export class OpenAIProvider implements AIProvider {
   protected apiEndpoint: OpenAIApiEndpointMode;
   protected reasoningEffort?: ReasoningEffort;
   public dispatcher?: any;
+
+  get promptCacheCapability(): PromptCacheCapability {
+    return resolvePromptCacheCapability(this.getProviderLabel(), this.apiEndpoint);
+  }
 
   constructor(
     apiUrl: string,
@@ -2908,7 +2992,7 @@ export class OpenAIProvider implements AIProvider {
           throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
         }
 
-        return attempt.parse(text);
+        return attachPromptCacheUsage(attempt.parse(text), options?.responseCache);
       } catch (error: unknown) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const hasAlternate = i < attempts.length - 1;
@@ -3039,6 +3123,7 @@ export class OpenAIProvider implements AIProvider {
       if (typeof parsed.response_id === 'string') result.response_id = parsed.response_id;
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
+      attachPromptCacheUsage(result, options?.responseCache);
       if (
         result.content?.trim() ||
         result.reasoning?.trim() ||
@@ -3153,6 +3238,7 @@ export class OpenAIProvider implements AIProvider {
       }
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
+      attachPromptCacheUsage(result, options?.responseCache);
       if (
         result.content ||
         result.reasoning ||
@@ -3218,6 +3304,7 @@ export class OpenAIProvider implements AIProvider {
       if (typeof parsed.response_id === 'string') result.response_id = parsed.response_id;
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
+      attachPromptCacheUsage(result, options?.responseCache);
       if (
         result.content ||
         result.reasoning ||
@@ -3336,6 +3423,7 @@ export class AnthropicProvider extends OpenAIProvider {
 
 export class OllamaProvider implements AIProvider {
   name = 'Ollama';
+  promptCacheCapability = resolvePromptCacheCapability('OLLAMA');
   private apiUrl: string;
   private model: string;
   public dispatcher?: any;
@@ -3365,21 +3453,21 @@ export class OllamaProvider implements AIProvider {
     prompt: string | AIMessage[],
     tools: any[],
     systemInstruction?: string,
-    options?: { signal?: AbortSignal }
+    options?: AIProviderCallOptions
   ): Promise<AIResponse> {
     const messages = toLangChainMessages(prompt, systemInstruction);
     const res = await this.getLLM(tools).invoke(
       messages,
       options?.signal ? { signal: options.signal } : undefined
     );
-    return fromLangChainMessage(res);
+    return attachPromptCacheUsage(fromLangChainMessage(res), options?.responseCache);
   }
 
   async *streamContent(
     prompt: string | AIMessage[],
     tools?: any[],
     systemInstruction?: string,
-    options?: { signal?: AbortSignal }
+    options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
     const messages = toLangChainMessages(prompt, systemInstruction);
     const stream = await this.getLLM(tools).stream(
@@ -3388,7 +3476,7 @@ export class OllamaProvider implements AIProvider {
     );
     for await (const chunk of stream) {
       if (options?.signal?.aborted) break;
-      yield fromLangChainMessage(chunk);
+      yield attachPromptCacheUsage(fromLangChainMessage(chunk), options?.responseCache);
     }
   }
 

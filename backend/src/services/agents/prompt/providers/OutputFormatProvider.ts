@@ -9,6 +9,6 @@ export class OutputFormatProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const outputFormat = ctx.structuredPrompt.outputFormat?.trim();
     if (!outputFormat) return null;
-    return { content: wrapTag('output_format', outputFormat) };
+    return { content: wrapTag('output_format', outputFormat), cacheClass: 'stable' };
   }
 }

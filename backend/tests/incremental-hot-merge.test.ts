@@ -340,4 +340,182 @@ describe('mergeHotStoriesIncremental', () => {
     expect(clusters[0].eventId).toBe('evt_nv');
     expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['newbie', 'old']);
   });
+
+  it('llm mode: hard-attach ingests fingerprint aliases; kept-new bootstraps fingerprint', async () => {
+    const { LLMMergeJudge } = await import('../src/services/feed/llmMergeJudge.js');
+    const { bootstrapFingerprint, extractMiniProfile } = await import(
+      '../src/services/feed/ClusterFingerprint.js'
+    );
+    const { vi } = await import('vitest');
+
+    const seedItem = item({
+      id: 'old',
+      title: 'Kimi K3 launch',
+      published_date: '2026-07-30T10:00:00.000Z',
+      metadata: {
+        event_id: 'evt_kimi',
+        event_signature: 'moonshot-kimi-k3-release',
+        entities: ['Moonshot AI', 'Kimi K3'],
+        key_facts: ['开源'],
+        ai_summary_short: '月之暗面发布 Kimi K3',
+        ai_score: 85
+      }
+    });
+
+    const fp = bootstrapFingerprint('evt_kimi', extractMiniProfile(seedItem));
+    const fingerprints = [fp];
+    const store = {
+      loadAll: async () => fingerprints,
+      save: async (f: (typeof fp)) => {
+        const i = fingerprints.findIndex((x) => x.eventId === f.eventId);
+        if (i >= 0) fingerprints[i] = f;
+        else fingerprints.push(f);
+      },
+      delete: async () => undefined
+    };
+    const cache = {
+      get: async () => null,
+      set: async () => undefined
+    };
+    const provider = {
+      name: 'mock',
+      generateContent: vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          judgments: [{ pair_index: 0, same_event: false, confidence: 0.2, reason: 'different' }]
+        })
+      })
+    };
+
+    const judge = new LLMMergeJudge({
+      provider: provider as any,
+      store,
+      cache,
+      maxJudgmentsPerRun: 50,
+      cacheTtlMinutes: 360,
+      sealAfterMs: 6 * 3600 * 1000,
+      windowMs: 36 * 3600 * 1000
+    });
+    await judge.loadFingerprints();
+
+    const { clusters } = await mergeHotStoriesIncremental(
+      [
+        seedItem,
+        item({
+          id: 'hard',
+          title: 'Same signature follow-up',
+          published_date: '2026-07-30T12:00:00.000Z',
+          metadata: {
+            event_signature: 'Moonshot/Kimi K3 release',
+            entities: ['月之暗面', 'Kimi K3'],
+            key_facts: ['开源'],
+            ai_summary_short: 'Kimi K3 同事件报道',
+            ai_score: 80
+          }
+        }),
+        item({
+          id: 'other',
+          title: 'Unrelated',
+          published_date: '2026-07-30T13:00:00.000Z',
+          metadata: {
+            event_signature: 'anthropic-claude-opus-release',
+            entities: ['Anthropic', 'Claude Opus'],
+            key_facts: ['新模型'],
+            ai_summary_short: 'Anthropic 发布 Claude Opus',
+            ai_score: 88
+          }
+        })
+      ],
+      { mergeMode: 'llm', llmJudge: judge }
+    );
+
+    const kimi = clusters.find((c) => c.eventId === 'evt_kimi');
+    expect(kimi?.members.map((m) => m.id).sort()).toEqual(['hard', 'old']);
+
+    const kimiFp = judge.getFingerprints().find((f) => f.eventId === 'evt_kimi')!;
+    expect(kimiFp.aliases.some((a) => a.surface === '月之暗面')).toBe(true);
+
+    const otherCluster = clusters.find((c) => c.members.some((m) => m.id === 'other'));
+    expect(otherCluster).toBeTruthy();
+    expect(otherCluster!.eventId).not.toBe('evt_kimi');
+    const otherFp = judge.getFingerprints().find((f) => f.eventId === otherCluster!.eventId);
+    expect(otherFp).toBeTruthy();
+    expect(otherFp!.seedFingerprint.length).toBeGreaterThan(0);
+  });
+
+  it('llm mode bootstrap: merges paraphrase clusters via judge instead of rules', async () => {
+    const { vi } = await import('vitest');
+    const { LLMMergeJudge } = await import('../src/services/feed/llmMergeJudge.js');
+
+    const store = {
+      loadAll: async () => [],
+      save: async () => undefined,
+      delete: async () => undefined
+    };
+    const cache = {
+      get: async () => null,
+      set: async () => undefined
+    };
+    const provider = {
+      name: 'mock',
+      generateContent: vi.fn().mockImplementation(async (_user: string) => {
+        return {
+          content: JSON.stringify({
+            judgments: [
+              {
+                pair_index: 0,
+                same_event: true,
+                confidence: 0.92,
+                reason: 'same Kimi K3 open-weight release'
+              }
+            ]
+          })
+        };
+      })
+    };
+
+    const judge = new LLMMergeJudge({
+      provider: provider as any,
+      store,
+      cache,
+      maxJudgmentsPerRun: 50,
+      cacheTtlMinutes: 360,
+      sealAfterMs: 6 * 3600 * 1000,
+      windowMs: 36 * 3600 * 1000
+    });
+    await judge.loadFingerprints();
+
+    const { clusters, bootstrapped, mergeModeApplied } = await mergeHotStoriesIncremental(
+      [
+        item({
+          id: 'decoder',
+          title: 'Moonshot AI releases Kimi K3 open weights',
+          published_date: '2026-07-27T19:35:08.000Z',
+          metadata: {
+            event_signature: 'Moonshot AI-Kimi K3-开源权重与基础设施',
+            entities: ['Moonshot AI', 'Kimi K3'],
+            ai_summary_short: 'Moonshot AI 开源 Kimi K3 权重与部分基础设施',
+            ai_score: 85
+          }
+        }),
+        item({
+          id: 'hf',
+          title: 'moonshotai/Kimi-K3',
+          published_date: '2026-07-27T23:39:04.000Z',
+          metadata: {
+            event_signature: 'Moonshot AI-Kimi K3-发布权重',
+            entities: ['Moonshot AI', 'Kimi K3', 'Hugging Face'],
+            ai_summary_short: 'Moonshot发布Kimi K3权重',
+            ai_score: 90
+          }
+        })
+      ],
+      { mergeMode: 'llm', llmJudge: judge }
+    );
+
+    expect(bootstrapped).toBe(true);
+    expect(mergeModeApplied).toBe('llm');
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members.map((m) => m.id).sort()).toEqual(['decoder', 'hf']);
+    expect(provider.generateContent).toHaveBeenCalled();
+  });
 });

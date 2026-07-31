@@ -50,7 +50,7 @@ describe('admin knowledge write tools', () => {
     expect(t.execution).toEqual({ readonly: false, riskLevel: 'high' });
   });
 
-  it('knowledgeTools has 8 tools including 2 write tools', () => {
-    expect(knowledgeTools).toHaveLength(8);
+  it('knowledgeTools has the complete tool set including write tools', () => {
+    expect(knowledgeTools).toHaveLength(13);
   });
 });

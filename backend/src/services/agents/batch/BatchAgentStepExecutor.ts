@@ -183,6 +183,7 @@ export class BatchAgentStepExecutor {
       silent: true,
       noTools: step.agentOptions?.noTools,
       noSkills: step.agentOptions?.noSkills,
+      promptCachePolicy: 'isolated',
       runSource: 'workflow',
       metadata: {
         ...(agentRunContext?.metadata ?? {}),

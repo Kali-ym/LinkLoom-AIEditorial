@@ -15,6 +15,9 @@ export class KnowledgeContextProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const content = ctx.knowledgeContext?.trim();
     if (!content) return null;
-    return { content: wrapTagRaw('retrieved_knowledge', content) };
+    return {
+      content: wrapTagRaw('retrieved_knowledge', content),
+      cacheClass: 'dynamic'
+    };
   }
 }

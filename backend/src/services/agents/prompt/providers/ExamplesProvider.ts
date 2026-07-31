@@ -12,6 +12,6 @@ export class ExamplesProvider implements PromptProvider {
     const inner = examples
       .map((ex) => `<example>\n${wrapTag('input', ex.input)}\n${wrapTag('output', ex.output)}\n</example>`)
       .join('\n');
-    return { content: `<examples>\n${inner}\n</examples>` };
+    return { content: `<examples>\n${inner}\n</examples>`, cacheClass: 'stable' };
   }
 }

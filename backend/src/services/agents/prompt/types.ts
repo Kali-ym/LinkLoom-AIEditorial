@@ -71,9 +71,23 @@ export type PromptPhase =
   | 'tail_guidance'
   | 'message_transform';
 
+/** Prompt contribution 的缓存稳定性分类。 */
+export type PromptCacheClass = 'stable' | 'variant' | 'dynamic';
+
 /** Provider 注入的内容 */
 export interface PromptContribution {
   content: string;
+  cacheClass?: PromptCacheClass;
+  variantKey?: string;
+}
+
+/** Pipeline 产出的带来源缓存元数据的 contribution。 */
+export interface AssembledPromptContribution {
+  providerId: string;
+  phase: PromptPhase;
+  content: string;
+  cacheClass: PromptCacheClass;
+  variantKey?: string;
 }
 
 /** Provider 构建上下文 */
@@ -117,4 +131,5 @@ export interface AssembledMessages {
   systemMessage: { role: 'system'; content: string };
   preUserMessages: { role: 'system'; content: string }[];
   tailMessages: { role: 'system'; content: string }[];
+  contributions?: AssembledPromptContribution[];
 }

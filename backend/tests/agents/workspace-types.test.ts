@@ -16,7 +16,8 @@ describe('workspaceTypes', () => {
       'start-failed',
       'inspect-failed',
       'stop-failed',
-      'remove-failed'
+      'remove-failed',
+      'sandbox-capacity-exceeded'
     ]);
   });
 

@@ -13,6 +13,7 @@
 
 import { createHash } from 'node:crypto';
 import type { HotClusterItem } from './hotEvents.js';
+import { normalizeEntityToken, normalizeEntitySet, specificEntitySet } from './normalizeEntity.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -217,18 +218,50 @@ export function trySeal(fp: ClusterFingerprint, sealAfterMs: number): boolean {
 
 // ── Recall: entity overlap scoring (zero LLM, O(1) set ops) ────────────────
 
+/** Versioned product names (H3, Kimi K3, GPT-5.6) — strong storyline anchors. */
+export function versionedProductTokens(entities: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of specificEntitySet(entities)) {
+    if (/\d/.test(e)) out.add(e);
+  }
+  return out;
+}
+
+function fingerprintEntitySurfaces(fp: ClusterFingerprint): Set<string> {
+  const out = new Set<string>();
+  for (const a of fp.aliases) {
+    const n = normalizeEntityToken(a.surface);
+    if (n) out.add(n);
+  }
+  for (const part of fp.seedFingerprint.split('+')) {
+    const n = normalizeEntityToken(part);
+    if (n) out.add(n);
+  }
+  return out;
+}
+
+export function sharedVersionedProduct(
+  item: ItemMiniProfile,
+  fp: ClusterFingerprint
+): boolean {
+  const products = versionedProductTokens(item.entities);
+  if (products.size === 0) return false;
+  const fpSurfaces = fingerprintEntitySurfaces(fp);
+  for (const p of products) {
+    if (fpSurfaces.has(p)) return true;
+  }
+  return false;
+}
+
 export function computeEntityOverlap(
   item: ItemMiniProfile,
   fp: ClusterFingerprint
 ): number {
   if (item.entities.length === 0 || fp.aliases.length === 0) return 0;
 
-  const itemEntitySet = new Set(
-    item.entities.map((e) => e.trim().toLowerCase().replace(/[\s\-_./]+/g, ''))
-  );
-
+  const itemEntitySet = normalizeEntitySet(item.entities);
   const aliasSurfaceSet = new Set(
-    fp.aliases.map((a) => a.surface.trim().toLowerCase().replace(/[\s\-_./]+/g, ''))
+    fp.aliases.map((a) => normalizeEntityToken(a.surface)).filter(Boolean)
   );
 
   let intersection = 0;
@@ -236,7 +269,6 @@ export function computeEntityOverlap(
     if (aliasSurfaceSet.has(e)) intersection++;
   }
 
-  // Jaccard-like score weighted toward intersection
   const union = itemEntitySet.size + aliasSurfaceSet.size - intersection;
   return union > 0 ? intersection / union : 0;
 }
@@ -263,7 +295,7 @@ export function recallTopK(
   item: ItemMiniProfile,
   clusters: ClusterFingerprint[],
   windowMs: number,
-  k: number = 3
+  k: number = 8
 ): ClusterFingerprint[] {
   const now = Date.now();
   const candidates: Array<{ fp: ClusterFingerprint; score: number }> = [];
@@ -274,10 +306,15 @@ export function recallTopK(
     if (clusterAge > windowMs * 4) continue; // stale cluster, skip
 
     const entityOverlap = computeEntityOverlap(item, fp);
-    if (entityOverlap === 0) continue;
+    const productAnchor = sharedVersionedProduct(item, fp);
+    if (entityOverlap === 0 && !productAnchor) continue;
 
     const numberBonus = computeNumberOverlap(item, fp) ? 0.1 : 0;
-    candidates.push({ fp, score: entityOverlap + numberBonus });
+    const productBonus = productAnchor ? 0.25 : 0;
+    candidates.push({
+      fp,
+      score: Math.max(entityOverlap, productAnchor ? 0.35 : 0) + numberBonus + productBonus
+    });
   }
 
   return candidates

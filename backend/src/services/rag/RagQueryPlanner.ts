@@ -126,7 +126,8 @@ export class RagQueryPlanner {
       });
       const result = await this.agentService.runAgent(plannerAgentId, prompt, undefined, {
         silent: true,
-        noTools: true
+        noTools: true,
+        promptCachePolicy: 'isolated'
       });
       const parsed = parseExpansionOutput(result.content);
       const hydeQuery = parsed.hydeQuery;
@@ -188,7 +189,8 @@ export class RagQueryPlanner {
     });
     const result = await this.agentService!.runAgent(plannerAgentId, prompt, undefined, {
       silent: true,
-      noTools: true
+      noTools: true,
+      promptCachePolicy: 'isolated'
     });
     const ids = sanitizeIds(extractJsonArray(result.content), new Set(categories.map((cat) => cat.id)))
       .slice(0, Math.max(1, maxCategories || 3));
@@ -226,7 +228,8 @@ export class RagQueryPlanner {
       });
       const result = await this.agentService!.runAgent(plannerAgentId, prompt, undefined, {
         silent: true,
-        noTools: true
+          noTools: true,
+          promptCachePolicy: 'isolated'
       });
       const allowed = new Set(docs.map((doc) => doc.id));
       for (const id of sanitizeIds(extractJsonArray(result.content), allowed)) {

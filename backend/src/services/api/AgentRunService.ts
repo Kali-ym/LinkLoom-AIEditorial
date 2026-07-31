@@ -5,6 +5,10 @@ import type { AgentRun, AgentRunFilter, AgentRunPage, AgentRunSortField } from '
 import type { AgentSession } from '../agents/engine/AgentSession.js';
 import type { AgentMessage } from '../agents/engine/AgentRunSpec.js';
 import type { AgentRunSpec } from '../agents/engine/AgentRunSpec.js';
+import type {
+  PromptCachePolicy,
+  PromptCacheRuntimeMode
+} from '../agents/engine/promptCacheContract.js';
 import {
   resolveWorkspacePolicyFromAgent,
   summarizeWorkspacePolicy
@@ -66,6 +70,8 @@ type AgentApiRunOptions = {
   messages?: unknown;
   attachments?: unknown;
   userTurnMetadata?: import('../agents/userTurnPayload.js').UserTurnMessageMetadata;
+  promptCacheMode?: PromptCacheRuntimeMode;
+  promptCachePolicy?: PromptCachePolicy;
 };
 
 export class AgentRunService {
@@ -1497,7 +1503,13 @@ function normalizeMessages(value: unknown): AIMessage[] | undefined {
           ? record.raw_parts
           : Array.isArray(record.rawParts)
             ? record.rawParts
-            : undefined
+            : undefined,
+        canonical_message_version:
+          typeof record.canonical_message_version === 'string'
+            ? record.canonical_message_version
+            : typeof record.canonicalMessageVersion === 'string'
+              ? record.canonicalMessageVersion
+              : undefined
       }
     ];
   });

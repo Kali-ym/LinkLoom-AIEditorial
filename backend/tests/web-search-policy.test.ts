@@ -15,6 +15,7 @@ describe('resolveWebSearchPolicy', () => {
     expect(policy.injectToolIds).toEqual([]);
     expect(policy.stripToolIds).toEqual([
       'web_search',
+      'crawl_pages',
       'crawl_single_page',
       'crawl_multi_pages',
       'fetch_data',
@@ -30,6 +31,7 @@ describe('resolveWebSearchPolicy', () => {
     expect(policy.effectiveMode).toBe('app');
     expect(policy.injectToolIds).toEqual([
       'web_search',
+      'crawl_pages',
       'crawl_single_page',
       'crawl_multi_pages',
       'fetch_data',
@@ -45,6 +47,7 @@ describe('resolveWebSearchPolicy', () => {
     );
     expect(policy.effectiveMode).toBe('provider');
     expect(policy.injectToolIds).toEqual([
+      'crawl_pages',
       'crawl_single_page',
       'crawl_multi_pages',
       'fetch_data',
@@ -70,6 +73,7 @@ describe('resolveWebSearchPolicy', () => {
     expect(policy.injectToolIds).toEqual([]);
     expect(policy.stripToolIds).toEqual([
       'web_search',
+      'crawl_pages',
       'crawl_single_page',
       'crawl_multi_pages',
       'fetch_data',

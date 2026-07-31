@@ -1,4 +1,8 @@
-import type { AgentDefinition, AgentExecutionResult } from '../../../types/agent.js';
+import type {
+  AgentDefinition,
+  AgentExecutionResult,
+  AgentToolObservation
+} from '../../../types/agent.js';
 import type { AIMessage } from '../../../types/index.js';
 import {
   ReActRuntime,
@@ -26,6 +30,7 @@ import type {
 import { normalizeAgentEvent } from './AgentEvent.js';
 import {
   agentEventContextFromSpec,
+  mapToolObservationToAgentEvents,
   mapStreamChunkToAgentEvents,
   mapTraceToAgentEvents
 } from './AgentEventMapper.js';
@@ -1130,6 +1135,10 @@ export class ReActAgentEngine implements AgentEngine {
       observationPolicy: spec.observationPolicy ?? runtimeOptions.observationPolicy,
       tokenCounter: runtimeOptions.tokenCounter,
       classifiedMessageBuilder: runtimeOptions.classifiedMessageBuilder,
+      onToolObservation: async (observation, round) => {
+        await this.publishToolObservation(spec, observation, round);
+        await runtimeOptions.onToolObservation?.(observation, round);
+      },
       onContextUsageMeasured: async (snapshot, round) => {
         await runtimeOptions.onContextUsageMeasured?.(snapshot, round);
         await this.publishContextUsagePreview(spec, snapshot, round);
@@ -1149,15 +1158,44 @@ export class ReActAgentEngine implements AgentEngine {
     }
   }
 
+  private async publishToolObservation(
+    spec: AgentRunSpec,
+    observation: AgentToolObservation,
+    round: number,
+  ): Promise<void> {
+    if (await this.shouldSkipLifecycleEvent(spec.runId)) return;
+    const sequenceStart = await this.nextRunEventSequence(spec.runId);
+    const events = mapToolObservationToAgentEvents(
+      observation,
+      round,
+      {
+        ...agentEventContextFromSpec(spec, {
+          adapter: 'react-runtime-tool-observation'
+        }),
+        sequenceStart
+      },
+    );
+    for (const event of events) {
+      await this.publishEvent(event);
+    }
+  }
+
   /** Skip tool_call_requested already emitted during the live stream (permission resume replays trace). */
   private dedupeTraceRepublicationEvents(runId: string, events: AgentEvent[]): AgentEvent[] {
     const requestedToolCallIds = new Set<string>();
+    const completedToolCallIds = new Set<string>();
     for (const event of this.eventBus.getEvents(runId)) {
-      if (event.type !== 'tool_call_requested') continue;
       const payload =
         event.payload && typeof event.payload === 'object'
           ? (event.payload as Record<string, unknown>)
           : {};
+      if (event.type === 'tool_finished' || event.type === 'observation_added') {
+        const completedToolCallId =
+          typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
+        if (completedToolCallId) completedToolCallIds.add(completedToolCallId);
+        continue;
+      }
+      if (event.type !== 'tool_call_requested') continue;
       const toolCallId =
         (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
       if (toolCallId) requestedToolCallIds.add(toolCallId);
@@ -1165,11 +1203,18 @@ export class ReActAgentEngine implements AgentEngine {
 
     const seenInBatch = new Set<string>();
     return events.filter((event) => {
-      if (event.type !== 'tool_call_requested') return true;
       const payload =
         event.payload && typeof event.payload === 'object'
           ? (event.payload as Record<string, unknown>)
           : {};
+      if (event.type === 'tool_finished' || event.type === 'observation_added') {
+        const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
+        if (!toolCallId) return true;
+        if (completedToolCallIds.has(toolCallId)) return false;
+        completedToolCallIds.add(toolCallId);
+        return true;
+      }
+      if (event.type !== 'tool_call_requested') return true;
       const toolCallId =
         (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
       if (!toolCallId) return true;
@@ -1233,7 +1278,28 @@ export class ReActAgentEngine implements AgentEngine {
       this.streamEventStateByRunId.set(spec.runId, state);
     }
     const skippedToolCalls = new Set<string>();
+    const persistedCompletedToolCalls = new Set<string>();
+    for (const persistedEvent of this.eventBus.getEvents(spec.runId)) {
+      if (persistedEvent.type !== 'tool_finished' && persistedEvent.type !== 'observation_added') {
+        continue;
+      }
+      const payload =
+        persistedEvent.payload && typeof persistedEvent.payload === 'object'
+          ? (persistedEvent.payload as Record<string, unknown>)
+          : {};
+      if (typeof payload.toolCallId === 'string' && payload.toolCallId) {
+        persistedCompletedToolCalls.add(payload.toolCallId);
+      }
+    }
     return events.filter((event) => {
+      if (event.type === 'tool_finished' || event.type === 'observation_added') {
+        const payload =
+          event.payload && typeof event.payload === 'object'
+            ? (event.payload as Record<string, unknown>)
+            : {};
+        const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
+        return !toolCallId || !persistedCompletedToolCalls.has(toolCallId);
+      }
       if (event.type === 'tool_call_requested') {
         const key = this.toolCallRequestEventKey(event);
         if (!key) return true;

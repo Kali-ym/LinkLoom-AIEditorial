@@ -1,6 +1,53 @@
 export type * from './AgentEngine.js';
 export type * from './AgentEvent.js';
 export * from './AgentEventMapper.js';
+export {
+  CANONICAL_MESSAGE_SERIALIZATION_VERSION,
+  canonicalMessageHash,
+  canonicalMessageString,
+  canonicalizeAIMessage,
+  canonicalizeAIMessages,
+  canonicalizeToolDefinitions,
+  hashString,
+  sortToolDefinitions,
+  sortJsonValue,
+  stableStringify
+} from './canonicalMessageSerializer.js';
+export type {
+  CanonicalAIMessage,
+  CanonicalJsonValue,
+  CanonicalMessageOptions,
+  CanonicalToolCall
+} from './canonicalMessageSerializer.js';
+export {
+  PROMPT_CACHE_CONTRACT_VERSION,
+  PROMPT_CACHE_HISTORY_SERIALIZATION_VERSION,
+  PROMPT_CACHE_PROMPT_SCHEMA_VERSION,
+  buildPromptCacheContract
+} from './promptCacheContract.js';
+export type {
+  PromptCacheClass,
+  PromptCacheContract,
+  PromptCacheContractInput,
+  PromptCachePolicy,
+  PromptCacheRuntimeMode,
+  PromptCacheScope
+} from './promptCacheContract.js';
+export { applyMultiAgentPromptCachePolicy } from './multiAgentPromptCache.js';
+export {
+  resolvePromptCacheCapability
+} from './promptCacheCapabilities.js';
+export type {
+  PromptCacheCapability,
+  PromptCacheProviderFamily
+} from './promptCacheCapabilities.js';
+export {
+  rehydratePersistedAgentMessage,
+  rehydratePersistedMessages
+} from './runtimeHistoryRehydrator.js';
+export type {
+  RuntimeHistoryRehydrationResult
+} from './runtimeHistoryRehydrator.js';
 export type * from './AgentMiddleware.js';
 export { AgentMiddlewareRunner } from './AgentMiddlewareRunner.js';
 export type { AgentMiddlewareRuntimeContext } from './AgentMiddlewareRunner.js';

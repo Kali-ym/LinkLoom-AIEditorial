@@ -26,8 +26,32 @@ export interface AIUsage {
     providerId?: string;
     model?: string;
   };
+  prompt_cache?: AIPromptCacheUsage;
   governance?: unknown;
   [key: string]: unknown;
+}
+
+export interface AIPromptCacheUsage {
+  cacheStatus: 'hit' | 'write' | 'miss' | 'unsupported' | 'disabled' | 'unsafe';
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  uncachedInputTokens: number;
+  cacheNamespace?: string;
+  cacheContractVersion?: string;
+  cacheDisableReason?: string;
+  estimatedCacheSavingsUsd?: number;
+  mode?: 'shadow' | 'enforced' | 'disabled';
+  requested: boolean;
+  eligible?: boolean;
+  hit?: boolean;
+  /** Provider-native aliases retained for low-level diagnostics. */
+  cache_key?: string;
+  cache_namespace?: string;
+  contract_version?: string;
+  policy?: 'isolated' | 'derived' | 'inherit';
+  provider?: string;
+  read_tokens?: number;
+  write_tokens?: number;
 }
 
 export interface AIResponse {
@@ -62,6 +86,8 @@ export interface AIMessage {
   /** Provider reasoning / thinking text from the assistant turn (required for messages API tool follow-ups). */
   reasoning?: string;
   raw_parts?: any[]; // Store original provider-specific parts
+  /** Marks messages rehydrated from the versioned canonical history format. */
+  canonical_message_version?: string;
 }
 
 export type * from './businessPipeline.js';

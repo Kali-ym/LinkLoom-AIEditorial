@@ -9,6 +9,6 @@ export class CapabilitiesProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const capabilities = ctx.structuredPrompt.capabilities?.trim();
     if (!capabilities) return null;
-    return { content: wrapTag('capabilities', capabilities) };
+    return { content: wrapTag('capabilities', capabilities), cacheClass: 'stable' };
   }
 }

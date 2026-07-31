@@ -202,6 +202,7 @@ describe('ReActAgentEngine run control plane', () => {
         compactionStrategy: 'summarize' as const,
         maxMessages: 3,
         summarizeOlderThanMessages: 3,
+        maxInputTokens: 16,
         artifactPolicy: {
           enabled: true,
           maxInlineBytes: 16,

@@ -16,7 +16,10 @@ export class TodoHintProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const todos = ctx.todoState?.todos;
     if (!todos || todos.length === 0) return null;
-    return { content: wrapTagRaw('todos', renderTodos(todos)) };
+    return {
+      content: wrapTagRaw('todos', renderTodos(todos)),
+      cacheClass: 'dynamic'
+    };
   }
 }
 

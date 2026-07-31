@@ -126,9 +126,24 @@ export class WebBrowsingService {
       throw new AppError(400, 'Search query is required');
     }
     const cappedLimit = Math.max(1, Math.min(limit, 10));
-    const results = this.options.jinaApiKey
-      ? await this.searchWithJina(normalizedQuery, cappedLimit)
-      : await this.searchWithDuckDuckGo(normalizedQuery, cappedLimit);
+    let results: WebSearchResultItem[];
+    try {
+      results = this.options.jinaApiKey
+        ? await this.searchWithJina(normalizedQuery, cappedLimit)
+        : await this.searchWithDuckDuckGo(normalizedQuery, cappedLimit);
+    } catch (error) {
+      if (isNetworkFetchError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        const networkError = new Error(
+          `网页搜索暂不可用：${message}。请稍后重试，或配置 JINA_API_KEY/HTTPS 代理。`
+        ) as Error & { code?: string; retryable?: boolean };
+        networkError.name = 'WebSearchNetworkError';
+        networkError.code = 'WEB_SEARCH_NETWORK_UNAVAILABLE';
+        networkError.retryable = false;
+        throw networkError;
+      }
+      throw error;
+    }
 
     return {
       query: normalizedQuery,
@@ -330,6 +345,18 @@ export class WebBrowsingService {
     }
     return results;
   }
+}
+
+function isNetworkFetchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    error instanceof TypeError ||
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('econn') ||
+    message.includes('enotfound') ||
+    message.includes('timed out')
+  );
 }
 
 function decodeDuckDuckGoRedirect(href: string): string | undefined {

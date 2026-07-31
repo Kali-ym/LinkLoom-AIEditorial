@@ -44,6 +44,7 @@ interface PersistedToolCall {
   durationMs?: number;
   success?: boolean;
   content?: string;
+  canonicalMessageContent?: string;
   data?: unknown;
   error?: string;
 }
@@ -96,6 +97,10 @@ function collectSessionToolCalls(session: AgentSession): PersistedToolCall[] {
         success: payload.success !== false,
         durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
         content: typeof payload.content === 'string' ? payload.content : undefined,
+        canonicalMessageContent:
+          typeof payload.canonicalMessageContent === 'string'
+            ? payload.canonicalMessageContent
+            : undefined,
         data: payload.data,
         error: typeof payload.error === 'string' ? payload.error : undefined,
         mcpServerId: existing.mcpServerId ?? resolveMcpServerIdFromPayload(payload),

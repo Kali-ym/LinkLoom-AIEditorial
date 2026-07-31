@@ -15,6 +15,9 @@ export class MemoryContextProvider implements PromptProvider {
   build(ctx: PromptBuildContext): PromptContribution | null {
     const content = ctx.memoryContext?.trim();
     if (!content) return null;
-    return { content: wrapTagRaw('memory', content) };
+    return {
+      content: wrapTagRaw('memory', content),
+      cacheClass: 'dynamic'
+    };
   }
 }

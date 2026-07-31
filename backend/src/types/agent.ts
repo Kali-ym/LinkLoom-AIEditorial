@@ -148,6 +148,8 @@ export interface AgentToolObservation {
   toolName: string;
   success: boolean;
   content: string;
+  /** Exact tool-message content sent to the model, preserved for replay. */
+  canonicalMessageContent?: string;
   data?: unknown;
   error?: string;
   durationMs: number;
@@ -178,7 +180,11 @@ export interface AgentRunRound {
     modelCalls?: number;
     inputTokens?: number;
     outputTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+    uncachedInputTokens?: number;
     estimatedCostUsd?: number;
+    estimatedCacheSavingsUsd?: number;
     limits?: Record<string, unknown>;
     exceeded?: string[];
   };

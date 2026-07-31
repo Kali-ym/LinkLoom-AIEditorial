@@ -69,6 +69,7 @@ describe('Workflow agent runtime entrypoints', () => {
       silent: true,
       noTools: true,
       noSkills: true,
+      promptCachePolicy: 'isolated',
       runSource: 'workflow',
       metadata: {
         stepId: 'single-step',

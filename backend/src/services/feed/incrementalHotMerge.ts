@@ -1,9 +1,12 @@
 import type { HotMergeMode } from '../../types/config.js';
 import type { HotClusterItem } from './hotEvents.js';
 import {
+  clusterOldestMs,
   finalizeClusters,
+  finalizeOneCluster,
   mergeHotStories,
   pickClusterCompareText,
+  pickClusterSeedMember,
   softMergeScore,
   withinClusterPublishWindow,
   type MergedStoryCluster
@@ -88,12 +91,18 @@ export async function mergeHotStoriesIncremental(
   // Bootstrap: no prior clusters → full merge (existing behavior once).
   if (sticky.length === 0) {
     const full = await fullMerge(all, opts);
-    // In llm mode, bootstrap fingerprints for each resulting cluster
     if (opts.mergeMode === 'llm' && opts.llmJudge) {
-      await bootstrapLLMFingerprints(opts.llmJudge, full.clusters);
       await opts.llmJudge.regenerateDirtyFingerprints();
     }
     return { ...full, bootstrapped: true };
+  }
+
+  // Ensure every sticky cluster has a fingerprint before hard-attach / LLM attach.
+  if (opts.mergeMode === 'llm' && opts.llmJudge) {
+    for (const s of sticky) {
+      const seed = s.members[0];
+      if (seed) opts.llmJudge.getOrCreateFingerprint(s.eventId, seed);
+    }
   }
 
   if (unassigned.length === 0) {
@@ -109,42 +118,26 @@ export async function mergeHotStoriesIncremental(
   }
 
   // 1) Hard-attach unassigned items that share a sticky signature.
-  const remaining = hardAttachBySignature(sticky, unassigned);
+  const remaining = hardAttachBySignature(sticky, unassigned, opts.llmJudge ?? null);
 
-  // 2) Cluster remaining newcomers among themselves (never touching sticky membership).
-  //    In llm mode, newcomers still cluster via rules — LLM is only for sticky attach.
-  const newcomerOpts = opts.mergeMode === 'llm'
-    ? { ...opts, mergeMode: 'rules' as HotMergeMode }
-    : opts;
-  const { newClusters, mergeModeApplied, fallbackReason } = await clusterNewcomers(
-    remaining,
-    newcomerOpts
-  );
+  const newcomerMerge =
+    remaining.length === 0
+      ? { clusters: [] as MergedStoryCluster[], mergeModeApplied: opts.mergeMode, fallbackReason: undefined }
+      : await fullMerge(remaining, opts);
+  const { clusters: newClusters, mergeModeApplied, fallbackReason } = newcomerMerge;
 
   // 3) Soft-attach each newcomer cluster into the best sticky match; else keep as new event.
   const keptNew: MergedStoryCluster[] = [];
-  const stickyEventIds = sticky.map((s) => s.eventId);
 
   if (opts.mergeMode === 'llm' && opts.llmJudge) {
-    // LLM mode: use judge for sticky attachment
     for (const neu of newClusters) {
-      const representative = neu.members[0];
-      if (!representative) {
-        keptNew.push(neu);
-        continue;
-      }
-      const matchedId = await opts.llmJudge.tryAttach(representative, stickyEventIds);
-      if (matchedId) {
-        const idx = sticky.findIndex((s) => s.eventId === matchedId);
-        if (idx >= 0) {
-          sticky[idx].members.push(...neu.members);
-          sticky[idx].signatureNorm = pickNorm(sticky[idx].signatureNorm, neu.signatureNorm);
-          continue;
-        }
-      }
-      keptNew.push(neu);
+      const attached = await llmAttachCluster(neu, sticky, opts.llmJudge);
+      if (!attached) keptNew.push(neu);
     }
-    // Regenerate dirty fingerprints after all attachments
+    for (const neu of keptNew) {
+      const seed = pickClusterSeedMember(neu.members) || neu.members[0];
+      if (seed) opts.llmJudge.getOrCreateFingerprint(neu.eventId, seed);
+    }
     await opts.llmJudge.regenerateDirtyFingerprints();
   } else {
     // LLM judge unavailable (mergeMode === 'llm') → fallback to rules.
@@ -193,6 +186,27 @@ async function fullMerge(
   let mergeModeApplied: HotMergeMode = opts.mergeMode;
   let fallbackReason: string | undefined;
 
+  if (opts.mergeMode === 'llm') {
+    if (!opts.llmJudge) {
+      const clusters = mergeHotStories(items, { previousEventIds, softMerge: 'rules' });
+      return {
+        clusters,
+        mergeModeApplied: 'rules',
+        fallbackReason: 'llm_unavailable'
+      };
+    }
+    const hardClusters = mergeHotStories(items, { previousEventIds, softMerge: 'none' });
+    opts.llmJudge.setJudgmentBudget(
+      Math.max(opts.llmJudge.getJudgmentBudget(), hardClusters.length)
+    );
+    const clusters = await llmChronologicalMerge(
+      hardClusters,
+      opts.llmJudge,
+      previousEventIds
+    );
+    return { clusters, mergeModeApplied: 'llm', fallbackReason };
+  }
+
   let clusters = mergeHotStories(items, {
     previousEventIds,
     softMerge: opts.mergeMode === 'semantic' ? 'none' : 'rules'
@@ -232,33 +246,40 @@ async function fullMerge(
   return { clusters, mergeModeApplied, fallbackReason };
 }
 
-async function clusterNewcomers(
-  items: HotClusterItem[],
-  opts: {
-    mergeMode: HotMergeMode;
-    embed?: EmbedTextsFn | null;
-    similarityMin?: number;
-    llmJudge?: LLMMergeJudge | null;
-  }
-): Promise<{
-  newClusters: MergedStoryCluster[];
-  mergeModeApplied: HotMergeMode;
-  fallbackReason?: string;
-}> {
-  if (items.length === 0) {
-    return { newClusters: [], mergeModeApplied: opts.mergeMode };
-  }
-  const result = await fullMerge(items, opts);
-  return {
-    newClusters: result.clusters,
-    mergeModeApplied: result.mergeModeApplied,
-    fallbackReason: result.fallbackReason
-  };
+type ClusterTarget = {
+  eventId: string;
+  signatureNorm: string | null;
+  members: HotClusterItem[];
+};
+
+async function llmAttachCluster(
+  neu: MergedStoryCluster,
+  targets: ClusterTarget[],
+  judge: LLMMergeJudge
+): Promise<boolean> {
+  const rep = pickClusterSeedMember(neu.members);
+  if (!rep) return false;
+
+  const matchedId = await judge.tryAttach(
+    rep,
+    targets.map((t) => ({ eventId: t.eventId, members: t.members }))
+  );
+  if (!matchedId) return false;
+
+  const idx = targets.findIndex((t) => t.eventId === matchedId);
+  if (idx < 0) return false;
+
+  targets[idx].members.push(...neu.members);
+  targets[idx].signatureNorm = pickNorm(targets[idx].signatureNorm, neu.signatureNorm);
+  const rest = neu.members.filter((m) => m.id !== rep.id);
+  if (rest.length > 0) judge.ingestAttachedMembers(matchedId, rest);
+  return true;
 }
 
 function hardAttachBySignature(
   sticky: MutableCluster[],
-  unassigned: HotClusterItem[]
+  unassigned: HotClusterItem[],
+  llmJudge: LLMMergeJudge | null
 ): HotClusterItem[] {
   const bySig = new Map<string, number>();
   for (let i = 0; i < sticky.length; i++) {
@@ -281,6 +302,8 @@ function hardAttachBySignature(
     }
     sticky[idx].members.push(it);
     sticky[idx].signatureNorm = pickNorm(sticky[idx].signatureNorm, norm);
+    // Keep fingerprint aliases / claims in sync with hard-signature membership.
+    llmJudge?.ingestAttachedMembers(sticky[idx].eventId, [it]);
   }
   return remaining;
 }
@@ -419,19 +442,26 @@ function pickNorm(a: string | null, b: string | null): string | null {
   return a || b;
 }
 
-/**
- * Bootstrap fingerprints for clusters produced by fullMerge (bootstrap case).
- * Each cluster's first member seeds the fingerprint.
- */
-async function bootstrapLLMFingerprints(
+async function llmChronologicalMerge(
+  hardClusters: MergedStoryCluster[],
   judge: LLMMergeJudge,
-  clusters: MergedStoryCluster[]
-): Promise<void> {
-  for (const cluster of clusters) {
-    const seed = cluster.members[0];
-    if (!seed) continue;
-    judge.getOrCreateFingerprint(cluster.eventId, seed);
-    // Mark as dirty so regenerateDirtyFingerprints will process them
-    // (though they were just bootstrapped, they may benefit from LLM distillation)
+  previousEventIds: Map<string, string>
+): Promise<MergedStoryCluster[]> {
+  const sorted = [...hardClusters].sort(
+    (a, b) => clusterOldestMs(a.members) - clusterOldestMs(b.members)
+  );
+  const claimed = new Set<string>();
+  const kept: MergedStoryCluster[] = [];
+
+  for (const neu of sorted) {
+    const attached = await llmAttachCluster(neu, kept, judge);
+    if (attached) continue;
+
+    const rep = pickClusterSeedMember(neu.members) || neu.members[0];
+    const newCluster = finalizeOneCluster(neu, previousEventIds, claimed);
+    if (rep) judge.getOrCreateFingerprint(newCluster.eventId, rep);
+    kept.push(newCluster);
   }
+
+  return kept;
 }

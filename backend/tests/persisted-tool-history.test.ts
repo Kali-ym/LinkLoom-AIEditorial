@@ -79,4 +79,29 @@ describe('expandAgentMessageToRuntimeMessages', () => {
       { role: 'user', content: '再查一次' },
     ]);
   });
+
+  it('replays the frozen canonical tool message instead of observation preview', () => {
+    const messages = expandAgentMessageToRuntimeMessages({
+      id: 'run-1:thread:assistant',
+      role: 'assistant',
+      content: '已查询',
+      metadata: {
+        toolCalls: [
+          {
+            id: 'call_00_artifact',
+            name: 'read_document',
+            arguments: { id: 'doc-1' },
+            content: '预览：旧观测内容',
+            canonicalMessageContent: '工具结果已保存为 artifact_artifact-1\n预览：旧观测内容',
+            success: true,
+          },
+        ],
+      },
+    });
+
+    expect(messages[1]).toMatchObject({
+      role: 'tool',
+      content: '工具结果已保存为 artifact_artifact-1\n预览：旧观测内容',
+    });
+  });
 });

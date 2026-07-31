@@ -1,6 +1,7 @@
 import type { AgentSession } from './AgentSession.js';
 import type { AIMessage } from '../../../types/index.js';
 import { runtimeMessagePlainText } from '../userTurnRuntime.js';
+import type { PromptCacheContract } from './promptCacheContract.js';
 
 export type ProviderContextCacheEntry = {
   cacheKey?: string;
@@ -15,6 +16,14 @@ export type ProviderContextCacheEntry = {
 export type ResponseCacheRequest = {
   cacheKey?: string;
   enableStore: boolean;
+  cacheContractVersion?: string;
+  cacheEligibility?: boolean;
+  cacheNamespace?: string;
+  cacheDisableReason?: string;
+  providerId?: string;
+  model?: string;
+  cachePolicy?: PromptCacheContract['cachePolicy'];
+  cacheMode?: PromptCacheContract['cacheMode'];
   incrementalInput?: Array<Record<string, unknown>>;
   incrementalMessages?: AIMessage[];
   /** Any provider context id for within-run chaining (round 2+, Responses API only). */
@@ -127,16 +136,36 @@ export function buildPromptCacheKey(
 export function buildResponseCacheRequest(
   messages: AIMessage[],
   cacheEntry: ProviderContextCacheEntry | undefined,
-  options?: { cacheKey?: string; enableStore?: boolean; roundIndex?: number },
+  options?: {
+    cacheKey?: string;
+    enableStore?: boolean;
+    roundIndex?: number;
+    contract?: PromptCacheContract;
+  },
 ): ResponseCacheRequest | undefined {
   const enableStore = options?.enableStore !== false;
   if (!enableStore) return undefined;
 
-  const cacheKey = cacheEntry?.cacheKey ?? options?.cacheKey;
+  const cacheKey = options?.cacheKey ?? cacheEntry?.cacheKey;
   // HTTP SSE cannot use previous_response_id on many gateways (WebSocket v2 only).
   // Context continuity relies on full merged messages + prompt_cache_key.
   void messages;
-  return { enableStore: true, cacheKey };
+  return {
+    enableStore: true,
+    cacheKey,
+    ...(options?.contract
+      ? {
+          cacheContractVersion: options.contract.contractVersion,
+          cacheEligibility: options.contract.cacheEligibility,
+          cacheNamespace: options.contract.cacheNamespace,
+          cacheDisableReason: options.contract.cacheDisableReason,
+          providerId: options.contract.providerId,
+          model: options.contract.model,
+          cachePolicy: options.contract.cachePolicy,
+          cacheMode: options.contract.cacheMode,
+        }
+      : {}),
+  };
 }
 
 /** Strip reasoning parts so API history matches plain assistant text (stable cache prefix). */

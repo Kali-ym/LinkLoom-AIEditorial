@@ -164,6 +164,7 @@ describe('mergeRefreshedMessages', () => {
     const merged = mergeRefreshedMessages(local, api);
     const tool = merged[0]?.turnSegments?.[0];
     expect(merged[0]?.id).toBe('run-1:thread:assistant');
+    expect(merged).toHaveLength(1);
     expect(tool?.kind === 'tool' ? tool.tool.intervention?.status : undefined).toBe('pending');
   });
 
@@ -403,5 +404,42 @@ describe('mergeRefreshedMessages', () => {
     expect(merged[0]?.role).toBe('user');
     expect(merged[0]?.content).toBe('你好');
     expect(merged[1]?.role).toBe('assistant');
+  });
+
+  it('does not keep the optimistic user bubble beside its refreshed API copy', () => {
+    const local: Message[] = [
+      {
+        id: 'u-optimistic',
+        role: 'user',
+        content: '你是什么模型',
+        createdAt: '2026-06-29T08:00:00.000Z',
+      },
+      {
+        id: 'run-local:thread:assistant',
+        role: 'assistant',
+        content: '我是一个 AI 助手',
+        createdAt: '2026-06-29T08:00:05.000Z',
+      },
+    ];
+    const api: Message[] = [
+      {
+        id: 'run-api:input:0',
+        role: 'user',
+        content: '你是什么模型',
+        // A slow run can cross a minute boundary before the refresh arrives.
+        createdAt: '2026-06-29T08:01:10.000Z',
+      },
+      {
+        id: 'run-api:thread:assistant',
+        role: 'assistant',
+        content: '我是一个 AI 助手',
+        createdAt: '2026-06-29T08:01:15.000Z',
+      },
+    ];
+
+    const merged = mergeRefreshedMessages(local, api);
+
+    expect(merged.filter((message) => message.role === 'user')).toHaveLength(1);
+    expect(merged[0]?.content).toBe('你是什么模型');
   });
 });

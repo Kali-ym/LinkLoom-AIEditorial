@@ -114,7 +114,11 @@ describe('admin selection tools', () => {
 
   it('selection tools have no execution policy', () => {
     for (const t of selectionTools) {
-      expect((t as { execution?: unknown }).execution).toBeUndefined();
+      if (t.id === 'import_opml') {
+        expect(t.execution).toEqual({ readonly: false, riskLevel: 'medium' });
+      } else {
+        expect((t as { execution?: unknown }).execution).toBeUndefined();
+      }
     }
   });
 });

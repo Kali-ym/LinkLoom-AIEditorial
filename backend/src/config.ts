@@ -222,8 +222,12 @@ export const defaultSettings: SystemSettings = {
     memoryCategoryName: '日报跨日索引'
   },
   HOT_CONFIG: {
-    mergeMode: 'hybrid',
+    mergeMode: 'llm',
     embeddingServiceId: '',
-    similarityMin: 0.78
+    similarityMin: 0.78,
+    llmProviderId: '',
+    llmModelId: '',
+    llmMaxJudgmentsPerRun: 50,
+    llmCacheTtlMinutes: 360
   }
 };

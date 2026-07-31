@@ -15,6 +15,11 @@ Input:
 
 Judgment criteria: the article and the cluster describe THE SAME SPECIFIC EVENT (same product launch, same policy change, same incident, etc.), not merely the same domain or company.
 
+Important:
+- Different articles covering the SAME release/announcement (e.g. weights upload + press coverage + Hugging Face repo) → same_event=true.
+- For the SAME versioned product (e.g. MiniMax H3, Kimi K3), treat as ONE storyline when within ~48h: official release/open-weights + platform integrations (Vercel/Runway/OpenRouter/Pika) + benchmark/arena follow-ups → same_event=true unless clearly a different version or unrelated topic.
+- Same author or company publishing UNRELATED articles on the same day → same_event=false.
+
 Output STRICT JSON only, no markdown:
 {"judgments":[{"pair_index":0,"same_event":true,"confidence":0.92,"reason":"both report Kimi K3 release on same date"}]}
 

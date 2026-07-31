@@ -8,7 +8,7 @@ export interface SkillServiceLike {
 
 export class SkillProvider implements PromptProvider {
   id = 'skill';
-  phase = 'system_accumulate' as const;
+  phase = 'before_first_user' as const;
   priority = 70;
 
   constructor(private readonly skillService: SkillServiceLike) {}
@@ -19,6 +19,9 @@ export class SkillProvider implements PromptProvider {
     // 优先用预生成的 instructions（AgentService.buildTurnSkillInstructions 已生成）
     const prompt = ctx.skillInstructions ?? this.skillService.buildSkillsPrompt(skillIds);
     if (!prompt || !prompt.trim()) return null;
-    return { content: wrapTag('available_skills', prompt.trim()) };
+    return {
+      content: wrapTag('available_skills', prompt.trim()),
+      cacheClass: 'dynamic'
+    };
   }
 }

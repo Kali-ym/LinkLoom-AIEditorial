@@ -27,8 +27,15 @@ import {
   buildRegenUserPrompt
 } from './llmJudgePrompt.js';
 import type { HotClusterItem } from './hotEvents.js';
+import { withinClusterPublishWindow } from './mergeHotStories.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────
+
+/** Sticky cluster identity + members for tip-window gating during LLM attach. */
+export type StickyClusterRef = {
+  eventId: string;
+  members: HotClusterItem[];
+};
 
 export interface FingerprintStore {
   loadAll(): Promise<ClusterFingerprint[]>;
@@ -49,6 +56,10 @@ export interface LLMJudgeOptions {
   cacheTtlMinutes: number;
   sealAfterMs: number;
   windowMs: number;
+  /** Entity-recall breadth per attach (default 8). */
+  recallK?: number;
+  /** Minimum confidence to accept a positive judgment (default 0.6). */
+  minConfidence?: number;
 }
 
 interface JudgmentBatchEntry {
@@ -60,6 +71,15 @@ interface JudgmentBatchEntry {
 // ── In-memory cache (fast path) ────────────────────────────────────────────
 
 const memCache = new Map<string, { result: JudgmentResult; expiresAt: number }>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableJudgeError(err: unknown): boolean {
+  const msg = String(err);
+  return /503|429|temporarily unavailable|rate limit|timeout/i.test(msg);
+}
 
 function memCacheGet(key: string): JudgmentResult | null {
   const entry = memCache.get(key);
@@ -98,6 +118,17 @@ export class LLMMergeJudge {
     this.fingerprints = await this.opts.store.loadAll();
   }
 
+  getJudgmentBudget(): number {
+    return this.opts.maxJudgmentsPerRun;
+  }
+
+  /** Raise the per-run judgment cap (e.g. bootstrap over many hard-only clusters). */
+  setJudgmentBudget(n: number): void {
+    if (Number.isFinite(n) && n > this.opts.maxJudgmentsPerRun) {
+      this.opts.maxJudgmentsPerRun = n;
+    }
+  }
+
   getFingerprints(): ClusterFingerprint[] {
     return this.fingerprints;
   }
@@ -115,12 +146,25 @@ export class LLMMergeJudge {
   }
 
   /**
-   * Try to attach an item to an existing cluster via recall-3 → pairwise → cache.
+   * Ingest members already attached by hard signature (or other non-LLM paths)
+   * so aliases / pendingClaims stay in sync with cluster membership.
+   */
+  ingestAttachedMembers(eventId: string, items: HotClusterItem[]): void {
+    const fp = this.fingerprints.find((f) => f.eventId === eventId);
+    if (!fp || items.length === 0) return;
+    for (const item of items) {
+      this.onMatch(fp, extractMiniProfile(item));
+    }
+  }
+
+  /**
+   * Try to attach an item to an existing cluster via recall-K → pairwise → cache.
+   * Candidates must pass tip-vs-tip publish window (same gate as rules/hybrid).
    * Returns the matched eventId, or null if no match.
    */
   async tryAttach(
     item: HotClusterItem,
-    stickyEventIds: string[]
+    stickyClusters: StickyClusterRef[]
   ): Promise<string | null> {
     if (this.judgmentCount >= this.opts.maxJudgmentsPerRun) {
       LogService.warn(`LLM judge: max judgments reached (${this.opts.maxJudgmentsPerRun})`);
@@ -128,20 +172,27 @@ export class LLMMergeJudge {
     }
 
     const profile = extractMiniProfile(item);
+    const membersByEventId = new Map(
+      stickyClusters.map((s) => [s.eventId, s.members] as const)
+    );
+    const stickyEventIds = new Set(stickyClusters.map((s) => s.eventId));
 
-    // Filter to active fingerprints within a reasonable time window
-    const itemTime = Date.parse(item.published_date) || Date.now();
-    const activeFps = this.fingerprints.filter((fp) => {
-      if (stickyEventIds.includes(fp.eventId)) return true;
-      const fpTime = Date.parse(fp.lastUpdated) || 0;
-      return Math.abs(itemTime - fpTime) <= this.opts.windowMs * 4;
-    });
-
+    const activeFps = this.fingerprints.filter((fp) => stickyEventIds.has(fp.eventId));
     if (activeFps.length === 0) return null;
 
-    // Recall top-3 by entity overlap
-    const candidates = recallTopK(profile, activeFps, this.opts.windowMs, 3);
+    // Recall top-K by entity overlap, then tip-window gate (rules/hybrid parity).
+    const recallK = this.opts.recallK ?? 8;
+    const minConfidence = this.opts.minConfidence ?? 0.6;
+    const recalled = recallTopK(profile, activeFps, this.opts.windowMs, recallK);
+    const candidates = recalled.filter((fp) => {
+      const members = membersByEventId.get(fp.eventId);
+      if (!members || members.length === 0) return false;
+      return withinClusterPublishWindow(members, [item]);
+    });
     if (candidates.length === 0) return null;
+
+    type PositiveMatch = { fp: ClusterFingerprint; confidence: number };
+    const positives: PositiveMatch[] = [];
 
     // Check cache + collect uncached pairs
     const batch: JudgmentBatchEntry[] = [];
@@ -151,9 +202,8 @@ export class LLMMergeJudge {
       // Memory cache
       const memHit = memCacheGet(key);
       if (memHit) {
-        if (memHit.sameEvent && memHit.confidence >= 0.6) {
-          this.onMatch(fp, profile);
-          return fp.eventId;
+        if (memHit.sameEvent && memHit.confidence >= minConfidence) {
+          positives.push({ fp, confidence: memHit.confidence });
         }
         continue;
       }
@@ -162,9 +212,8 @@ export class LLMMergeJudge {
       const dbHit = await this.opts.cache.get(key);
       if (dbHit) {
         memCacheSet(key, dbHit, this.opts.cacheTtlMinutes);
-        if (dbHit.sameEvent && dbHit.confidence >= 0.6) {
-          this.onMatch(fp, profile);
-          return fp.eventId;
+        if (dbHit.sameEvent && dbHit.confidence >= minConfidence) {
+          positives.push({ fp, confidence: dbHit.confidence });
         }
         continue;
       }
@@ -172,31 +221,38 @@ export class LLMMergeJudge {
       batch.push({ item: profile, candidates: [fp], cacheKey: key });
     }
 
-    if (batch.length === 0) return null;
+    if (batch.length > 0) {
+      const judgments = await this.batchJudge(batch);
+      if (!judgments) return positives.length > 0 ? this.applyBestMatch(positives, profile) : null;
 
-    // Batch LLM call for uncached pairs
-    const judgments = await this.batchJudge(batch);
-    if (!judgments) return null; // LLM failed
+      for (let i = 0; i < batch.length; i++) {
+        const result = judgments[i];
+        if (!result) continue;
 
-    for (let i = 0; i < batch.length; i++) {
-      const result = judgments[i];
-      if (!result) continue;
+        const fp = batch[i].candidates[0];
+        const key = batch[i].cacheKey;
 
-      const fp = batch[i].candidates[0];
-      const key = batch[i].cacheKey;
+        memCacheSet(key, result, this.opts.cacheTtlMinutes);
+        await this.opts.cache.set(key, result, this.opts.cacheTtlMinutes);
+        this.judgmentCount++;
 
-      // Cache the result
-      memCacheSet(key, result, this.opts.cacheTtlMinutes);
-      await this.opts.cache.set(key, result, this.opts.cacheTtlMinutes);
-      this.judgmentCount++;
-
-      if (result.sameEvent && result.confidence >= 0.6) {
-        this.onMatch(fp, profile);
-        return fp.eventId;
+        if (result.sameEvent && result.confidence >= minConfidence) {
+          positives.push({ fp, confidence: result.confidence });
+        }
       }
     }
 
-    return null;
+    return this.applyBestMatch(positives, profile);
+  }
+
+  private applyBestMatch(
+    positives: Array<{ fp: ClusterFingerprint; confidence: number }>,
+    profile: ItemMiniProfile
+  ): string | null {
+    if (positives.length === 0) return null;
+    const best = positives.reduce((a, b) => (a.confidence >= b.confidence ? a : b));
+    this.onMatch(best.fp, profile);
+    return best.fp.eventId;
   }
 
   private onMatch(fp: ClusterFingerprint, profile: ItemMiniProfile): void {
@@ -218,52 +274,58 @@ export class LLMMergeJudge {
   ): Promise<JudgmentResult[] | null> {
     if (batch.length === 0) return [];
 
-    try {
-      // For simplicity, judge each pair individually but could be batched
-      // into a single prompt with multiple candidate clusters.
-      // For now, we group by item and judge against multiple candidates at once.
+    const results: JudgmentResult[] = [];
 
-      const results: JudgmentResult[] = [];
+    const byItem = new Map<string, JudgmentBatchEntry[]>();
+    for (const entry of batch) {
+      const key = entry.item.itemId;
+      const group = byItem.get(key);
+      if (group) {
+        group.push(entry);
+      } else {
+        byItem.set(key, [entry]);
+      }
+    }
 
-      // Group entries by item (same item may have multiple candidates)
-      const byItem = new Map<string, JudgmentBatchEntry[]>();
-      for (const entry of batch) {
-        const key = entry.item.itemId;
-        const group = byItem.get(key);
-        if (group) {
-          group.push(entry);
-        } else {
-          byItem.set(key, [entry]);
+    for (const [, entries] of byItem) {
+      const item = entries[0].item;
+      const candidates = entries.map((e) => e.candidates[0]);
+      const userPrompt = buildJudgmentUserPrompt(item, candidates);
+
+      let response: Awaited<ReturnType<AIProvider['generateContent']>> | null = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          response = await this.opts.provider.generateContent(
+            userPrompt,
+            [],
+            JUDGMENT_SYSTEM_PROMPT
+          );
+          break;
+        } catch (err) {
+          if (attempt < 3 && isRetryableJudgeError(err)) {
+            await sleep(1000 * (attempt + 1));
+            continue;
+          }
+          LogService.warn(`LLM judge batch failed: ${err}`);
+          return null;
         }
       }
 
-      for (const [, entries] of byItem) {
-        const item = entries[0].item;
-        const candidates = entries.map((e) => e.candidates[0]);
+      if (!response) return null;
 
-        const userPrompt = buildJudgmentUserPrompt(item, candidates);
-        const response = await this.opts.provider.generateContent(
-          userPrompt,
-          [],
-          JUDGMENT_SYSTEM_PROMPT
-        );
-
-        const parsed = parseJudgmentResponse(response, candidates.length);
-
-        for (let i = 0; i < entries.length; i++) {
-          results.push(parsed[i] || {
+      const parsed = parseJudgmentResponse(response, candidates.length);
+      for (let i = 0; i < entries.length; i++) {
+        results.push(
+          parsed[i] || {
             sameEvent: false,
             confidence: 0,
             reason: 'parse_failed'
-          });
-        }
+          }
+        );
       }
-
-      return results;
-    } catch (err) {
-      LogService.warn(`LLM judge batch failed: ${err}`);
-      return null;
     }
+
+    return results;
   }
 
   /**
@@ -274,6 +336,7 @@ export class LLMMergeJudge {
     const dirty = this.fingerprints.filter(
       (fp) => this.dirtyFingerprints.has(fp.eventId) && !fp.sealed
     );
+    const toPersist = new Set<string>(this.dirtyFingerprints);
 
     for (const fp of dirty) {
       trySeal(fp, this.opts.sealAfterMs);
@@ -320,9 +383,9 @@ export class LLMMergeJudge {
       this.dirtyFingerprints.delete(fp.eventId);
     }
 
-    // Persist all dirty fingerprints
-    for (const fp of this.fingerprints) {
-      await this.opts.store.save(fp);
+    for (const eventId of toPersist) {
+      const fp = this.fingerprints.find((f) => f.eventId === eventId);
+      if (fp) await this.opts.store.save(fp);
     }
   }
 
