@@ -33,14 +33,13 @@ describe('prompt types', () => {
     expectTypeOf(b.identity).toEqualTypeOf<string | { docRef: string } | undefined>();
   });
 
-  it('PromptPhase has 4 values', () => {
+  it('PromptPhase has 3 values', () => {
     const phases: PromptPhase[] = [
       'system_accumulate',
-      'before_first_user',
-      'tail_guidance',
+      'variant_accumulate',
       'message_transform'
     ];
-    expect(phases).toHaveLength(4);
+    expect(phases).toHaveLength(3);
   });
 
   it('PromptProvider shape is structurally sound', () => {
@@ -54,15 +53,13 @@ describe('prompt types', () => {
     expect(provider.priority).toBe(10);
   });
 
-  it('AssembledMessages has the three message buckets', () => {
+  it('AssembledMessages has stable system and variant buckets', () => {
     const a: AssembledMessages = {
       systemMessage: { role: 'system', content: 's' },
-      preUserMessages: [{ role: 'system', content: 'p' }],
-      tailMessages: [{ role: 'system', content: 't' }]
+      variantMessages: [{ role: 'system', content: 'v' }]
     };
     expect(a.systemMessage.role).toBe('system');
-    expect(a.preUserMessages).toHaveLength(1);
-    expect(a.tailMessages).toHaveLength(1);
+    expect(a.variantMessages).toHaveLength(1);
   });
 
   it('FewShotExample supports optional tags', () => {

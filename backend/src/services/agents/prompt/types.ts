@@ -1,7 +1,6 @@
 import type { AgentDefinition, SkillDefinition, ToolDefinition } from '../../../types/agent.js';
 import type { AIProviderConfig } from '../../../types/config.js';
 import type { WebSearchPolicy } from '../search/types.js';
-import type { AgentWorkspaceState } from '../workspace/AgentWorkspaceState.js';
 
 /** few-shot 示例 */
 export interface FewShotExample {
@@ -67,8 +66,7 @@ export interface StructuredPrompt {
 /** Pipeline 阶段 */
 export type PromptPhase =
   | 'system_accumulate'
-  | 'before_first_user'
-  | 'tail_guidance'
+  | 'variant_accumulate'
   | 'message_transform';
 
 /** Prompt contribution 的缓存稳定性分类。 */
@@ -102,18 +100,11 @@ export interface PromptBuildContext {
   /** AIProviderConfig（用于读取 reasoningEffort/thinkingConfig 等模型特定配置） */
   providerConfig?: AIProviderConfig;
   model: string;
-  date?: string;
   variables: Record<string, string>;
   /** 预生成的 skill instructions（由 AgentService.buildTurnSkillInstructions 生成） */
   skillInstructions?: string;
   /** 可选:PromptRegistry 实例,供 BaseAgentProvider 等加载 base 模板(测试可注入) */
   registry?: import('./registry/PromptRegistry.js').PromptRegistry;
-  /** 预检索的知识库上下文(已展开为带标号的字符串);由 AgentService 在 buildPromptPipelineContext 之前异步解析 */
-  knowledgeContext?: string;
-  /** 预检索的记忆上下文(已展开为带标号的字符串);由 AgentService 在 buildPromptPipelineContext 之前异步解析 */
-  memoryContext?: string;
-  /** 会话组内最新非空 workspaceState(含 todos/plan);由 AgentService 解析,仅 TodoHintProvider 消费 */
-  todoState?: AgentWorkspaceState;
   /** Console 联网搜索策略;由 AgentService 解析,ModelHintProvider 等消费 */
   webSearchPolicy?: WebSearchPolicy;
 }
@@ -129,7 +120,6 @@ export interface PromptProvider {
 /** Pipeline 最终组装的消息 */
 export interface AssembledMessages {
   systemMessage: { role: 'system'; content: string };
-  preUserMessages: { role: 'system'; content: string }[];
-  tailMessages: { role: 'system'; content: string }[];
+  variantMessages: { role: 'system'; content: string }[];
   contributions?: AssembledPromptContribution[];
 }

@@ -1,23 +1,18 @@
 import type { AgentDefinition, SkillDefinition, ToolDefinition } from '../../../types/agent.js';
 import type { AIProviderConfig } from '../../../types/config.js';
 import type { WebSearchPolicy } from '../search/types.js';
-import type { AgentWorkspaceState } from '../workspace/AgentWorkspaceState.js';
 import { expandStructuredPrompt } from './expandStructuredPrompt.js';
 import { normalizeSystemPrompt } from './normalizeSystemPrompt.js';
 import { PromptPipeline } from './PromptPipeline.js';
 import { BaseAgentProvider } from './providers/BaseAgentProvider.js';
 import { CapabilitiesProvider } from './providers/CapabilitiesProvider.js';
 import { ConstraintsProvider } from './providers/ConstraintsProvider.js';
-import { DateContextProvider } from './providers/DateContextProvider.js';
 import { ExamplesProvider } from './providers/ExamplesProvider.js';
 import { IdentityProvider } from './providers/IdentityProvider.js';
-import { KnowledgeContextProvider } from './providers/KnowledgeContextProvider.js';
-import { MemoryContextProvider } from './providers/MemoryContextProvider.js';
 import { ModelHintProvider } from './providers/ModelHintProvider.js';
 import { OutputFormatProvider } from './providers/OutputFormatProvider.js';
 import { RoleProvider } from './providers/RoleProvider.js';
 import { SkillProvider } from './providers/SkillProvider.js';
-import { TodoHintProvider } from './providers/TodoHintProvider.js';
 import { ToolSystemProvider } from './providers/ToolSystemProvider.js';
 import { PromptRegistry } from './registry/PromptRegistry.js';
 import { wrapTagRaw } from './sanitize.js';
@@ -37,15 +32,8 @@ export interface BuildContextInput {
   mcpTools: ToolDefinition[];
   /** 由 SkillService.buildTurnSkillInstructions 预先生成 */
   skillInstructions: string;
-  date?: string;
   /** 可选:覆盖默认单例 registry(测试用) */
   registry?: PromptRegistry;
-  /** 预检索的知识库上下文字符串(Provider 同步消费) */
-  knowledgeContext?: string;
-  /** 预检索的记忆上下文字符串(Provider 同步消费) */
-  memoryContext?: string;
-  /** 会话组内最新非空 workspaceState(TodoHintProvider 同步消费) */
-  todoState?: AgentWorkspaceState;
   /** 运行时变量(供 VariableReplaceProcessor 与 Provider 渲染使用) */
   variables?: Record<string, string>;
   /** Console 联网搜索策略 */
@@ -65,13 +53,9 @@ export function buildPromptPipelineContext(input: BuildContextInput): PromptBuil
     providerId: input.providerId,
     providerConfig: input.providerConfig,
     model: input.model,
-    date: input.date,
     variables: input.variables ?? {},
     skillInstructions: input.skillInstructions,
     registry,
-    knowledgeContext: input.knowledgeContext,
-    memoryContext: input.memoryContext,
-    todoState: input.todoState,
     webSearchPolicy: input.webSearchPolicy,
   };
 }
@@ -93,11 +77,7 @@ export function assembleSystemMessages(ctx: PromptBuildContext): AssembledMessag
     // SkillProvider 兜底 service：实际优先用 ctx.skillInstructions
     new SkillProvider({ buildSkillsPrompt: () => '' }),
     new ModelHintProvider(),
-    new ToolSystemProvider(),
-    new DateContextProvider(),
-    new KnowledgeContextProvider(),
-    new MemoryContextProvider(),
-    new TodoHintProvider()
+    new ToolSystemProvider()
   ]);
   const assembled = pipeline.build(ctx);
 

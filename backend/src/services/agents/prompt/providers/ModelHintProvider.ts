@@ -24,8 +24,8 @@ function webSearchHint(mode: WebSearchEffectiveMode): string | null {
  */
 export class ModelHintProvider implements PromptProvider {
   id = 'model_hint';
-  // Search/reasoning hints can vary per turn, so keep them in the dynamic tail.
-  phase = 'tail_guidance' as const;
+  // Search/reasoning hints vary per configuration and belong in variant messages.
+  phase = 'variant_accumulate' as const;
   priority = 5;
 
   build(ctx: PromptBuildContext): PromptContribution | null {
@@ -64,7 +64,7 @@ export class ModelHintProvider implements PromptProvider {
     if (hints.length === 0) return null;
     return {
       content: hints.map((h) => wrapTag('model_hint', h)).join('\n'),
-      cacheClass: 'dynamic'
+      cacheClass: 'variant'
     };
   }
 }

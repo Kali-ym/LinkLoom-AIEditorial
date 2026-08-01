@@ -35,13 +35,14 @@ function provider(
   id: string,
   phase: PromptProvider['phase'],
   priority: number,
-  content: string
+  content: string,
+  cacheClass?: PromptContribution['cacheClass']
 ): PromptProvider {
   return {
     id,
     phase,
     priority,
-    build: (): PromptContribution => ({ content })
+    build: (): PromptContribution => ({ content, cacheClass })
   };
 }
 
@@ -54,8 +55,7 @@ describe('PromptPipeline', () => {
     ]);
     const result = pipeline.build(makeCtx());
     expect(result.systemMessage.content).toBe('A\n\nB\n\nC');
-    expect(result.preUserMessages).toEqual([]);
-    expect(result.tailMessages).toEqual([]);
+    expect(result.variantMessages).toEqual([]);
   });
 
   it('skips providers that return null', () => {
@@ -78,44 +78,69 @@ describe('PromptPipeline', () => {
     expect(result.systemMessage.content).toBe('A\n\nC');
   });
 
-  it('collects before_first_user providers into preUserMessages', () => {
+  it('collects variant_accumulate providers into variantMessages', () => {
     const pipeline = new PromptPipeline([
-      provider('date', 'before_first_user', 10, 'DATE'),
-      provider('kb', 'before_first_user', 20, 'KB')
+      provider('skill', 'variant_accumulate', 10, 'SKILL', 'variant'),
+      provider('hint', 'variant_accumulate', 20, 'HINT', 'variant')
     ]);
     const result = pipeline.build(makeCtx());
     expect(result.systemMessage.content).toBe('');
-    expect(result.preUserMessages).toEqual([
-      { role: 'system', content: 'DATE' },
-      { role: 'system', content: 'KB' }
+    expect(result.variantMessages).toEqual([
+      { role: 'system', content: 'SKILL' },
+      { role: 'system', content: 'HINT' }
     ]);
   });
 
-  it('collects tail_guidance providers into tailMessages', () => {
-    const pipeline = new PromptPipeline([
-      provider('todo', 'tail_guidance', 10, 'TODO')
-    ]);
-    const result = pipeline.build(makeCtx());
-    expect(result.tailMessages).toEqual([{ role: 'system', content: 'TODO' }]);
+  it('rejects dynamic contributions', () => {
+    expect(
+      () =>
+        new PromptPipeline([
+          {
+            id: 'invalid-dynamic',
+            phase: 'variant_accumulate',
+            priority: 1,
+            build: () => ({ content: 'dynamic', cacheClass: 'dynamic' })
+          }
+        ]).build({} as PromptBuildContext)
+    ).toThrow('dynamic_prompt_provider_not_allowed');
   });
 
   it('empty pipeline produces empty system message', () => {
     const pipeline = new PromptPipeline([]);
     const result = pipeline.build(makeCtx());
     expect(result.systemMessage.content).toBe('');
-    expect(result.preUserMessages).toEqual([]);
-    expect(result.tailMessages).toEqual([]);
+    expect(result.variantMessages).toEqual([]);
   });
 
   it('filters providers by phase correctly', () => {
     const pipeline = new PromptPipeline([
       provider('role', 'system_accumulate', 10, 'ROLE'),
-      provider('date', 'before_first_user', 10, 'DATE'),
-      provider('todo', 'tail_guidance', 10, 'TODO')
+      provider('skill', 'variant_accumulate', 10, 'SKILL', 'variant')
     ]);
     const result = pipeline.build(makeCtx());
     expect(result.systemMessage.content).toBe('ROLE');
-    expect(result.preUserMessages).toHaveLength(1);
-    expect(result.tailMessages).toHaveLength(1);
+    expect(result.variantMessages).toHaveLength(1);
+  });
+
+  it('preserves contribution metadata in priority order', () => {
+    const pipeline = new PromptPipeline([
+      provider('role', 'system_accumulate', 10, 'ROLE', 'stable'),
+      provider('skill', 'variant_accumulate', 10, 'SKILL', 'variant')
+    ]);
+    const result = pipeline.build(makeCtx());
+    expect(result.contributions).toEqual([
+      {
+        providerId: 'role',
+        phase: 'system_accumulate',
+        content: 'ROLE',
+        cacheClass: 'stable'
+      },
+      {
+        providerId: 'skill',
+        phase: 'variant_accumulate',
+        content: 'SKILL',
+        cacheClass: 'variant'
+      }
+    ]);
   });
 });

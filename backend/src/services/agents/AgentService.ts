@@ -2692,9 +2692,9 @@ export class AgentService {
 
     return this.contextBuilder.buildInitial({
       systemMessage: input.assembled.systemMessage,
-      preUserMessages: input.assembled.preUserMessages,
+      preUserMessages: [],
       conversationMessages: conversation,
-      tailMessages: input.assembled.tailMessages
+      tailMessages: input.assembled.variantMessages
     }).messages;
   }
 
@@ -2764,14 +2764,13 @@ export class AgentService {
       if (contribution.phase === 'system_accumulate' && contribution.cacheClass !== 'stable') {
         unsafeReasons.push(`unstable_system_contribution:${contribution.providerId}`);
       }
-      // Dynamic providers must live in tail_guidance. Flag any before_first_user
-      // contribution that is not explicitly stable so new providers cannot silently
-      // pollute the cached prefix.
+      // Variant providers must use variant cacheClass. Dynamic contributions are
+      // rejected by PromptPipeline, but keep this guard for synthetic assembled input.
       if (
-        contribution.phase === 'before_first_user' &&
-        contribution.cacheClass !== 'stable'
+        contribution.phase === 'variant_accumulate' &&
+        contribution.cacheClass !== 'variant'
       ) {
-        unsafeReasons.push(`unstable_before_first_user_contribution:${contribution.providerId}`);
+        unsafeReasons.push(`unstable_variant_contribution:${contribution.providerId}`);
       }
     }
 
@@ -2845,8 +2844,7 @@ export class AgentService {
           systemMessages[0]?.content ?? 'You are a helpful assistant.'
         )
       },
-      preUserMessages: [],
-      tailMessages: [],
+      variantMessages: [],
       contributions: systemMessages.map((message, index) => ({
         providerId: `temporary_system_${index}`,
         phase: 'system_accumulate' as const,

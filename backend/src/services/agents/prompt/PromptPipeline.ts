@@ -7,33 +7,38 @@ import type {
   PromptProvider
 } from './types.js';
 
+const DEPRECATED_PHASES = ['before_first_user', 'tail_guidance'] as const;
+
 /**
  * Pipeline 引擎：按 phase + priority 编排 Provider，组装 AssembledMessages。
  * - system_accumulate：累积进 systemMessage（用 \n\n 连接），稳定前缀
- * - before_first_user：作为独立 system 消息插入首条 user 前（仅稳定/variant 内容）
- * - tail_guidance：插入消息尾部，动态尾部（日期/知识/记忆/Skill/非原生工具说明等）
+ * - variant_accumulate：作为独立 system 消息收集 variant 内容（Skill/模型 hint/非原生工具说明等）
  * - message_transform：消息转换（本轮 P1/P2 暂未消费）
  *
- * 语义顺序 invariant：stable system → conversation → dynamic tail。
- * 动态 contribution 不得进入 stable prefix，否则会破坏会话级 prompt cache。
+ * 语义顺序 invariant：stable system → variant messages → conversation。
+ * dynamic contribution 不得进入 pipeline 产出，否则会破坏会话级 prompt cache。
  */
 export class PromptPipeline {
-  constructor(private readonly providers: PromptProvider[]) {}
+  constructor(private readonly providers: PromptProvider[]) {
+    for (const provider of providers) {
+      if (DEPRECATED_PHASES.includes(provider.phase as (typeof DEPRECATED_PHASES)[number])) {
+        throw new Error(`deprecated_prompt_phase_not_allowed:${provider.id}:${provider.phase}`);
+      }
+    }
+  }
 
   build(ctx: PromptBuildContext): AssembledMessages {
     const byPhase = this.groupByPhase();
     const systemParts = this.collect(byPhase, 'system_accumulate', ctx);
-    const preUser = this.collect(byPhase, 'before_first_user', ctx);
-    const tail = this.collect(byPhase, 'tail_guidance', ctx);
-    const contributions = [...systemParts, ...preUser, ...tail];
+    const variantParts = this.collect(byPhase, 'variant_accumulate', ctx);
+    const contributions = [...systemParts, ...variantParts];
 
     return {
       systemMessage: {
         role: 'system',
         content: systemParts.map((item) => item.content).join('\n\n')
       },
-      preUserMessages: preUser.map((item) => ({ role: 'system', content: item.content })),
-      tailMessages: tail.map((item) => ({ role: 'system', content: item.content })),
+      variantMessages: variantParts.map((item) => ({ role: 'system', content: item.content })),
       contributions
     };
   }
@@ -41,8 +46,7 @@ export class PromptPipeline {
   private groupByPhase(): Record<PromptPhase, PromptProvider[]> {
     const init: Record<PromptPhase, PromptProvider[]> = {
       system_accumulate: [],
-      before_first_user: [],
-      tail_guidance: [],
+      variant_accumulate: [],
       message_transform: []
     };
     for (const provider of this.providers) init[provider.phase].push(provider);
@@ -61,11 +65,15 @@ export class PromptPipeline {
     for (const provider of byPhase[phase]) {
       const contrib: PromptContribution | null = provider.build(ctx);
       if (contrib && contrib.content) {
+        const cacheClass = contrib.cacheClass ?? defaultCacheClassForPhase(phase);
+        if (cacheClass === 'dynamic') {
+          throw new Error(`dynamic_prompt_provider_not_allowed:${provider.id}`);
+        }
         out.push({
           providerId: provider.id,
           phase,
           content: contrib.content,
-          cacheClass: contrib.cacheClass ?? defaultCacheClassForPhase(phase),
+          cacheClass,
           variantKey: contrib.variantKey
         });
       }
@@ -75,5 +83,5 @@ export class PromptPipeline {
 }
 
 function defaultCacheClassForPhase(phase: PromptPhase): AssembledPromptContribution['cacheClass'] {
-  return phase === 'system_accumulate' ? 'stable' : 'dynamic';
+  return phase === 'system_accumulate' ? 'stable' : 'variant';
 }

@@ -8,8 +8,8 @@ export interface SkillServiceLike {
 
 export class SkillProvider implements PromptProvider {
   id = 'skill';
-  // Skill catalogs are request-scoped and belong in the dynamic tail.
-  phase = 'tail_guidance' as const;
+  // Skill catalogs are request-scoped variant content, not stable system prefix.
+  phase = 'variant_accumulate' as const;
   priority = 70;
 
   constructor(private readonly skillService: SkillServiceLike) {}
@@ -22,7 +22,7 @@ export class SkillProvider implements PromptProvider {
     if (!prompt || !prompt.trim()) return null;
     return {
       content: wrapTag('available_skills', prompt.trim()),
-      cacheClass: 'dynamic'
+      cacheClass: 'variant'
     };
   }
 }

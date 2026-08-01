@@ -21,7 +21,7 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   };
 }
 
-function build(agent: AgentDefinition, opts: { skillInstructions?: string; date?: string } = {}) {
+function build(agent: AgentDefinition, opts: { skillInstructions?: string } = {}) {
   const ctx = buildPromptPipelineContext({
     agentDef: agent,
     providerId: 'OPENAI',
@@ -30,37 +30,29 @@ function build(agent: AgentDefinition, opts: { skillInstructions?: string; date?
     tools: [],
     skills: [],
     mcpTools: [],
-    skillInstructions: opts.skillInstructions ?? '',
-    date: opts.date
+    skillInstructions: opts.skillInstructions ?? ''
   });
   return assembleSystemMessages(ctx);
 }
 
-describe('prompt boundary bridge: stable system vs dynamic messages', () => {
-  it('string systemPrompt with no skills no date -> systemMessage contains identity', () => {
+describe('prompt boundary bridge: stable system vs variant messages', () => {
+  it('string systemPrompt with no skills -> systemMessage contains identity', () => {
     const assembled = build(makeAgent());
     expect(assembled.systemMessage.content).toContain('You are X');
     expect(assembled.systemMessage.content).toContain('<identity>You are X</identity>');
-    expect(assembled.preUserMessages).toEqual([]);
-    expect(assembled.tailMessages).toEqual([]);
+    expect(assembled.variantMessages).toEqual([]);
   });
 
-  it('string systemPrompt with skills -> tailMessages contains dynamic skill block', () => {
+  it('string systemPrompt with skills -> variantMessages contains skill block', () => {
     const assembled = build(makeAgent({ skillIds: ['s1'] }), {
       skillInstructions: '## Available Skills\n### Skill: s1'
     });
     expect(assembled.systemMessage.content).not.toContain('<available_skills>');
-    expect(assembled.tailMessages.map((message) => message.content).join('\n')).toContain(
-      '<available_skills>',
+    expect(assembled.variantMessages.map((message) => message.content).join('\n')).toContain(
+      '<available_skills>'
     );
-    expect(assembled.tailMessages.map((message) => message.content).join('\n')).toContain('s1');
+    expect(assembled.variantMessages.map((message) => message.content).join('\n')).toContain('s1');
     expect(assembled.systemMessage.content).toContain('You are X');
-  });
-
-  it('date injected into tailMessages not systemMessage', () => {
-    const assembled = build(makeAgent(), { date: '2026-06-25' });
-    expect(assembled.systemMessage.content).not.toContain('当前处理日期为');
-    expect(assembled.tailMessages.some((m) => m.content.includes('2026-06-25'))).toBe(true);
   });
 
   it('structured prompt assembles all present fields', () => {
@@ -101,7 +93,7 @@ describe('prompt boundary bridge: stable system vs dynamic messages', () => {
     expect(assembled.systemMessage.content).not.toContain('<tools');
   });
 
-  it('gemini model with provider webSearchPolicy injects model_hint', () => {
+  it('gemini model with provider webSearchPolicy injects model_hint in variantMessages', () => {
     const ctx = buildPromptPipelineContext({
       agentDef: makeAgent({ providerId: 'GEMINI', model: 'gemini-2.0-flash' }),
       providerId: 'GEMINI',
@@ -120,10 +112,10 @@ describe('prompt boundary bridge: stable system vs dynamic messages', () => {
       }
     });
     const assembled = assembleSystemMessages(ctx);
-    const tailContent = assembled.tailMessages.map((message) => message.content).join('\n');
+    const variantContent = assembled.variantMessages.map((message) => message.content).join('\n');
     expect(assembled.systemMessage.content).not.toContain('google_search');
     expect(assembled.systemMessage.content).not.toContain('<model_hint>');
-    expect(tailContent).toContain('<model_hint>');
-    expect(tailContent).toContain('内置搜索');
+    expect(variantContent).toContain('<model_hint>');
+    expect(variantContent).toContain('内置搜索');
   });
 });
