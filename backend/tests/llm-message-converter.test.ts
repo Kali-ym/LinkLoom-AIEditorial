@@ -66,4 +66,50 @@ describe('convertToLlmMessages', () => {
       tools: [],
     });
   });
+
+  it('omits unrepresentable ephemeral sources with diagnostics and leaves systemInstruction untouched', () => {
+    const privateErrorText = 'Error: private retrieval stack\n    at KnowledgeService.retrieve:42';
+    const request = {
+      systemInstruction: 'stable',
+      messages: [
+        { role: 'user' as const, content: 'hello' },
+        // Ephemeral slot: system-role messages are skipped by provider serializers.
+        { role: 'system' as const, content: privateErrorText },
+      ],
+      providerTools: [],
+      ephemeralMessages: [
+        {
+          id: 'turn-1:knowledge:0',
+          turnId: 'turn-1',
+          source: 'knowledge' as const,
+          content: privateErrorText,
+          trust: 'untrusted_data' as const,
+          instructionPolicy: 'reference_only' as const,
+          persist: false as const,
+        },
+      ],
+      turnContextFingerprint: 'turn-fingerprint',
+    };
+
+    for (const format of ['chat_completions', 'responses', 'anthropic'] as const) {
+      const result = convertToProviderRequest({ request, format });
+
+      expect(result.conversionDiagnostics).toEqual(['context_conversion_unsupported']);
+      expect(JSON.stringify(result)).not.toContain('private retrieval stack');
+      expect(JSON.stringify(result)).not.toContain('KnowledgeService.retrieve');
+
+      if (format === 'chat_completions') {
+        expect(result.systemInstruction).toBe('stable');
+        expect(result.messages).toEqual([{ role: 'user', content: 'hello' }]);
+      } else if (format === 'responses') {
+        expect(result.instructions).toBe('stable');
+        expect(result.input).toEqual([{ role: 'user', content: 'hello' }]);
+        expect(result.systemInstruction).toBeUndefined();
+      } else {
+        expect(result.system).toBe('stable');
+        expect(result.messages).toEqual([{ role: 'user', content: 'hello' }]);
+        expect(result.systemInstruction).toBeUndefined();
+      }
+    }
+  });
 });
