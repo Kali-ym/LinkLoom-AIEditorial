@@ -77,6 +77,53 @@ describe('resolvePersistedRunMessages', () => {
   });
 });
 
+describe('AgentSessionManager.getThreadRunMessages', () => {
+  it('emits only the latest turnInput when older users were incorrectly retained', async () => {
+    const { AgentSessionManager } = await import(
+      '../src/services/agents/managers/AgentSessionManager.js'
+    );
+    const manager = new AgentSessionManager();
+    const messages = manager.getThreadRunMessages({
+      runId: 'run-3',
+      sessionId: 'tpc_dup',
+      threadId: 'thread-1',
+      status: 'succeeded',
+      source: 'api',
+      createdAt: '2026-08-01T11:00:00.000Z',
+      updatedAt: '2026-08-01T11:00:10.000Z',
+      messages: [
+        { role: 'user', content: '你好', metadata: { turnInput: true, format: 'markdown' } },
+        { role: 'assistant', content: '你好！' },
+        { role: 'user', content: '你好' },
+        { role: 'user', content: '看看智能体' },
+        {
+          role: 'user',
+          content: '看看工作流',
+          metadata: { turnInput: true, format: 'markdown' },
+        },
+      ],
+      events: [
+        {
+          id: 'e1',
+          runId: 'run-3',
+          sessionId: 'tpc_dup',
+          type: 'model_finished',
+          sequence: 1,
+          timestamp: '2026-08-01T11:00:10.000Z',
+          payload: { content: '当前有 2 个工作流', round: 1 },
+        },
+      ],
+      checkpoints: [],
+      artifacts: [],
+      output: { content: '当前有 2 个工作流', stopReason: 'completed' },
+    });
+
+    const users = messages.filter((message) => message.role === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]?.content).toBe('看看工作流');
+  });
+});
+
 describe('AgentRunManager.createSpec', () => {
   it('persists original user input without runtime file index', () => {
     const runtimeContent =

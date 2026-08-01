@@ -1,6 +1,7 @@
 import type { ToolDefinition } from '../../../types/agent.js';
 import type { AIMessage } from '../../../types/index.js';
 import {
+  hashString,
   sortToolDefinitions,
   stableStringify,
 } from '../engine/canonicalMessageSerializer.js';
@@ -30,7 +31,19 @@ export function convertToLlmMessages(input: ConvertToLlmInput): AIMessage[] {
     role: 'user' as const,
     content: renderContextMessage(message),
   }));
-  return [...trajectory, ...context];
+  if (context.length === 0) return trajectory;
+
+  // Keep context request-only, but place it immediately after the current
+  // user turn. During ReAct continuations this makes the previous request
+  // (persistent history + current user + context) a byte-stable prefix of the
+  // next request, while the context is still excluded from persisted history.
+  const lastUserIndex = trajectory.findLastIndex((message) => message.role === 'user');
+  if (lastUserIndex < 0) return [...trajectory, ...context];
+  return [
+    ...trajectory.slice(0, lastUserIndex + 1),
+    ...context,
+    ...trajectory.slice(lastUserIndex + 1),
+  ];
 }
 
 function renderContextMessage(message: ContextMessage): string {
@@ -115,13 +128,58 @@ function tryParseJson(value: unknown): unknown {
 }
 
 function stableToolArguments(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') {
+    const parsed = tryParseJson(value);
+    return parsed === value ? value : stableToolArguments(parsed);
+  }
   if (value == null) return '{}';
   try {
     return stableStringify(value);
   } catch {
     return '{}';
   }
+}
+
+const MAX_TOOL_RESULT_CHARS = 16_000;
+
+/**
+ * Tool results are untrusted, frequently large, and may contain object keys in
+ * runtime-dependent order. Normalize them once for all three endpoint
+ * serializers, then truncate deterministically so the same result produces the
+ * same provider prefix on every retry or continuation.
+ */
+function normalizeToolResultForProvider(content: unknown): string {
+  let text: string;
+  if (typeof content === 'string') {
+    text = content;
+  } else if (content == null) {
+    text = '{}';
+  } else {
+    try {
+      if (Array.isArray(content)) {
+        const normalized = normalizeApiMessageContent(content, 'tool');
+        text =
+          typeof normalized === 'string'
+            ? normalized
+            : stableStringify(normalized);
+      } else {
+        text = stableStringify(content);
+      }
+    } catch {
+      text = String(content);
+    }
+  }
+
+  if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
+
+  const tailChars = 4_000;
+  const headChars = MAX_TOOL_RESULT_CHARS - tailChars;
+  const omittedChars = text.length - headChars - tailChars;
+  return [
+    text.slice(0, headChars),
+    `[linkloom_tool_result_truncated chars=${omittedChars} hash=${hashString(text)}]`,
+    text.slice(-tailChars),
+  ].join('\n');
 }
 
 function normalizeUserContentPart(part: unknown): Record<string, unknown> | null {
@@ -270,12 +328,11 @@ function toChatOrAnthropicMessages(
       }
 
       if (message.role === 'tool') {
-        const toolContent = normalizeApiMessageContent(message.content, 'tool');
         result.push({
           role: 'tool',
           tool_call_id: message.tool_call_id || message.name || 'tool',
           ...(message.name ? { name: message.name } : {}),
-          content: typeof toolContent === 'string' ? toolContent : JSON.stringify(toolContent),
+          content: normalizeToolResultForProvider(message.content),
         });
         continue;
       }
@@ -343,11 +400,10 @@ function toChatOrAnthropicMessages(
       while (cursor < messages.length && messages[cursor]?.role === 'tool') {
         const toolMessage = messages[cursor];
         if (!toolMessage) break;
-        const toolContent = normalizeApiMessageContent(toolMessage.content, 'tool');
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolMessage.tool_call_id || toolMessage.name || 'tool',
-          content: toolContent || '{}',
+          content: normalizeToolResultForProvider(toolMessage.content),
         });
         cursor += 1;
       }
@@ -443,7 +499,14 @@ export function toResponsesApiInputItems(
     if (message.role === 'system') continue;
 
     if (message.role === 'assistant') {
-      if (Array.isArray(message.raw_parts) && message.raw_parts.length > 0) {
+      // Raw Responses output items can contain provider-generated fields that
+      // are not part of the canonical runtime history. Preserve them only when
+      // the Responses adapter explicitly opts into reasoning continuity.
+      if (
+        keepReasoning &&
+        Array.isArray(message.raw_parts) &&
+        message.raw_parts.length > 0
+      ) {
         for (const part of message.raw_parts) {
           if (part && typeof part === 'object') {
             items.push(part as Record<string, unknown>);
@@ -490,11 +553,10 @@ export function toResponsesApiInputItems(
       while (cursor < prompt.length && prompt[cursor]?.role === 'tool') {
         const toolMessage = prompt[cursor];
         if (!toolMessage) break;
-        const output = normalizeApiMessageContent(toolMessage.content, 'tool');
         items.push({
           type: 'function_call_output',
           call_id: toolMessage.tool_call_id || toolMessage.name || 'tool',
-          output: typeof output === 'string' ? output : JSON.stringify(output),
+          output: normalizeToolResultForProvider(toolMessage.content),
         });
         cursor += 1;
       }
@@ -594,31 +656,76 @@ function canRepresentMessage(message: AIMessage, format: LlmProviderFormat): boo
   }
 }
 
+const EPHEMERAL_CONTEXT_MARKERS = ['<linkloom_context', '<retrieved_knowledge>'] as const;
+
+function messageContainsEphemeralMarker(message: AIMessage): boolean {
+  const serialized =
+    typeof message.content === 'string'
+      ? message.content
+      : JSON.stringify(message.content ?? '');
+  return EPHEMERAL_CONTEXT_MARKERS.some((marker) => serialized.includes(marker));
+}
+
+export function countTrailingEphemeralContextMessages(messages: AIMessage[]): number {
+  let count = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== 'user') break;
+    if (!messageContainsEphemeralMarker(message)) break;
+    count += 1;
+  }
+  return count;
+}
+
+function resolveLegacyEphemeralIndexes(
+  messages: AIMessage[],
+  declaredEphemeralCount: number,
+): Set<number> {
+  const markerCount = countTrailingEphemeralContextMessages(messages);
+  const count = markerCount > 0 ? markerCount : Math.max(0, declaredEphemeralCount);
+  const indexes = new Set<number>();
+  for (let index = Math.max(0, messages.length - count); index < messages.length; index += 1) {
+    indexes.add(index);
+  }
+  return indexes;
+}
+
 function filterSafeMessagesForProvider(
   messages: AIMessage[],
   ephemeralCount: number,
   format: LlmProviderFormat,
 ): { messages: AIMessage[]; diagnostics: string[] } {
-  if (ephemeralCount <= 0) {
+  const markerIndexes = new Set(
+    messages.flatMap((message, index) =>
+      messageContainsEphemeralMarker(message) ? [index] : [],
+    ),
+  );
+  const ephemeralIndexes =
+    markerIndexes.size > 0 ? markerIndexes : resolveLegacyEphemeralIndexes(messages, ephemeralCount);
+
+  if (ephemeralIndexes.size === 0) {
     return { messages, diagnostics: [] };
   }
 
-  const trajectoryLen = Math.max(0, messages.length - ephemeralCount);
-  const trajectory = messages.slice(0, trajectoryLen);
-  const ephemeral = messages.slice(trajectoryLen);
   const diagnostics: string[] = [];
-  const safeEphemeral: AIMessage[] = [];
+  const safeMessages: AIMessage[] = [];
 
-  for (const message of ephemeral) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message) continue;
+    if (!ephemeralIndexes.has(index)) {
+      safeMessages.push(message);
+      continue;
+    }
     if (canRepresentMessage(message, format)) {
-      safeEphemeral.push(message);
+      safeMessages.push(message);
     } else {
       diagnostics.push('context_conversion_unsupported');
     }
   }
 
   return {
-    messages: [...trajectory, ...safeEphemeral],
+    messages: safeMessages,
     diagnostics,
   };
 }

@@ -108,6 +108,37 @@ describe('provider tool call parsing', () => {
     expect(result.usage?.prompt_tokens).toBe(4);
   });
 
+  it('parseOpenAIChatResponseText preserves responses function_call before chat transform', () => {
+    const result = parseOpenAIChatResponseText(
+      JSON.stringify({
+        object: 'response',
+        output: [
+          {
+            type: 'reasoning',
+            summary: [{ type: 'summary_text', text: '**Discovering platform APIs**' }],
+          },
+          {
+            type: 'function_call',
+            call_id: 'call_RvoNpSBGN30g5A6EDZm4e2lI',
+            name: 'platform_discover',
+            arguments: '{"pathPrefix":"/"}',
+          },
+        ],
+        usage: { input_tokens: 4807, output_tokens: 69, total_tokens: 4876 },
+      }),
+    );
+
+    expect(result.reasoning).toContain('Discovering platform APIs');
+    expect(result.tool_calls).toEqual([
+      {
+        id: 'call_RvoNpSBGN30g5A6EDZm4e2lI',
+        name: 'platform_discover',
+        arguments: { pathPrefix: '/' },
+      },
+    ]);
+    expect(result.usage?.prompt_tokens).toBe(4807);
+  });
+
   it('enables DeepSeek-style thinking toggle when reasoning effort is requested', () => {
     const body: Record<string, unknown> = { model: 'deepseek-v4-flash', messages: [] };
     applyReasoningRequestFields(body, 'high');
@@ -733,6 +764,71 @@ describe('shouldTryAlternateOpenAIEndpoint', () => {
     expect(shouldTryAlternateOpenAIEndpoint(new Error('fetch failed'))).toBe(true);
     expect(shouldTryAlternateOpenAIEndpoint(new Error('502 Bad Gateway'))).toBe(true);
     expect(shouldTryAlternateOpenAIEndpoint(new Error('invalid api key'))).toBe(false);
+  });
+});
+
+describe('prompt_cache_key gateway fallback helpers', () => {
+  it('detects Chinese and English unknown-field rejections', async () => {
+    const {
+      isUnsupportedPromptCacheKeyError,
+      omitPromptCacheKey,
+      withoutPromptCacheKey,
+    } = await import('../src/services/AIProvider.js');
+
+    expect(
+      isUnsupportedPromptCacheKeyError(new Error('400 未知请求字段: prompt_cache_key')),
+    ).toBe(true);
+    expect(
+      isUnsupportedPromptCacheKeyError(new Error('400 Unknown request field: prompt_cache_key')),
+    ).toBe(true);
+    expect(
+      isUnsupportedPromptCacheKeyError(new Error('400 invalid api key')),
+    ).toBe(false);
+    expect(
+      isUnsupportedPromptCacheKeyError(new Error('400 unknown model')),
+    ).toBe(false);
+
+    expect(omitPromptCacheKey({ model: 'gpt', prompt_cache_key: 'k1' })).toEqual({ model: 'gpt' });
+    expect(
+      withoutPromptCacheKey({
+        enableStore: true,
+        cacheKey: 'k1',
+        cacheEligibility: true,
+      }),
+    ).toMatchObject({
+      cacheKey: undefined,
+      enableStore: false,
+      cacheEligibility: true,
+      cacheDisableReason: 'prompt_cache_key_omitted',
+    });
+  });
+
+  it('detects thinking.type=enabled rejections and omits the toggle', async () => {
+    const {
+      isUnsupportedThinkingEnabledError,
+      hasEnabledThinking,
+      omitEnabledThinking,
+      applyReasoningRequestFields,
+    } = await import('../src/services/AIProvider.js');
+
+    expect(
+      isUnsupportedThinkingEnabledError(new Error('400 ***.type 当前仅支持 disabled')),
+    ).toBe(true);
+    expect(
+      isUnsupportedThinkingEnabledError(new Error('400 thinking.type 当前仅支持 disabled')),
+    ).toBe(true);
+    expect(
+      isUnsupportedThinkingEnabledError(new Error('400 invalid api key')),
+    ).toBe(false);
+
+    const body: Record<string, unknown> = { model: 'gpt' };
+    applyReasoningRequestFields(body, 'high');
+    expect(hasEnabledThinking(body)).toBe(true);
+    expect(omitEnabledThinking(body)).toEqual({ model: 'gpt', reasoning_effort: 'high' });
+
+    const withoutToggle: Record<string, unknown> = { model: 'gpt' };
+    applyReasoningRequestFields(withoutToggle, 'high', { includeThinkingToggle: false });
+    expect(withoutToggle).toEqual({ model: 'gpt', reasoning_effort: 'high' });
   });
 });
 

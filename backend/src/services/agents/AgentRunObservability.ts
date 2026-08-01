@@ -48,7 +48,15 @@ export interface AgentRunMetrics {
     cacheDisableReasons: Record<string, number>;
     perCallCacheObservations: Array<{
       turnContextFingerprint?: string;
+      stablePrefixHash?: string;
       cachedInputTokens: number;
+      cacheKeyPresent?: boolean;
+      cacheEligibility?: boolean;
+      cacheDisableReason?: string;
+      providerId?: string;
+      model?: string;
+      endpoint?: string;
+      ephemeralMessageCount?: number;
       sourceErrors?: Array<{ source: string; code: string }>;
       conversionDiagnostics?: string[];
     }>;
@@ -153,7 +161,15 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
         estimatedCacheSavingsUsd += usage.estimatedCacheSavingsUsd;
         perCallCacheObservations.push({
           turnContextFingerprint: usage.turnContextFingerprint,
+          stablePrefixHash: usage.stablePrefixHash,
           cachedInputTokens: usage.cachedInputTokens,
+          cacheKeyPresent: usage.cacheKeyPresent,
+          cacheEligibility: usage.cacheEligibility,
+          cacheDisableReason: usage.cacheDisableReason,
+          providerId: usage.providerId,
+          model: usage.model,
+          endpoint: usage.endpoint,
+          ephemeralMessageCount: usage.ephemeralMessageCount,
           sourceErrors: usage.sourceErrors,
           conversionDiagnostics: usage.conversionDiagnostics,
         });
@@ -165,6 +181,14 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
           promptTokens: usage.promptTokens,
           cachedInputTokens: usage.cachedInputTokens,
           cacheWriteInputTokens: usage.cacheWriteInputTokens,
+          providerId: usage.providerId,
+          model: usage.model,
+          endpoint: usage.endpoint,
+          stablePrefixHash: usage.stablePrefixHash,
+          cacheKeyPresent: usage.cacheKeyPresent,
+          cacheEligibility: usage.cacheEligibility,
+          cacheDisableReason: usage.cacheDisableReason,
+          ephemeralMessageCount: usage.ephemeralMessageCount,
           turnContextFingerprint: usage.turnContextFingerprint,
           sourceErrors: usage.sourceErrors,
           conversionDiagnostics: usage.conversionDiagnostics,
@@ -262,6 +286,13 @@ function extractTokenUsage(usage: unknown): {
   cacheStatus?: 'hit' | 'write' | 'miss' | 'unsupported' | 'disabled' | 'unsafe';
   cacheDisableReason?: string;
   turnContextFingerprint?: string;
+  stablePrefixHash?: string;
+  cacheKeyPresent?: boolean;
+  cacheEligibility?: boolean;
+  providerId?: string;
+  model?: string;
+  endpoint?: string;
+  ephemeralMessageCount?: number;
   sourceErrors?: Array<{ source: string; code: string }>;
   conversionDiagnostics?: string[];
   estimatedCacheSavingsUsd: number;
@@ -312,6 +343,23 @@ function extractTokenUsage(usage: unknown): {
     typeof promptCache?.turnContextFingerprint === 'string'
       ? promptCache.turnContextFingerprint
       : undefined;
+  const stablePrefixHash =
+    typeof promptCache?.stablePrefixHash === 'string'
+      ? promptCache.stablePrefixHash
+      : undefined;
+  const cacheKeyPresent =
+    typeof promptCache?.cacheKeyPresent === 'boolean'
+      ? promptCache.cacheKeyPresent
+      : typeof promptCache?.cache_key === 'string' && promptCache.cache_key.trim().length > 0;
+  const cacheEligibility =
+    typeof promptCache?.eligible === 'boolean' ? promptCache.eligible : undefined;
+  const providerId = typeof promptCache?.provider === 'string' ? promptCache.provider : undefined;
+  const model = typeof promptCache?.model === 'string' ? promptCache.model : undefined;
+  const endpoint = typeof promptCache?.endpoint === 'string' ? promptCache.endpoint : undefined;
+  const ephemeralMessageCount =
+    typeof promptCache?.ephemeralMessageCount === 'number'
+      ? promptCache.ephemeralMessageCount
+      : undefined;
   const sourceErrors = Array.isArray(promptCache?.sourceErrors)
     ? promptCache.sourceErrors.filter(
         (entry): entry is { source: string; code: string } =>
@@ -339,6 +387,13 @@ function extractTokenUsage(usage: unknown): {
     cacheStatus,
     cacheDisableReason,
     turnContextFingerprint,
+    stablePrefixHash,
+    cacheKeyPresent,
+    cacheEligibility,
+    providerId,
+    model,
+    endpoint,
+    ephemeralMessageCount,
     sourceErrors,
     conversionDiagnostics,
     estimatedCacheSavingsUsd: savings

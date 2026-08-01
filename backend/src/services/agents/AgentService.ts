@@ -11,10 +11,7 @@ import type { AiBuildStreamEvent } from '../../types/aiBuilder.js';
 import type { AIProviderConfig, SystemSettings } from '../../types/config.js';
 import { AIMessage } from '../../types/index.js';
 import type { AIProvider } from '../AIProvider.js';
-import {
-  createAIProvider,
-  resolveEffectiveApiEndpoint
-} from '../AIProvider.js';
+import { createAIProvider, resolveEffectiveApiEndpoint } from '../AIProvider.js';
 import { LocalStore } from '../LocalStore.js';
 import { LogService } from '../LogService.js';
 import { KnowledgeRetrievalService } from '../rag/KnowledgeRetrievalService.js';
@@ -106,8 +103,12 @@ import { createLLMSummarizer } from './engine/LLMSummarizer.js';
 import { ReActAgentEngine } from './engine/ReActAgentEngine.js';
 import {
   buildResponseCacheRequest,
+  insertPromptCacheReplayContext,
+  mergePromptCacheReplayContextHistory,
   normalizeRuntimeMessageContent,
   pickRicherRuntimeHistory,
+  readPromptCacheReplayHistory,
+  readPromptCacheReplayContext,
   resolvePinnedSessionEndpoint,
   resolveResponseCacheFromSessions,
   type ResponseCacheRequest
@@ -129,7 +130,8 @@ import type { PromptCacheObservation } from './engine/promptCacheDiagnostics.js'
 import { applyMultiAgentPromptCachePolicy } from './engine/multiAgentPromptCache.js';
 import {
   rehydratePersistedAgentMessage,
-  rehydratePersistedMessages
+  rehydratePersistedMessages,
+  isLegacyResultBearingToolCall
 } from './engine/runtimeHistoryRehydrator.js';
 import { resolveWorkspacePolicyFromAgent } from './engine/WorkspacePolicyResolver.js';
 import {
@@ -612,8 +614,7 @@ export function buildRuntimeContextHooks(input: {
   turnContext?: TurnContext;
   contextTransformer?: ContextTransformer;
 }): ReActRuntimeContextHooks {
-  const usePiContextV2 =
-    input.sessionContext?.protocolVersion === PI_CONTEXT_PROTOCOL_VERSION;
+  const usePiContextV2 = input.sessionContext?.protocolVersion === PI_CONTEXT_PROTOCOL_VERSION;
   const contextTransformer = usePiContextV2
     ? (input.contextTransformer ?? new ContextTransformer())
     : undefined;
@@ -638,8 +639,7 @@ export function readStoredRunContextMetadata(
     nested && typeof nested === 'object' && !Array.isArray(nested)
       ? (nested as Record<string, unknown>)
       : undefined;
-  const version =
-    nestedRecord?.contextProtocolVersion ?? metadata.contextProtocolVersion;
+  const version = nestedRecord?.contextProtocolVersion ?? metadata.contextProtocolVersion;
   if (version !== PI_CONTEXT_PROTOCOL_VERSION) {
     return typeof version === 'string'
       ? ({ contextProtocolVersion: version } as StoredRunContextMetadata)
@@ -676,8 +676,7 @@ function readRetrievalPolicySnapshot(
   return {
     knowledgeScope: record.knowledgeScope,
     memoryCategoryIds,
-    memoryEnabled:
-      typeof record.memoryEnabled === 'boolean' ? record.memoryEnabled : undefined
+    memoryEnabled: typeof record.memoryEnabled === 'boolean' ? record.memoryEnabled : undefined
   };
 }
 
@@ -986,7 +985,7 @@ export class AgentService {
       skills: [],
       mcpTools,
       skillMetadata: turnSkillMetadata,
-      variables,
+      variables
     });
     const assembled = assembleSystemMessages(promptCtx);
     const systemInstruction = assembled.systemMessage.content;
@@ -1061,20 +1060,19 @@ export class AgentService {
     await this.agentEngine.prepareRun(runSpec);
     await options.onRunCreated?.(runSpec);
 
-    const { turnContext, sessionContext, contextMetadata } =
-      await this.finalizePreparedRunContext({
-        runSpec,
-        agentDef,
-        assembled,
-        trajectory,
-        providerTools,
-        userInput: input,
-        options,
-        settings,
-        date,
-        webSearchPolicy,
-        turnId
-      });
+    const { turnContext, sessionContext, contextMetadata } = await this.finalizePreparedRunContext({
+      runSpec,
+      agentDef,
+      assembled,
+      trajectory,
+      providerTools,
+      userInput: input,
+      options,
+      settings,
+      date,
+      webSearchPolicy,
+      turnId
+    });
     const responseCache = await this.resolveResponseCacheForRun(
       options,
       agentDef,
@@ -1084,7 +1082,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
-        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length
       }
     );
 
@@ -1217,7 +1215,7 @@ export class AgentService {
       skills: [],
       mcpTools,
       skillMetadata: turnSkillMetadata,
-      variables,
+      variables
     });
     const assembled = assembleSystemMessages(promptCtx);
 
@@ -1284,20 +1282,19 @@ export class AgentService {
     await this.agentEngine.prepareRun(runSpec);
     await options.onRunCreated?.(runSpec);
 
-    const { turnContext, sessionContext, contextMetadata } =
-      await this.finalizePreparedRunContext({
-        runSpec,
-        agentDef,
-        assembled,
-        trajectory,
-        providerTools,
-        userInput: input,
-        options,
-        settings,
-        date,
-        webSearchPolicy,
-        turnId
-      });
+    const { turnContext, sessionContext, contextMetadata } = await this.finalizePreparedRunContext({
+      runSpec,
+      agentDef,
+      assembled,
+      trajectory,
+      providerTools,
+      userInput: input,
+      options,
+      settings,
+      date,
+      webSearchPolicy,
+      turnId
+    });
     const responseCache = await this.resolveResponseCacheForRun(
       options,
       agentDef,
@@ -1307,7 +1304,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
-        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length
       }
     );
 
@@ -1423,10 +1420,7 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const useNativeFC = isCanUseFC(
-      resolvedProvider.providerConfig?.type ?? '',
-      agentDef.model
-    );
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? tools : [];
     const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
     const { turnContext, sessionContext } = this.buildTemporaryRunContext({
@@ -1454,7 +1448,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
-        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length
       }
     );
 
@@ -1568,10 +1562,7 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const useNativeFC = isCanUseFC(
-      resolvedProvider.providerConfig?.type ?? '',
-      agentDef.model
-    );
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? tools : [];
     const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
     const { turnContext, sessionContext } = this.buildTemporaryRunContext({
@@ -1599,7 +1590,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
-        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length
       }
     );
 
@@ -2475,7 +2466,7 @@ export class AgentService {
             {
               turnContextFingerprint: turnContext.fingerprint,
               sourceErrors: turnContext.sourceErrors,
-              ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
+              ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length
             }
           )
         }
@@ -2852,7 +2843,8 @@ export class AgentService {
     options: AgentRunOptions
   ): StoredRunContextMetadata['retrieval'] {
     return {
-      knowledgeScope: agentDef.knowledgeScope ?? legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds),
+      knowledgeScope:
+        agentDef.knowledgeScope ?? legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds),
       memoryCategoryIds: agentDef.memoryCategoryIds,
       memoryEnabled: readAgentChatConfigMemoryEnabled(agentDef, options.metadata)
     };
@@ -3072,7 +3064,10 @@ export class AgentService {
       input.providerConfig
     );
     const clientHistory = this.normalizeClientRunMessages(input.options.messages);
-    const mergedHistory = pickRicherRuntimeHistory(sessionHistory, clientHistory);
+    const mergedHistory = mergePromptCacheReplayContextHistory(
+      sessionHistory,
+      pickRicherRuntimeHistory(sessionHistory, clientHistory)
+    );
     const conversation = [...mergedHistory, turnMessage];
 
     return conversation;
@@ -3096,12 +3091,30 @@ export class AgentService {
     const supportsVision = resolveSupportsVision(agentDef, providerConfig);
     const runtimeContext = { uploadService, supportsVision };
     const messages: AIMessage[] = [];
+    const reusableSessions = historySessions.filter((item) => isReusableConversationRun(item));
+    const latestReplayHistory = reusableSessions.at(-1)
+      ? readPromptCacheReplayHistory(reusableSessions.at(-1)?.metadata)
+      : undefined;
 
-    for (const session of historySessions.filter((item) => isReusableConversationRun(item))) {
+    if (latestReplayHistory) {
+      return dedupeAdjacentRuntimeMessages([
+        ...latestReplayHistory.messages,
+        ...latestReplayHistory.tailMessages
+      ]);
+    }
+
+    for (const session of reusableSessions) {
+      const convertedRunMessages: AIMessage[] = [];
       for (const message of this.sessionManager.getThreadRunMessages(session)) {
         const converted = await this.agentMessageToRuntimeMessage(message, runtimeContext);
-        messages.push(...converted);
+        convertedRunMessages.push(...converted);
       }
+      messages.push(
+        ...insertPromptCacheReplayContext(
+          convertedRunMessages,
+          readPromptCacheReplayContext(session.metadata)
+        )
+      );
     }
 
     return dedupeAdjacentRuntimeMessages(messages);
@@ -3146,10 +3159,7 @@ export class AgentService {
       }
       // Variant providers must use variant cacheClass. Dynamic contributions are
       // rejected by PromptPipeline, but keep this guard for synthetic assembled input.
-      if (
-        contribution.phase === 'variant_accumulate' &&
-        contribution.cacheClass !== 'variant'
-      ) {
+      if (contribution.phase === 'variant_accumulate' && contribution.cacheClass !== 'variant') {
         unsafeReasons.push(`unstable_variant_contribution:${contribution.providerId}`);
       }
     }
@@ -3200,8 +3210,7 @@ export class AgentService {
       variantParts,
       toolset: canonicalizeToolDefinitions(tools),
       capability:
-        provider.promptCacheCapability ??
-        resolvePromptCacheCapability(providerType, endpoint),
+        provider.promptCacheCapability ?? resolvePromptCacheCapability(providerType, endpoint),
       cacheRequested:
         (options.promptCacheMode ?? 'enforced') !== 'disabled' &&
         !this.isResponseCacheDisabled(options),
@@ -3325,13 +3334,13 @@ export class AgentService {
             previousMessageId: undefined,
             cacheDisableReason: request.cacheDisableReason
               ? `${request.cacheDisableReason};response_input_fingerprint_mismatch`
-              : mismatchReason,
+              : mismatchReason
           }
         : {
             previousResponseId: cacheEntry?.responseId,
             previousCompletionId: cacheEntry?.completionId,
-            previousMessageId: cacheEntry?.messageId,
-          }),
+            previousMessageId: cacheEntry?.messageId
+          })
     };
   }
 
@@ -3500,8 +3509,10 @@ function disabledResponseCacheRequest(
     cacheNamespace: contract.cacheNamespace,
     cacheContractVersion: contract.contractVersion,
     cacheDisableReason: reason,
+    stablePrefixHash: contract.stablePrefixHash,
     providerId: contract.providerId,
     model: contract.model,
+    sessionId: contract.sessionId,
     endpoint: contract.endpoint,
     reasoningMode: contract.reasoningMode,
     cachePolicy: contract.cachePolicy,
@@ -3509,32 +3520,33 @@ function disabledResponseCacheRequest(
   };
 }
 
+/**
+ * True when persisted tool *results* lack canonical serialization.
+ * Assistant metadata.toolCalls that only record the LLM request
+ * (id/name/arguments) are not result history and must not trip this.
+ */
 function hasLegacyToolHistory(sessions: AgentSession[]): boolean {
   for (const session of sessions) {
     for (const event of session.events) {
       if (event.type !== 'tool_finished') continue;
       const payload = event.payload as Record<string, unknown>;
+      if (typeof payload.canonicalMessageContent === 'string') continue;
+      if (typeof payload.content === 'string' && payload.content.trim()) continue;
       if (
-        typeof payload.content === 'string' &&
-        typeof payload.canonicalMessageContent !== 'string'
+        payload.data !== undefined ||
+        typeof payload.error === 'string' ||
+        payload.success === true ||
+        payload.success === false
       ) {
         return true;
       }
     }
 
     for (const message of session.messages) {
-      if (message.role !== 'assistant' || !Array.isArray(message.metadata?.toolCalls)) {
-        continue;
-      }
-      if (
-        message.metadata.toolCalls.some(
-          (toolCall) =>
-            !toolCall ||
-            typeof toolCall !== 'object' ||
-            typeof (toolCall as Record<string, unknown>).canonicalMessageContent !== 'string'
-        )
-      ) {
-        return true;
+      if (message.role === 'assistant' && Array.isArray(message.metadata?.toolCalls)) {
+        if (message.metadata.toolCalls.some(isLegacyResultBearingToolCall)) {
+          return true;
+        }
       }
     }
   }

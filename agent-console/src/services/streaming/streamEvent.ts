@@ -28,6 +28,8 @@ export interface HitlContextData {
   runId: string;
   permissionId?: string;
   hitlRequestId?: string;
+  /** LLM tool_call id for askUserQuestion; may differ from hitlRequestId. */
+  toolCallId?: string;
 }
 
 export interface StreamEvent {

@@ -19,7 +19,14 @@ export function syncStaleApprovalContext(topicId: string): void {
 
   const topicCtx = streamingStore.pendingApprovalContextByTopicId[topicId];
   const runCtx = streamingStore.getRunContextForTopic(topicId);
-  if (!topicCtx && !runCtx?.permissionId && !runCtx?.hitlRequestId) return;
+  if (
+    !topicCtx &&
+    !runCtx?.permissionId &&
+    !runCtx?.hitlRequestId &&
+    !runCtx?.toolCallId
+  ) {
+    return;
+  }
 
   const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
   if (latestAssistant && messageHasPendingIntervention(latestAssistant)) return;
@@ -46,6 +53,7 @@ export function hasTopicPendingIntervention(topicId: string): boolean {
     selectAllPendingInterventions(messages, streaming, {
       permissionId: topicCtx?.permissionId ?? runCtx?.permissionId,
       hitlRequestId: topicCtx?.hitlRequestId ?? runCtx?.hitlRequestId,
+      toolCallId: topicCtx?.toolCallId ?? runCtx?.toolCallId,
     }).length > 0
   );
 }

@@ -188,10 +188,11 @@ function hitlContextEvent(
   runId: string,
   permissionId?: string,
   hitlRequestId?: string,
+  toolCallId?: string,
 ): ChatStreamEvent {
   return {
     type: 'hitl_context',
-    data: { runId, permissionId, hitlRequestId },
+    data: { runId, permissionId, hitlRequestId, toolCallId },
   };
 }
 
@@ -390,8 +391,10 @@ export function mapAgentEventToChatStreamEvents(
       }
       const askPayload = toolPayloadFromAskUserHitl(request);
       if (askPayload) {
+        const askToolCallId =
+          typeof askPayload.toolCallId === 'string' ? askPayload.toolCallId : undefined;
         return [
-          hitlContextEvent(runId, undefined, request.requestId),
+          hitlContextEvent(runId, undefined, request.requestId, askToolCallId),
           {
             type: 'tool_calls',
             tools: [askPayload],

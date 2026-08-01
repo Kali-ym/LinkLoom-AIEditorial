@@ -100,7 +100,9 @@ function collectSessionToolCalls(session: AgentSession): PersistedToolCall[] {
         canonicalMessageContent:
           typeof payload.canonicalMessageContent === 'string'
             ? payload.canonicalMessageContent
-            : undefined,
+            : typeof payload.content === 'string' && payload.content.trim()
+              ? payload.content
+              : undefined,
         data: payload.data,
         error: typeof payload.error === 'string' ? payload.error : undefined,
         mcpServerId: existing.mcpServerId ?? resolveMcpServerIdFromPayload(payload),
@@ -552,9 +554,15 @@ function buildAssistantMessageContent(
 
 function buildThreadRunMessages(session: AgentSession): AgentMessage[] {
   const userSourceMessages = session.messages.filter((message) => message.role === 'user');
-  const turnInputMessages = userSourceMessages.some((message) => message.metadata?.turnInput === true)
-    ? userSourceMessages.filter((message) => message.metadata?.turnInput === true)
-    : userSourceMessages.slice(-1);
+  const markedTurnInputs = userSourceMessages.filter(
+    (message) => message.metadata?.turnInput === true,
+  );
+  // One run contributes one user turn. If older users were incorrectly retained
+  // with turnInput:true (full-history overwrite), only the latest counts —
+  // otherwise early messages like「你好」are replayed every subsequent run and
+  // shatter the prompt-cache prefix.
+  const turnInputMessages =
+    markedTurnInputs.length > 0 ? markedTurnInputs.slice(-1) : userSourceMessages.slice(-1);
   const userMessages = turnInputMessages
     .map((message, index) => ({
       ...message,

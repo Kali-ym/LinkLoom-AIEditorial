@@ -11,7 +11,10 @@ import {
   type ReActRuntimePermissionPauseState
 } from '../runtime/ReActRuntime.js';
 import type { ContextUsageSnapshot } from '../context/ContextTokenTypes.js';
-import { buildProviderCacheMetadataPatch } from './responseContextCache.js';
+import {
+  buildPromptCacheReplayContextMetadata,
+  buildProviderCacheMetadataPatch
+} from './responseContextCache.js';
 import { readPromptCacheContract } from './promptCacheContract.js';
 import type {
   AgentEngine,
@@ -157,6 +160,7 @@ export class ReActAgentEngine implements AgentEngine {
         };
       }
       if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
+        await this.persistPromptCacheReplayState(runSpec, runtime);
         return output;
       }
       if (output.stopReason === 'cancelled') {
@@ -169,6 +173,7 @@ export class ReActAgentEngine implements AgentEngine {
         return output;
       }
       await middleware.beforeFinish(output);
+      await this.persistPromptCacheReplayState(runSpec, runtime);
       await this.persistProviderResponseCache(
         runSpec,
         runtime.getProviderResponseId(),
@@ -351,6 +356,7 @@ export class ReActAgentEngine implements AgentEngine {
       }
 
       if (stopReason === 'permission_required' || stopReason === 'needs_input') {
+        await this.persistPromptCacheReplayState(runSpec, runtime);
         this.streamEventStateByRunId.delete(runSpec.runId);
         return;
       }
@@ -376,6 +382,7 @@ export class ReActAgentEngine implements AgentEngine {
         };
       }
       await middleware.beforeFinish(output);
+      await this.persistPromptCacheReplayState(runSpec, runtime);
       await this.persistProviderResponseCache(
         runSpec,
         runtime.getProviderResponseId(),
@@ -540,7 +547,8 @@ export class ReActAgentEngine implements AgentEngine {
         latestSession.workspace ?? options.runtimeOptions.workspace?.workspace,
         middleware
       );
-      const result = await new ReActRuntime(runtimeOptions).resumeFromPermission({
+      const runtime = new ReActRuntime(runtimeOptions);
+      const result = await runtime.resumeFromPermission({
         state: pauseState,
         decision: options.decision
       });
@@ -557,9 +565,11 @@ export class ReActAgentEngine implements AgentEngine {
         return output;
       }
       if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
+        await this.persistPromptCacheReplayState(runSpec, runtime);
         return output;
       }
       await middleware.beforeFinish(output);
+      await this.persistPromptCacheReplayState(runSpec, runtime);
       if (Object.keys(middleware.metadata).length > 0) {
         output.metadata = {
           ...output.metadata,
@@ -707,7 +717,8 @@ export class ReActAgentEngine implements AgentEngine {
           latestSession.workspace ?? options.runtimeOptions!.workspace?.workspace,
           middleware
         );
-        const result = await new ReActRuntime(runtimeOptions).resumeFromUserInput({
+        const runtime = new ReActRuntime(runtimeOptions);
+        const result = await runtime.resumeFromUserInput({
           state: userInputPauseState,
           resolution: {
             action: 'provide_input',
@@ -729,9 +740,11 @@ export class ReActAgentEngine implements AgentEngine {
           return output;
         }
         if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
+          await this.persistPromptCacheReplayState(runSpec, runtime);
           return output;
         }
         await middleware.beforeFinish(output);
+        await this.persistPromptCacheReplayState(runSpec, runtime);
         if (Object.keys(middleware.metadata).length > 0) {
           output.metadata = {
             ...output.metadata,
@@ -821,9 +834,11 @@ export class ReActAgentEngine implements AgentEngine {
         return output;
       }
       if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
+        await this.persistPromptCacheReplayState(runSpec, runtime);
         return output;
       }
       await middleware.beforeFinish(output);
+      await this.persistPromptCacheReplayState(runSpec, runtime);
       if (Object.keys(middleware.metadata).length > 0) {
         output.metadata = {
           ...output.metadata,
@@ -992,6 +1007,33 @@ export class ReActAgentEngine implements AgentEngine {
       toolCalls: result.toolCalls,
       trace: result.trace
     };
+  }
+
+  private async persistPromptCacheReplayState(
+    runSpec: AgentRunSpec,
+    runtime: ReActRuntime
+  ): Promise<void> {
+    const session = await this.sessionStore.getSessionByRunId(runSpec.runId);
+    if (!session) return;
+
+    const metadata = { ...(session.metadata ?? {}) };
+    const replayHistory = runtime.getPromptCacheReplayHistory();
+    if (replayHistory) {
+      metadata.promptCacheReplayHistory = replayHistory;
+      delete metadata.promptCacheReplayContext;
+    } else {
+      delete metadata.promptCacheReplayHistory;
+      const replayContext = buildPromptCacheReplayContextMetadata(
+        runtime.getPromptCacheReplayContext()
+      );
+      if (replayContext) {
+        metadata.promptCacheReplayContext = replayContext;
+      } else {
+        delete metadata.promptCacheReplayContext;
+      }
+    }
+    session.metadata = metadata;
+    await this.sessionStore.saveSession(session);
   }
 
   private async persistProviderResponseCache(
@@ -2268,32 +2310,16 @@ export class ReActAgentEngine implements AgentEngine {
     }));
   }
 
-  private toCheckpointPermissionState(
-    state: ReActRuntimePermissionPauseState
-  ): Record<string, unknown> {
-    return {
-      pendingToolCall: state.pendingToolCall,
-      roundIndex: state.roundIndex,
-      assistantContent: state.assistantContent,
-      acceptedToolCallCount: state.acceptedToolCallCount,
-      acceptedToolCallsThisRound: state.acceptedToolCallsThisRound
-    };
-  }
-
-  private resolveCheckpoint(session: AgentSession, checkpointId?: string) {
-    return resolveResumeCheckpointForV2Session(session, checkpointId);
-  }
-
   private appendToolResultMessage(
     messages: ReActRuntimeOptions['messages'],
     input: { toolName: string; result: unknown; arguments?: unknown }
   ): ReActRuntimeOptions['messages'] {
     const assistant = [...messages].reverse().find((message) => message.role === 'assistant');
-    const toolCallId = assistant?.tool_calls?.find((toolCall) => toolCall.name === input.toolName)?.id;
+    const toolCallId = assistant?.tool_calls?.find(
+      (toolCall) => toolCall.name === input.toolName
+    )?.id;
     const content =
-      typeof input.result === 'string'
-        ? input.result
-        : JSON.stringify(input.result ?? {});
+      typeof input.result === 'string' ? input.result : JSON.stringify(input.result ?? {});
     return [
       ...messages,
       {
@@ -2316,6 +2342,22 @@ export class ReActAgentEngine implements AgentEngine {
       ...session,
       messages: mergePersistedTrajectoryMetadata(session.messages, nextMessages)
     });
+  }
+
+  private toCheckpointPermissionState(
+    state: ReActRuntimePermissionPauseState
+  ): Record<string, unknown> {
+    return {
+      pendingToolCall: state.pendingToolCall,
+      roundIndex: state.roundIndex,
+      assistantContent: state.assistantContent,
+      acceptedToolCallCount: state.acceptedToolCallCount,
+      acceptedToolCallsThisRound: state.acceptedToolCallsThisRound
+    };
+  }
+
+  private resolveCheckpoint(session: AgentSession, checkpointId?: string) {
+    return resolveResumeCheckpointForV2Session(session, checkpointId);
   }
 
   private readPermissionPauseState(

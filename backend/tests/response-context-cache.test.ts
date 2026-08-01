@@ -3,26 +3,54 @@ import { describe, expect, it } from 'vitest';
 import type { AgentSession } from '../src/services/agents/engine/AgentSession.js';
 import {
   buildPromptCacheKey,
+  buildPromptCacheReplayContextMetadata,
+  buildPromptCacheReplayHistoryMetadata,
   buildResponseCacheRequest,
   classifyProviderContextId,
   extractChainedResponsesInput,
+  extractPromptCacheReplayContext,
   extractProviderContextIds,
+  insertPromptCacheReplayContext,
+  mergePromptCacheReplayContextHistory,
   normalizeRuntimeMessageContent,
   pickRicherRuntimeHistory,
+  readPromptCacheReplayHistory,
+  readPromptCacheReplayContext,
   resolvePinnedSessionEndpoint,
   resolveResponseCacheFromSessions,
-  resolveResponsesChainId,
+  resolveResponsesChainId
 } from '../src/services/agents/engine/responseContextCache.js';
 
 describe('responseContextCache', () => {
-  it('prefers client history when it is richer than session history', () => {
+  it('prefers canonical client history when it is richer than session history', () => {
     const sessionHistory = [{ role: 'user' as const, content: 'hello' }];
     const clientHistory = [
       { role: 'user' as const, content: 'hello' },
-      { role: 'assistant' as const, content: 'hi' },
-      { role: 'user' as const, content: 'again' },
+      {
+        role: 'assistant' as const,
+        content: 'hi',
+        canonical_message_version: 'canonical-message-v1'
+      },
+      { role: 'user' as const, content: 'again' }
     ];
     expect(pickRicherRuntimeHistory(sessionHistory, clientHistory)).toEqual(clientHistory);
+  });
+
+  it('keeps session history when client history is longer but not canonical', () => {
+    const sessionHistory = [
+      { role: 'user' as const, content: 'hello' },
+      {
+        role: 'assistant' as const,
+        content: 'from session',
+        canonical_message_version: 'canonical-message-v1'
+      }
+    ];
+    const clientHistory = [
+      { role: 'user' as const, content: 'hello' },
+      { role: 'assistant' as const, content: 'from client' },
+      { role: 'user' as const, content: 'again' }
+    ];
+    expect(pickRicherRuntimeHistory(sessionHistory, clientHistory)).toEqual(sessionHistory);
   });
 
   it('builds stable prompt cache keys', () => {
@@ -33,9 +61,108 @@ describe('responseContextCache', () => {
     expect(
       normalizeRuntimeMessageContent([
         { kind: 'reasoning', text: 'thinking...' },
-        { kind: 'text', text: 'final answer' },
-      ]),
+        { kind: 'text', text: 'final answer' }
+      ])
     ).toBe('final answer');
+  });
+
+  it('captures only new request-only context for hidden replay', () => {
+    const previousContext = {
+      role: 'user' as const,
+      content: '<linkloom_context source="previous">old</linkloom_context>'
+    };
+    const currentContext = {
+      role: 'user' as const,
+      content: '<linkloom_context source="current">new</linkloom_context>'
+    };
+    const persistentMessages = [
+      { role: 'user' as const, content: 'first turn' },
+      previousContext,
+      { role: 'assistant' as const, content: 'first answer' }
+    ];
+    const requestMessages = [
+      ...persistentMessages,
+      { role: 'user' as const, content: 'second turn' },
+      currentContext
+    ];
+
+    expect(extractPromptCacheReplayContext(requestMessages, persistentMessages)).toEqual([
+      currentContext
+    ]);
+  });
+
+  it('stores the exact previous provider request plus the final runtime tail', () => {
+    const context = {
+      role: 'user' as const,
+      content: '<linkloom_context source="current">context</linkloom_context>'
+    };
+    const requestMessages = [{ role: 'user' as const, content: 'turn' }, context];
+    const persistentMessages = [
+      { role: 'user' as const, content: 'turn' },
+      { role: 'assistant' as const, content: 'answer' }
+    ];
+    const metadata = buildPromptCacheReplayHistoryMetadata(requestMessages, persistentMessages);
+
+    expect(readPromptCacheReplayHistory({ promptCacheReplayHistory: metadata })).toEqual({
+      messages: requestMessages,
+      tailMessages: [{ role: 'assistant', content: 'answer' }]
+    });
+  });
+
+  it('round-trips bounded replay metadata and inserts it after the user turn', () => {
+    const replayContext = [
+      {
+        role: 'user' as const,
+        content: '<linkloom_context source="current">new</linkloom_context>'
+      }
+    ];
+    const metadata = buildPromptCacheReplayContextMetadata(replayContext);
+    expect(readPromptCacheReplayContext({ promptCacheReplayContext: metadata })).toEqual(
+      replayContext
+    );
+    expect(
+      insertPromptCacheReplayContext(
+        [
+          { role: 'user' as const, content: 'second turn' },
+          { role: 'assistant' as const, content: 'answer' }
+        ],
+        replayContext
+      )
+    ).toEqual([
+      { role: 'user', content: 'second turn' },
+      ...replayContext,
+      { role: 'assistant', content: 'answer' }
+    ]);
+  });
+
+  it('reattaches hidden replay context to richer client history', () => {
+    const hidden = {
+      role: 'user' as const,
+      content: '<linkloom_context source="current">new</linkloom_context>'
+    };
+    const sourceHistory = [
+      { role: 'user' as const, content: 'first turn' },
+      hidden,
+      { role: 'assistant' as const, content: 'answer' }
+    ];
+    const clientHistory = [
+      { role: 'user' as const, content: 'first turn' },
+      { role: 'assistant' as const, content: 'answer' }
+    ];
+
+    expect(mergePromptCacheReplayContextHistory(sourceHistory, clientHistory)).toEqual([
+      clientHistory[0],
+      hidden,
+      clientHistory[1]
+    ]);
+  });
+
+  it('rejects replay metadata beyond the bounded history size', () => {
+    const oversized = Array.from({ length: 33 }, (_, index) => ({
+      role: 'user' as const,
+      content: `<linkloom_context source="source-${index}">context</linkloom_context>`
+    }));
+    expect(buildPromptCacheReplayContextMetadata(oversized)).toBeUndefined();
   });
 
   it('builds prompt cache key requests without response chaining', () => {
@@ -43,34 +170,34 @@ describe('responseContextCache', () => {
       [
         { role: 'user', content: 'first' },
         { role: 'assistant', content: 'ok' },
-        { role: 'user', content: 'second' },
+        { role: 'user', content: 'second' }
       ],
-      { responseId: 'resp_123', model: 'gpt-5.5', providerId: 'openai', cacheKey: 'session-1' },
+      { responseId: 'resp_123', model: 'gpt-5.5', providerId: 'openai', cacheKey: 'session-1' }
     );
 
     expect(request).toEqual({
       enableStore: true,
-      cacheKey: 'session-1',
+      cacheKey: 'session-1'
     });
     expect(extractChainedResponsesInput([{ role: 'user', content: 'only' }])).toEqual([
-      { role: 'user', content: 'only' },
+      { role: 'user', content: 'only' }
     ]);
   });
 
   it('builds chat completions cache key when no chain id exists', () => {
     const request = buildResponseCacheRequest([], undefined, {
       cacheKey: 'session-2',
-      enableStore: true,
+      enableStore: true
     });
     expect(request).toEqual({ enableStore: true, cacheKey: 'session-2' });
   });
 
   it('extracts completion and message ids', () => {
     expect(extractProviderContextIds({ id: 'chatcmpl-abc' })).toEqual({
-      completionId: 'chatcmpl-abc',
+      completionId: 'chatcmpl-abc'
     });
     expect(extractProviderContextIds({ message: { id: 'msg_xyz' } })).toEqual({
-      messageId: 'msg_xyz',
+      messageId: 'msg_xyz'
     });
     expect(classifyProviderContextId('chatcmpl-abc')).toBe('completion');
     expect(classifyProviderContextId('msg_xyz')).toBe('message');
@@ -93,16 +220,22 @@ describe('responseContextCache', () => {
           providerCompletionId: 'chatcmpl_old',
           model: 'gpt-4.1',
           providerId: 'openai',
-          turnContextFingerprint: 'turn-fp',
-        },
-      },
+          turnContextFingerprint: 'turn-fp'
+        }
+      }
     ];
 
     expect(resolveResponseCacheFromSessions(sessions, 'gpt-5.5', 'openai')).toBeUndefined();
-    const matched = resolveResponseCacheFromSessions(sessions, 'gpt-4.1', 'openai', undefined, 'turn-fp');
+    const matched = resolveResponseCacheFromSessions(
+      sessions,
+      'gpt-4.1',
+      'openai',
+      undefined,
+      'turn-fp'
+    );
     expect(matched?.completionId).toBe('chatcmpl_old');
     expect(
-      resolveResponseCacheFromSessions(sessions, 'gpt-4.1', 'openai')?.completionId,
+      resolveResponseCacheFromSessions(sessions, 'gpt-4.1', 'openai')?.completionId
     ).toBeUndefined();
   });
 
@@ -110,14 +243,14 @@ describe('responseContextCache', () => {
     expect(
       resolveResponsesChainId({
         enableStore: true,
-        previousCompletionId: 'chatcmpl-abc',
-      }),
+        previousCompletionId: 'chatcmpl-abc'
+      })
     ).toBeUndefined();
     expect(
       resolveResponsesChainId({
         enableStore: true,
-        previousResponseId: 'resp_abc',
-      }),
+        previousResponseId: 'resp_abc'
+      })
     ).toBe('resp_abc');
   });
 
@@ -141,9 +274,9 @@ describe('responseContextCache', () => {
           providerCacheNamespace: 'pc:v1:session:s1:openai:gpt-5.5:chat:none:x:y',
           providerCacheKey: 'canonical-key-from-namespace',
           providerEndpoint: 'chat_completions',
-          providerReasoningMode: 'none',
-        },
-      },
+          providerReasoningMode: 'none'
+        }
+      }
     ];
 
     const entry = resolveResponseCacheFromSessions(sessions, 'gpt-5.5', 'openai');
@@ -168,9 +301,9 @@ describe('responseContextCache', () => {
         metadata: {
           model: 'gpt-5.5',
           providerId: 'openai',
-          providerEndpoint: 'responses',
-        },
-      },
+          providerEndpoint: 'responses'
+        }
+      }
     ];
 
     expect(resolvePinnedSessionEndpoint(sessions, 'gpt-5.5', 'openai')).toBe('responses');
@@ -195,23 +328,23 @@ describe('responseContextCache', () => {
           providerId: 'openai',
           providerResponseId: 'resp_1',
           providerCacheKey: 'cache-1',
-          turnContextFingerprint: 'turn-a',
-        },
-      },
+          turnContextFingerprint: 'turn-a'
+        }
+      }
     ] as AgentSession[];
     const first = resolveResponseCacheFromSessions(
       sessions,
       'gpt-4o',
       'openai',
       'cache-1',
-      'turn-a',
+      'turn-a'
     );
     const second = resolveResponseCacheFromSessions(
       sessions,
       'gpt-4o',
       'openai',
       'cache-1',
-      'turn-b',
+      'turn-b'
     );
     expect(first?.cacheKey).toBe('cache-1');
     expect(first?.responseId).toBe('resp_1');
@@ -237,16 +370,17 @@ describe('responseContextCache', () => {
           providerId: 'openai',
           providerResponseId: 'resp_1',
           providerCacheKey: 'cache-1',
-          turnContextFingerprint: 'turn-a',
-        },
-      },
+          turnContextFingerprint: 'turn-a'
+        }
+      }
     ] as AgentSession[];
 
     expect(
-      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1')?.responseId,
+      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1')?.responseId
     ).toBeUndefined();
     expect(
-      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1', 'turn-a')?.responseId,
+      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1', 'turn-a')
+        ?.responseId
     ).toBe('resp_1');
   });
 
@@ -270,12 +404,14 @@ describe('responseContextCache', () => {
       cacheMode: 'enforced' as const,
       cacheEligibility: true,
       capability: { supportsPromptCache: true, family: 'openai' as const },
-      sessionId: 's1',
+      sessionId: 's1'
     };
 
     const request = buildResponseCacheRequest([], undefined, { contract });
     expect(request?.cacheKey).toBe('contract-derived-key');
     expect(request?.cacheNamespace).toBe(contract.cacheNamespace);
+    expect(request?.sessionId).toBe('s1');
     expect(request?.endpoint).toBe('chat_completions');
+    expect(request?.stablePrefixHash).toBe(contract.stablePrefixHash);
   });
 });

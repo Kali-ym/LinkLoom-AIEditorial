@@ -25,7 +25,7 @@ function endStreamingUnlessAwaitingApproval(topicId: string): void {
 
 function recordApprovalContext(
   topicId: string,
-  context: { runId: string; permissionId?: string; hitlRequestId?: string },
+  context: { runId: string; permissionId?: string; hitlRequestId?: string; toolCallId?: string },
 ): void {
   const lastEventSeq = useStreamingStore.getState().getLastEventSeq(context.runId);
   useStreamingStore.getState().recordPendingApprovalContext(topicId, {
@@ -66,6 +66,7 @@ export function createTopicStreamHandler(options: {
         runId: data.runId,
         permissionId: data.permissionId,
         hitlRequestId: data.hitlRequestId,
+        toolCallId: data.toolCallId,
       });
       endStreamingUnlessAwaitingApproval(topicId);
       return;
@@ -73,14 +74,17 @@ export function createTopicStreamHandler(options: {
 
     if (event.type === 'tool_calls' && event.tools?.length) {
       const pendingTool = event.tools.find(
-        (tool) => tool.intervention?.status === 'pending' && tool.permissionId,
+        (tool) => tool.intervention?.status === 'pending' && (tool.permissionId || tool.hitlKind),
       );
-      if (pendingTool?.permissionId) {
+      if (pendingTool?.permissionId || pendingTool?.hitlKind) {
         const runId = useStreamingStore.getState().getRunContextForTopic(topicId)?.runId ?? '';
         recordApprovalContext(topicId, {
           runId,
           permissionId: pendingTool.permissionId,
-          hitlRequestId: pendingTool.toolCallId,
+          hitlRequestId: pendingTool.permissionId
+            ? pendingTool.toolCallId
+            : useStreamingStore.getState().getRunContextForTopic(topicId)?.hitlRequestId,
+          toolCallId: pendingTool.toolCallId,
         });
       }
 
@@ -95,7 +99,8 @@ export function createTopicStreamHandler(options: {
         const touchesActivePermission = event.tools.some(
           (tool) =>
             (ctx?.permissionId && tool.permissionId === ctx.permissionId) ||
-            (ctx?.hitlRequestId && tool.toolCallId === ctx.hitlRequestId),
+            (ctx?.hitlRequestId && tool.toolCallId === ctx.hitlRequestId) ||
+            (ctx?.toolCallId && tool.toolCallId === ctx.toolCallId),
         );
         if (touchesActivePermission) {
           useStreamingStore.getState().clearPendingApprovalContext(topicId);
@@ -110,11 +115,20 @@ export function createTopicStreamHandler(options: {
       const isNeedsInputPause = payload?.reason === 'needs_input';
       if (isPermissionPause || isNeedsInputPause) {
         pauseStreamingBuffer(topicId);
-        const runId = useStreamingStore.getState().getRunContextForTopic(topicId)?.runId ?? '';
+        const existing = useStreamingStore.getState().getRunContextForTopic(topicId);
+        const runId = existing?.runId ?? '';
         if (payload?.permissionId) {
-          recordApprovalContext(topicId, { runId, permissionId: payload.permissionId });
+          recordApprovalContext(topicId, {
+            runId,
+            permissionId: payload.permissionId,
+            toolCallId: existing?.toolCallId,
+          });
         } else if (isNeedsInputPause && payload?.requestId) {
-          recordApprovalContext(topicId, { runId, hitlRequestId: payload.requestId });
+          recordApprovalContext(topicId, {
+            runId,
+            hitlRequestId: payload.requestId,
+            toolCallId: existing?.toolCallId,
+          });
         }
       }
       endStreamingUnlessAwaitingApproval(topicId);

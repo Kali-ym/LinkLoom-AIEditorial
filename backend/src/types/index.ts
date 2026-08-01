@@ -40,13 +40,20 @@ export interface AIPromptCacheUsage {
   cacheContractVersion?: string;
   cacheDisableReason?: string;
   turnContextFingerprint?: string;
+  stablePrefixHash?: string;
+  sessionAffinityHash?: string;
+  cacheKeyHash?: string;
   sourceErrors?: Array<{ source: string; code: string }>;
   conversionDiagnostics?: string[];
   estimatedCacheSavingsUsd?: number;
   mode?: 'shadow' | 'enforced' | 'disabled';
   requested: boolean;
   eligible?: boolean;
+  cacheKeyPresent?: boolean;
   hit?: boolean;
+  model?: string;
+  endpoint?: string;
+  ephemeralMessageCount?: number;
   /** Provider-native aliases retained for low-level diagnostics. */
   cache_key?: string;
   cache_namespace?: string;

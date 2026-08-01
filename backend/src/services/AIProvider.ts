@@ -16,13 +16,14 @@ import {
   type PromptCacheCapability
 } from './agents/engine/promptCacheCapabilities.js';
 import {
+  hashString,
   sortToolDefinitions,
   stableStringify
 } from './agents/engine/canonicalMessageSerializer.js';
 import {
   extractProviderContextIds,
   extractProviderResponseId,
-  normalizeRuntimeMessageContent,
+  normalizeRuntimeMessageContent
 } from './agents/engine/responseContextCache.js';
 import { LogService } from './LogService.js';
 import type { GeminiBuiltinSearchMode } from './agents/search/types.js';
@@ -36,7 +37,7 @@ import {
   toResponsesApiInputItems,
   toResponsesApiMessageContent,
   toResponsesApiTools,
-  type LlmProviderFormat,
+  type LlmProviderFormat
 } from './agents/context/LlmMessageConverter.js';
 
 export {
@@ -46,7 +47,7 @@ export {
   toMessagesApiTools,
   toResponsesApiInputItems,
   toResponsesApiMessageContent,
-  toResponsesApiTools,
+  toResponsesApiTools
 };
 
 export type AIProviderCallOptions = {
@@ -73,12 +74,16 @@ export interface AIProvider {
   listModels?(): Promise<string[]>;
 }
 
-function toLangChainUserContent(content: AIMessage['content']): string | Array<Record<string, unknown>> {
+function toLangChainUserContent(
+  content: AIMessage['content']
+): string | Array<Record<string, unknown>> {
   if (typeof content === 'string' || content == null) return content || '';
   return content as unknown as Array<Record<string, unknown>>;
 }
 
-function toLangChainMessageContent(content: AIMessage['content']): string | Array<Record<string, unknown>> {
+function toLangChainMessageContent(
+  content: AIMessage['content']
+): string | Array<Record<string, unknown>> {
   if (typeof content === 'string' || content == null) return content || '';
   if (!Array.isArray(content)) return String(content);
   return content as unknown as Array<Record<string, unknown>>;
@@ -384,8 +389,8 @@ function normalizeProviderJsonSchema(value: unknown): Record<string, unknown> {
     normalized.properties = Object.fromEntries(
       Object.entries(properties).map(([name, propertySchema]) => [
         name,
-        normalizeProviderJsonSchema(propertySchema),
-      ]),
+        normalizeProviderJsonSchema(propertySchema)
+      ])
     );
     normalized.required = Array.isArray(normalized.required)
       ? normalized.required.filter((name): name is string => typeof name === 'string')
@@ -436,18 +441,31 @@ function parseOpenAIUsage(usage?: Record<string, unknown>) {
   if (!usage) return undefined;
   const promptDetails = usage.prompt_tokens_details;
   const inputDetails = usage.input_tokens_details;
-  const cachedFromDetails =
+  const promptDetailsRecord =
     promptDetails && typeof promptDetails === 'object'
-      ? Number((promptDetails as Record<string, unknown>).cached_tokens || 0)
-      : inputDetails && typeof inputDetails === 'object'
-        ? Number((inputDetails as Record<string, unknown>).cached_tokens || 0)
-        : 0;
+      ? (promptDetails as Record<string, unknown>)
+      : undefined;
+  const inputDetailsRecord =
+    inputDetails && typeof inputDetails === 'object'
+      ? (inputDetails as Record<string, unknown>)
+      : undefined;
+  const cachedFromDetails = Math.max(
+    Number(promptDetailsRecord?.cached_tokens ?? 0),
+    Number(inputDetailsRecord?.cached_tokens ?? 0),
+    Number(usage.cached_tokens ?? 0)
+  );
+  const cacheWriteFromDetails = Math.max(
+    Number(promptDetailsRecord?.cache_write_tokens ?? 0),
+    Number(inputDetailsRecord?.cache_write_tokens ?? 0),
+    Number(usage.cache_write_tokens ?? 0)
+  );
 
   // Anthropic Messages API reports cache via cache_read_input_tokens /
   // cache_creation_input_tokens (no prompt_tokens_details wrapper).
   const cacheReadInputTokens = Number(usage.cache_read_input_tokens || 0);
   const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens || 0);
   const anthropicCached = cacheReadInputTokens || cachedFromDetails;
+  const cacheWriteInputTokens = cacheWriteFromDetails || cacheCreationInputTokens;
 
   const promptTokens = Number(usage.prompt_tokens || usage.input_tokens || 0);
   const completionTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
@@ -459,9 +477,15 @@ function parseOpenAIUsage(usage?: Record<string, unknown>) {
     total_tokens: totalTokens
   };
 
+  if (anthropicCached > 0 || cacheWriteInputTokens > 0) {
+    result.prompt_tokens_details = {
+      ...(anthropicCached > 0 ? { cached_tokens: anthropicCached } : {}),
+      ...(cacheWriteInputTokens > 0 ? { cache_write_tokens: cacheWriteInputTokens } : {})
+    };
+  }
+
   if (anthropicCached > 0) {
     result.cached_tokens = anthropicCached;
-    result.prompt_tokens_details = { cached_tokens: anthropicCached };
   }
 
   if (cacheReadInputTokens > 0) {
@@ -470,13 +494,48 @@ function parseOpenAIUsage(usage?: Record<string, unknown>) {
   if (cacheCreationInputTokens > 0) {
     result.cache_creation_input_tokens = cacheCreationInputTokens;
   }
+  if (cacheWriteFromDetails > 0) {
+    result.cache_write_tokens = cacheWriteFromDetails;
+  }
 
   return result;
 }
 
+function readPromptCacheUsageTokens(usage: NonNullable<AIResponse['usage']>): {
+  cachedTokens: number;
+  writeTokens: number;
+} {
+  const promptDetails =
+    usage.prompt_tokens_details &&
+    typeof usage.prompt_tokens_details === 'object' &&
+    !Array.isArray(usage.prompt_tokens_details)
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : undefined;
+  const inputDetails =
+    usage.input_tokens_details &&
+    typeof usage.input_tokens_details === 'object' &&
+    !Array.isArray(usage.input_tokens_details)
+      ? (usage.input_tokens_details as Record<string, unknown>)
+      : undefined;
+  return {
+    cachedTokens: Math.max(
+      Number(usage.cached_tokens ?? 0),
+      Number(usage.cache_read_input_tokens ?? 0),
+      Number(promptDetails?.cached_tokens ?? 0),
+      Number(inputDetails?.cached_tokens ?? 0)
+    ),
+    writeTokens: Math.max(
+      Number(usage.cache_write_tokens ?? 0),
+      Number(usage.cache_creation_input_tokens ?? 0),
+      Number(promptDetails?.cache_write_tokens ?? 0),
+      Number(inputDetails?.cache_write_tokens ?? 0)
+    )
+  };
+}
+
 export function attachPromptCacheUsage(
   response: AIResponse,
-  responseCache?: ResponseCacheRequest,
+  responseCache?: ResponseCacheRequest
 ): AIResponse {
   if (!responseCache) return response;
   const usage = response.usage ?? {
@@ -484,17 +543,10 @@ export function attachPromptCacheUsage(
     completion_tokens: 0,
     total_tokens: 0
   };
-  const cachedTokens = Number(
-    usage.cached_tokens ?? usage.cache_read_input_tokens ?? 0,
-  );
-  const writeTokens = Number(usage.cache_creation_input_tokens ?? 0);
+  const { cachedTokens, writeTokens } = readPromptCacheUsageTokens(usage);
   const promptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
   const requested = Boolean(responseCache.enableStore && responseCache.cacheKey);
-  const status = resolvePromptCacheStatus(
-    responseCache,
-    cachedTokens,
-    writeTokens,
-  );
+  const status = resolvePromptCacheStatus(responseCache, cachedTokens, writeTokens);
   usage.prompt_cache = {
     ...(usage.prompt_cache ?? {}),
     cacheStatus: status,
@@ -505,10 +557,14 @@ export function attachPromptCacheUsage(
     cacheContractVersion: responseCache.cacheContractVersion,
     cacheDisableReason: responseCache.cacheDisableReason,
     turnContextFingerprint: responseCache.responseInputFingerprint,
+    stablePrefixHash: responseCache.stablePrefixHash,
+    sessionAffinityHash: responseCache.sessionId ? hashString(responseCache.sessionId) : undefined,
+    cacheKeyHash: responseCache.cacheKey ? hashString(responseCache.cacheKey) : undefined,
     sourceErrors: responseCache.sourceErrors,
     conversionDiagnostics: responseCache.conversionDiagnostics,
     requested,
     eligible: responseCache.cacheEligibility,
+    cacheKeyPresent: Boolean(responseCache.cacheKey),
     hit: cachedTokens > 0 ? true : undefined,
     cache_key: responseCache.cacheKey,
     cache_namespace: responseCache.cacheNamespace,
@@ -516,6 +572,9 @@ export function attachPromptCacheUsage(
     policy: responseCache.cachePolicy,
     mode: responseCache.cacheMode,
     provider: responseCache.providerId,
+    model: responseCache.model,
+    endpoint: responseCache.endpoint,
+    ephemeralMessageCount: responseCache.ephemeralMessageCount,
     read_tokens: cachedTokens > 0 ? cachedTokens : undefined,
     write_tokens: writeTokens > 0 ? writeTokens : undefined
   };
@@ -526,28 +585,49 @@ export function attachPromptCacheUsage(
 function resolvePromptCacheStatus(
   responseCache: ResponseCacheRequest,
   cachedTokens: number,
-  writeTokens: number,
+  writeTokens: number
 ): NonNullable<NonNullable<AIResponse['usage']>['prompt_cache']>['cacheStatus'] {
+  // Gateway-reported token hits always win. Omitting prompt_cache_key (or similar
+  // transport fields) must not hide automatic prefix-cache hits.
+  if (cachedTokens > 0) return 'hit';
+  if (writeTokens > 0) return 'write';
+
+  const reason = responseCache.cacheDisableReason ?? '';
+  // Transport-only limitations: key field omitted, but automatic prefix cache may still work.
+  const transportOnly =
+    reason.includes('prompt_cache_key_omitted') ||
+    reason.includes('prompt_cache_key_unsupported') ||
+    reason.includes('thinking_toggle_omitted');
   if (
-    responseCache.cacheDisableReason?.includes('unsupported') ||
-    responseCache.cacheDisableReason?.includes('does not expose') ||
-    responseCache.cacheDisableReason?.includes('Unknown provider')
+    !transportOnly &&
+    (reason.includes('does not expose') ||
+      reason.includes('Unknown provider') ||
+      (reason.includes('unsupported') && responseCache.cacheEligibility === false))
   ) {
     return 'unsupported';
   }
-  if (
-    responseCache.cacheDisableReason?.includes('cache_disabled') ||
-    responseCache.cacheDisableReason?.includes('shadow_mode')
-  ) {
+  if (reason.includes('cache_disabled') || reason.includes('shadow_mode')) {
     return 'disabled';
   }
-  if (responseCache.cacheDisableReason?.includes('response_input_fingerprint_mismatch')) {
-    return responseCache.cacheEligibility ? 'miss' : 'unsafe';
+  if (reason.includes('response_input_fingerprint_mismatch')) {
+    return responseCache.cacheEligibility === false ? 'unsafe' : 'miss';
   }
-  if (responseCache.cacheDisableReason) return 'unsafe';
-  if (cachedTokens > 0) return 'hit';
-  if (writeTokens > 0) return 'write';
+  if (reason && !transportOnly && responseCache.cacheEligibility === false) {
+    return 'unsafe';
+  }
   return 'miss';
+}
+
+function withSessionAffinityHeader(
+  headers: Record<string, string>,
+  responseCache?: ResponseCacheRequest
+): Record<string, string> {
+  const sessionId = responseCache?.sessionId?.trim();
+  if (!sessionId) return headers;
+  return {
+    ...headers,
+    'x-session-id': sessionId.slice(0, 256)
+  };
 }
 
 function stableToolArguments(value: unknown): string {
@@ -599,7 +679,7 @@ export function splitSystemFromPrompt(
       }
       return {
         systemInstruction: systemInstruction.trim(),
-        conversation,
+        conversation
       };
     }
     // Caller supplied a stable systemInstruction; any system messages still
@@ -617,7 +697,7 @@ export function splitSystemFromPrompt(
     return {
       systemInstruction: systemInstruction.trim(),
       conversation,
-      dynamicSystemSuffix: dynamicSystemMessages.join('\n\n') || undefined,
+      dynamicSystemSuffix: dynamicSystemMessages.join('\n\n') || undefined
     };
   }
 
@@ -652,7 +732,7 @@ export function splitSystemFromPrompt(
   return {
     systemInstruction: firstSystem,
     conversation,
-    dynamicSystemSuffix: dynamicSystemMessages.join('\n\n') || undefined,
+    dynamicSystemSuffix: dynamicSystemMessages.join('\n\n') || undefined
   };
 }
 
@@ -678,36 +758,121 @@ function appendDynamicSuffixToInput(
   input: Array<Record<string, unknown>>,
   dynamicSuffix?: string
 ): Array<Record<string, unknown>> {
-  if (!dynamicSuffix?.trim() || input.length === 0) return input;
-  const last = input[input.length - 1];
-  if (last.role !== 'user') {
-    return [...input, { role: 'user', content: dynamicSuffix }];
+  const suffix = dynamicSuffix?.trim();
+  if (!suffix) return input;
+
+  // Keep the per-request suffix inside the current user turn, before any
+  // assistant/tool continuation. This lets a ReAct continuation reuse the
+  // complete preceding request prefix instead of invalidating it at the date
+  // suffix. The suffix remains a separate request-only item.
+  const lastUserIndex = input.findLastIndex((item) => item?.role === 'user');
+  const dynamicItem = { role: 'user', content: suffix };
+  if (lastUserIndex < 0) return [...input, dynamicItem];
+  return [...input.slice(0, lastUserIndex + 1), dynamicItem, ...input.slice(lastUserIndex + 1)];
+}
+
+const OPENAI_EXPLICIT_PROMPT_CACHE_OPTIONS = {
+  mode: 'explicit',
+  ttl: '30m'
+} as const;
+
+const OPENAI_PROMPT_CACHE_BREAKPOINT = {
+  mode: 'explicit'
+} as const;
+
+function containsEphemeralContextMarker(value: unknown): boolean {
+  const serialized = typeof value === 'string' ? value : stableStringify(value ?? '');
+  return serialized.includes('<linkloom_context') || serialized.includes('<retrieved_knowledge>');
+}
+
+function markChatPromptCacheBreakpoint(messages: Array<Record<string, unknown>>): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== 'user' || containsEphemeralContextMarker(message.content)) {
+      continue;
+    }
+
+    if (typeof message.content === 'string') {
+      message.content = [
+        {
+          type: 'text',
+          text: message.content,
+          prompt_cache_breakpoint: { ...OPENAI_PROMPT_CACHE_BREAKPOINT }
+        }
+      ];
+      return true;
+    }
+
+    if (!Array.isArray(message.content)) continue;
+    for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = message.content[blockIndex];
+      if (!block || typeof block !== 'object') continue;
+      const record = block as Record<string, unknown>;
+      if (
+        record.type !== 'text' &&
+        record.type !== 'image_url' &&
+        record.type !== 'input_audio' &&
+        record.type !== 'file' &&
+        record.type !== 'refusal'
+      ) {
+        continue;
+      }
+      record.prompt_cache_breakpoint = { ...OPENAI_PROMPT_CACHE_BREAKPOINT };
+      return true;
+    }
   }
-  const content = last.content;
-  if (Array.isArray(content)) {
-    const textType = content.some(
-      (part) => part && typeof part === 'object' && (part as Record<string, unknown>).type === 'input_text',
-    )
-      ? 'input_text'
-      : 'text';
-    return [
-      ...input.slice(0, -1),
-      {
-        ...last,
-        content: [...content, { type: textType, text: dynamicSuffix.trim() }],
-      },
-    ];
+  return false;
+}
+
+function markResponsesPromptCacheBreakpoint(input: Array<Record<string, unknown>>): boolean {
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (!item || item.role !== 'user' || containsEphemeralContextMarker(item.content)) {
+      continue;
+    }
+
+    if (typeof item.content === 'string') {
+      item.content = [
+        {
+          type: 'input_text',
+          text: item.content,
+          prompt_cache_breakpoint: { ...OPENAI_PROMPT_CACHE_BREAKPOINT }
+        }
+      ];
+      return true;
+    }
+
+    if (!Array.isArray(item.content)) continue;
+    for (let blockIndex = item.content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = item.content[blockIndex];
+      if (!block || typeof block !== 'object') continue;
+      const record = block as Record<string, unknown>;
+      if (
+        record.type !== 'input_text' &&
+        record.type !== 'input_image' &&
+        record.type !== 'input_file'
+      ) {
+        continue;
+      }
+      record.prompt_cache_breakpoint = { ...OPENAI_PROMPT_CACHE_BREAKPOINT };
+      return true;
+    }
   }
-  const text = typeof content === 'string' ? content : '';
-  return [
-    ...input.slice(0, -1),
-    { ...last, content: `${text}\n\n${dynamicSuffix}`.trim() },
-  ];
+  return false;
+}
+
+function addOpenAiPromptCacheOptions(
+  body: Record<string, unknown>,
+  breakpointAdded: boolean
+): void {
+  if (breakpointAdded) {
+    body.prompt_cache_options = { ...OPENAI_EXPLICIT_PROMPT_CACHE_OPTIONS };
+  }
 }
 
 function toOpenAIApiMessages(
   prompt: string | AIMessage[],
-  systemInstruction?: string,
+  systemInstruction?: string
 ): Array<Record<string, unknown>> {
   return toChatCompletionsApiMessages(prompt, systemInstruction);
 }
@@ -764,6 +929,12 @@ export function extractResponsesApiResult(data: Record<string, unknown>): AIResp
 
   const fallbackContent = extractResponsesApiContent(data);
   const result: AIResponse = { content: contentParts.join('') || fallbackContent };
+  const rawParts = output.filter((item): item is Record<string, unknown> =>
+    Boolean(item && typeof item === 'object')
+  );
+  if (rawParts.length > 0) {
+    result.raw_parts = rawParts;
+  }
   const contextIds = extractProviderContextIds(data);
   if (contextIds.responseId) result.response_id = contextIds.responseId;
   if (contextIds.completionId) result.response_id = contextIds.completionId;
@@ -781,7 +952,9 @@ export function extractResponsesApiResult(data: Record<string, unknown>): AIResp
 export function shouldTryAlternateOpenAIEndpoint(error: Error): boolean {
   const msg = error.message.toLowerCase();
   const cause =
-    error.cause instanceof Error ? error.cause.message.toLowerCase() : String(error.cause ?? '').toLowerCase();
+    error.cause instanceof Error
+      ? error.cause.message.toLowerCase()
+      : String(error.cause ?? '').toLowerCase();
   const combined = `${msg} ${cause}`;
   if (/\b(404|405|501|502)\b/.test(combined)) return true;
   return (
@@ -806,6 +979,154 @@ export function shouldTryAlternateOpenAIEndpoint(error: Error): boolean {
     combined.includes('/messages')
   );
 }
+
+/** Gateways that reject OpenAI's prompt_cache_key as an unknown body field. */
+export function isUnsupportedPromptCacheKeyError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  if (!msg.includes('prompt_cache_key')) return false;
+  return (
+    msg.includes('未知请求字段') ||
+    msg.includes('unknown request field') ||
+    msg.includes('unknown field') ||
+    msg.includes('unrecognized') ||
+    msg.includes('extra inputs') ||
+    msg.includes('additional properties') ||
+    msg.includes('unexpected keyword') ||
+    (msg.includes('unknown') &&
+      (msg.includes('field') || msg.includes('parameter') || msg.includes('property')))
+  );
+}
+
+export function isUnsupportedPromptCacheBreakpointError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  const mentionsBreakpoint =
+    msg.includes('prompt_cache_breakpoint') || msg.includes('prompt_cache_options');
+  if (!mentionsBreakpoint) return false;
+  return (
+    msg.includes('unknown') ||
+    msg.includes('unrecognized') ||
+    msg.includes('unsupported') ||
+    msg.includes('not supported') ||
+    msg.includes('invalid') ||
+    msg.includes('unexpected') ||
+    msg.includes('additional properties') ||
+    msg.includes('extra inputs') ||
+    msg.includes('仅支持')
+  );
+}
+
+function stripPromptCacheBreakpoints(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripPromptCacheBreakpoints);
+  }
+  if (!value || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    if (key === 'prompt_cache_breakpoint' || key === 'prompt_cache_options') continue;
+    next[key] = stripPromptCacheBreakpoints(child);
+  }
+  return next;
+}
+
+export function omitPromptCacheBreakpoints(body: Record<string, unknown>): Record<string, unknown> {
+  return stripPromptCacheBreakpoints(body) as Record<string, unknown>;
+}
+
+export function omitPromptCacheKey(body: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(body, 'prompt_cache_key')) return body;
+  const next = { ...body };
+  delete next.prompt_cache_key;
+  return next;
+}
+
+/**
+ * Omit prompt_cache_key for gateways that reject the field.
+ * Do NOT mark the whole prompt cache unsupported: many gateways (YMeng Mimo/DeepSeek,
+ * official DeepSeek, etc.) still do automatic prefix caching without the key.
+ */
+export function withoutPromptCacheKey(
+  responseCache?: ResponseCacheRequest
+): ResponseCacheRequest | undefined {
+  if (!responseCache?.cacheKey) return responseCache;
+  const reason = responseCache.cacheDisableReason?.trim();
+  const omitted = 'prompt_cache_key_omitted';
+  return {
+    ...responseCache,
+    cacheKey: undefined,
+    enableStore: false,
+    // Keep eligibility so automatic prefix hits remain first-class.
+    cacheEligibility: responseCache.cacheEligibility !== false,
+    cacheDisableReason: reason
+      ? reason.includes(omitted) || reason.includes('prompt_cache_key_unsupported')
+        ? reason.replace(/prompt_cache_key_unsupported/g, omitted)
+        : `${reason};${omitted}`
+      : omitted
+  };
+}
+
+/** Keep automatic prefix caching when an endpoint rejects explicit breakpoints. */
+export function withoutPromptCacheBreakpoint(
+  responseCache?: ResponseCacheRequest
+): ResponseCacheRequest | undefined {
+  if (!responseCache) return responseCache;
+  const reason = responseCache.cacheDisableReason?.trim();
+  const omitted = 'prompt_cache_breakpoint_omitted';
+  return {
+    ...responseCache,
+    cacheDisableReason: reason
+      ? reason.includes(omitted)
+        ? reason
+        : `${reason};${omitted}`
+      : omitted
+  };
+}
+
+/**
+ * Gateways that reject DeepSeek-style `thinking: { type: 'enabled' }` with
+ * messages like `thinking.type 当前仅支持 disabled` (UI may redact as `***.type`).
+ */
+export function isUnsupportedThinkingEnabledError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  const mentionsType =
+    msg.includes('thinking.type') ||
+    msg.includes('**.type') ||
+    msg.includes('***.type') ||
+    (msg.includes('.type') &&
+      (msg.includes('thinking') || msg.includes('仅支持') || msg.includes('only support')));
+  const onlyDisabled =
+    msg.includes('仅支持 disabled') ||
+    msg.includes('只支持 disabled') ||
+    (msg.includes('only support') && msg.includes('disabled')) ||
+    (msg.includes('only supports') && msg.includes('disabled'));
+  if (mentionsType && onlyDisabled) return true;
+  if (msg.includes('thinking') && onlyDisabled) return true;
+  return false;
+}
+
+export function hasEnabledThinking(body: Record<string, unknown>): boolean {
+  const thinking = body.thinking;
+  if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return false;
+  return (thinking as Record<string, unknown>).type === 'enabled';
+}
+
+/** Drop thinking.type=enabled so gateways that only allow disabled / omit can proceed. */
+export function omitEnabledThinking(body: Record<string, unknown>): Record<string, unknown> {
+  if (!hasEnabledThinking(body)) return body;
+  const next = { ...body };
+  delete next.thinking;
+  return next;
+}
+
+/**
+ * Compatibility no-op retained for existing callers. Field compatibility is
+ * learned only for the current provider instance and endpoint request; it is
+ * never persisted or keyed by Provider/model/gateway identity.
+ */
+export function clearGatewayFieldSupportMemory(): void {}
+
+/** @deprecated Field support is no longer persisted across provider instances. */
+export function enableGatewayFieldSupportPersistence(): void {}
 
 export type OpenAIStreamPlan = 'chat_completions' | 'responses' | 'messages';
 
@@ -890,9 +1211,7 @@ export function resolveEffectiveApiEndpoint(input: {
   return plans[0] ?? resolveDefaultApiEndpoint(input.providerType);
 }
 
-export function mapAttemptLabelToApiEndpoint(
-  label: string
-): OpenAIApiEndpointMode | undefined {
+export function mapAttemptLabelToApiEndpoint(label: string): OpenAIApiEndpointMode | undefined {
   switch (label) {
     case 'chat/completions':
     case 'chat_completions':
@@ -911,11 +1230,14 @@ export function mapAttemptLabelToApiEndpoint(
 export function applyReasoningRequestFields(
   body: Record<string, unknown>,
   reasoningEffort?: string,
+  options?: { includeThinkingToggle?: boolean }
 ): void {
   if (!reasoningEffort || reasoningEffort === 'none') return;
   body.reasoning_effort = reasoningEffort;
   // DeepSeek V4 and several OpenAI-compatible gateways require an explicit toggle
   // alongside reasoning_effort before they emit reasoning_content / thinking blocks.
+  // Some third-party gateways only accept thinking.type=disabled / omit the field.
+  if (options?.includeThinkingToggle === false) return;
   if (!body.thinking) {
     body.thinking = { type: 'enabled' };
   }
@@ -927,7 +1249,7 @@ function isPiContextV2ResponseCache(responseCache?: ResponseCacheRequest): boole
 
 function splitPiContextV2Conversation(
   prompt: string | AIMessage[],
-  ephemeralMessageCount: number,
+  ephemeralMessageCount: number
 ): AIMessage[] {
   if (typeof prompt === 'string') {
     return [{ role: 'user' as const, content: prompt }];
@@ -954,7 +1276,7 @@ function buildPiContextProviderRequest(
   tools: any[],
   format: LlmProviderFormat,
   keepHistoryReasoning?: boolean,
-  ephemeralMessageCount = 0,
+  ephemeralMessageCount = 0
 ) {
   const { stableInstructions } = splitStableInstructions(systemInstruction.trim());
   const conversation = splitPiContextV2Conversation(prompt, ephemeralMessageCount);
@@ -965,10 +1287,10 @@ function buildPiContextProviderRequest(
       providerTools: tools,
       ephemeralMessages: [],
       ephemeralMessageCount,
-      turnContextFingerprint: '',
+      turnContextFingerprint: ''
     },
     format,
-    keepHistoryReasoning,
+    keepHistoryReasoning
   });
 }
 
@@ -988,51 +1310,71 @@ export function resolvePromptCacheContext(
   prompt: string | AIMessage[],
   systemInstruction: string | undefined,
   tools: any[],
-  format: LlmProviderFormat,
+  format: LlmProviderFormat
 ): ResponseCacheRequest | undefined {
   if (!responseCache || !isPiContextV2ResponseCache(responseCache) || !systemInstruction?.trim()) {
     return responseCache;
   }
+  const { stableInstructions } = splitStableInstructions(systemInstruction.trim());
   const converted = buildPiContextProviderRequest(
     prompt,
-    systemInstruction,
+    stableInstructions,
     tools,
     format,
-    responseCache.keepHistoryReasoning,
-    responseCache.ephemeralMessageCount ?? 0,
+    format === 'responses'
+      ? (responseCache.keepHistoryReasoning ?? true)
+      : responseCache.keepHistoryReasoning,
+    responseCache.ephemeralMessageCount ?? 0
   );
   if (!converted.conversionDiagnostics?.length) {
     return responseCache;
   }
   const merged = [
-    ...new Set([...(responseCache.conversionDiagnostics ?? []), ...converted.conversionDiagnostics]),
+    ...new Set([...(responseCache.conversionDiagnostics ?? []), ...converted.conversionDiagnostics])
   ];
   return { ...responseCache, conversionDiagnostics: merged };
 }
 
-function buildChatCompletionsBody(
+type PromptCacheBodyOptions = {
+  /**
+   * Build the canonical retry shape without OpenAI's optional explicit
+   * breakpoint fields. The first request may use explicit fields, but a
+   * rejected retry must not retain the representation changes introduced
+   * solely to attach a breakpoint.
+   */
+  includeExplicitPromptCacheBreakpoints?: boolean;
+};
+
+export function buildChatCompletionsBody(
   model: string,
   prompt: string | AIMessage[],
   tools: any[],
   systemInstruction?: string,
   reasoningEffort?: string,
-  responseCache?: ResponseCacheRequest
+  responseCache?: ResponseCacheRequest,
+  options?: PromptCacheBodyOptions
 ): Record<string, unknown> {
   if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const { stableInstructions, dynamicSuffix } = splitStableInstructions(systemInstruction.trim());
     const converted = buildPiContextProviderRequest(
       prompt,
-      systemInstruction,
+      stableInstructions,
       tools,
       'chat_completions',
       responseCache?.keepHistoryReasoning,
-      responseCache?.ephemeralMessageCount ?? 0,
+      responseCache?.ephemeralMessageCount ?? 0
     );
+    const messages = converted.systemInstruction
+      ? [{ role: 'system', content: converted.systemInstruction }, ...(converted.messages ?? [])]
+      : converted.messages;
+    const breakpointAdded =
+      options?.includeExplicitPromptCacheBreakpoints !== false &&
+      markChatPromptCacheBreakpoint(messages ?? []);
     const body: Record<string, unknown> = {
       model,
-      messages: converted.systemInstruction
-        ? [{ role: 'system', content: converted.systemInstruction }, ...(converted.messages ?? [])]
-        : converted.messages,
+      messages: appendDynamicSuffixToInput(messages ?? [], dynamicSuffix)
     };
+    addOpenAiPromptCacheOptions(body, breakpointAdded);
     if (responseCache?.cacheKey) {
       body.prompt_cache_key = responseCache.cacheKey;
     }
@@ -1048,19 +1390,31 @@ function buildChatCompletionsBody(
   const rawSystem = split.systemInstruction?.trim();
   const { stableInstructions, dynamicSuffix } = rawSystem
     ? splitStableInstructions(rawSystem)
-    : { stableInstructions: undefined as string | undefined, dynamicSuffix: undefined as string | undefined };
-  const trailingDynamic = [split.dynamicSystemSuffix, dynamicSuffix]
-    .map((s) => s?.trim())
-    .filter(Boolean)
-    .join('\n\n') || undefined;
+    : {
+        stableInstructions: undefined as string | undefined,
+        dynamicSuffix: undefined as string | undefined
+      };
+  const trailingDynamic =
+    [split.dynamicSystemSuffix, dynamicSuffix]
+      .map((s) => s?.trim())
+      .filter(Boolean)
+      .join('\n\n') || undefined;
 
-  const messages = toChatCompletionsApiMessages(split.conversation, stableInstructions || undefined, {
-    keepHistoryReasoning: responseCache?.keepHistoryReasoning
-  });
+  const messages = toChatCompletionsApiMessages(
+    split.conversation,
+    stableInstructions || undefined,
+    {
+      keepHistoryReasoning: responseCache?.keepHistoryReasoning
+    }
+  );
+  const breakpointAdded =
+    options?.includeExplicitPromptCacheBreakpoints !== false &&
+    markChatPromptCacheBreakpoint(messages);
   const body: Record<string, unknown> = {
     model,
     messages: appendDynamicSuffixToInput(messages, trailingDynamic)
   };
+  addOpenAiPromptCacheOptions(body, breakpointAdded);
 
   if (responseCache?.cacheKey) {
     body.prompt_cache_key = responseCache.cacheKey;
@@ -1080,23 +1434,30 @@ export function buildResponsesApiBody(
   tools: any[],
   systemInstruction?: string,
   reasoningEffort?: string,
-  responseCache?: ResponseCacheRequest
+  responseCache?: ResponseCacheRequest,
+  options?: PromptCacheBodyOptions
 ): Record<string, unknown> {
   if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const { stableInstructions, dynamicSuffix } = splitStableInstructions(systemInstruction.trim());
     const converted = buildPiContextProviderRequest(
       prompt,
-      systemInstruction,
+      stableInstructions,
       tools,
       'responses',
-      responseCache?.keepHistoryReasoning,
-      responseCache?.ephemeralMessageCount ?? 0,
+      responseCache?.keepHistoryReasoning ?? true,
+      responseCache?.ephemeralMessageCount ?? 0
     );
+    const input = converted.input ?? [];
+    const breakpointAdded =
+      options?.includeExplicitPromptCacheBreakpoints !== false &&
+      markResponsesPromptCacheBreakpoint(input);
     const body: Record<string, unknown> = {
       model,
       instructions: converted.instructions ?? converted.systemInstruction,
-      input: converted.input ?? [],
-      store: false,
+      input: appendDynamicSuffixToInput(input, dynamicSuffix),
+      store: false
     };
+    addOpenAiPromptCacheOptions(body, breakpointAdded);
     if (responseCache?.cacheKey) {
       body.prompt_cache_key = responseCache.cacheKey;
     }
@@ -1115,17 +1476,21 @@ export function buildResponsesApiBody(
     split.systemInstruction?.trim() || 'You are a helpful assistant.'
   );
   // Merge the per-turn dynamic system messages (knowledge / memory / todo …)
-  // with the date suffix extracted from instructions, then append both to the
-  // END of the input so the cached prefix (instructions + history) stays
-  // byte-stable across turns.
-  const trailingDynamic = [split.dynamicSystemSuffix, dynamicSuffix]
-    .map((s) => s?.trim())
-    .filter(Boolean)
-    .join('\n\n') || undefined;
+  // with the date suffix extracted from instructions. The suffix is inserted
+  // inside the current user turn, before any ReAct assistant/tool continuation,
+  // so the preceding request remains a reusable prefix.
+  const trailingDynamic =
+    [split.dynamicSystemSuffix, dynamicSuffix]
+      .map((s) => s?.trim())
+      .filter(Boolean)
+      .join('\n\n') || undefined;
 
   const rawInput = toResponsesApiInputItems(split.conversation, {
-    keepHistoryReasoning: responseCache?.keepHistoryReasoning
+    keepHistoryReasoning: responseCache?.keepHistoryReasoning ?? true
   });
+  const breakpointAdded =
+    options?.includeExplicitPromptCacheBreakpoints !== false &&
+    markResponsesPromptCacheBreakpoint(rawInput);
 
   const finalInput = appendDynamicSuffixToInput(rawInput, trailingDynamic);
 
@@ -1137,8 +1502,9 @@ export function buildResponsesApiBody(
     // so storing responses server-side is pure overhead and can interact badly
     // with some gateways' prompt_cache_key handling. Match LobeHub: store=false
     // still allows prefix caching via prompt_cache_key.
-    store: false,
+    store: false
   };
+  addOpenAiPromptCacheOptions(body, breakpointAdded);
 
   if (responseCache?.cacheKey) {
     body.prompt_cache_key = responseCache.cacheKey;
@@ -1168,6 +1534,7 @@ type ResponsesStreamParseState = {
   responseId?: string;
   functionCallsByKey: Map<string, ResponsesFunctionCallAccumulator>;
   emittedFunctionCallKeys: Set<string>;
+  rawParts: Array<Record<string, unknown>>;
 };
 
 function functionCallStreamKey(record: Record<string, unknown>, fallbackItemId = ''): string {
@@ -1189,12 +1556,12 @@ function parseResponsesFunctionCallItem(record: Record<string, unknown>): {
   return {
     id,
     name,
-    arguments: tryParseJson(record.arguments ?? record.input ?? {}),
+    arguments: tryParseJson(record.arguments ?? record.input ?? {})
   };
 }
 
 function extractResponsesFunctionCallsFromOutput(
-  response: Record<string, unknown>,
+  response: Record<string, unknown>
 ): NonNullable<AIResponse['tool_calls']> {
   const output = Array.isArray(response.output) ? response.output : [];
   const tool_calls: NonNullable<AIResponse['tool_calls']> = [];
@@ -1209,7 +1576,7 @@ function extractResponsesFunctionCallsFromOutput(
 function upsertResponsesFunctionCall(
   state: ResponsesStreamParseState | undefined,
   key: string,
-  patch: Partial<ResponsesFunctionCallAccumulator>,
+  patch: Partial<ResponsesFunctionCallAccumulator>
 ): ResponsesFunctionCallAccumulator | undefined {
   if (!state || !key) return undefined;
   const existing = state.functionCallsByKey.get(key);
@@ -1218,7 +1585,7 @@ function upsertResponsesFunctionCall(
     id: patch.id || existing?.id || key,
     name: patch.name || existing?.name || '',
     argumentsText: patch.argumentsText ?? existing?.argumentsText ?? '',
-    completed: patch.completed ?? existing?.completed ?? false,
+    completed: patch.completed ?? existing?.completed ?? false
   };
   state.functionCallsByKey.set(key, next);
   return next;
@@ -1227,7 +1594,7 @@ function upsertResponsesFunctionCall(
 function appendResponsesFunctionCallArguments(
   state: ResponsesStreamParseState | undefined,
   key: string,
-  delta: string,
+  delta: string
 ): ResponsesFunctionCallAccumulator | undefined {
   if (!state || !key || !delta) return undefined;
   const existing = state.functionCallsByKey.get(key);
@@ -1235,13 +1602,13 @@ function appendResponsesFunctionCallArguments(
   return upsertResponsesFunctionCall(state, key, {
     id: existing?.id || key,
     name: existing?.name || '',
-    argumentsText,
+    argumentsText
   });
 }
 
 function emitResponsesFunctionCall(
   state: ResponsesStreamParseState | undefined,
-  key: string,
+  key: string
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!state) return undefined;
   const acc = state.functionCallsByKey.get(key);
@@ -1252,14 +1619,14 @@ function emitResponsesFunctionCall(
     {
       id: acc.id,
       name: acc.name,
-      arguments: tryParseJson(acc.argumentsText || '{}'),
-    },
+      arguments: tryParseJson(acc.argumentsText || '{}')
+    }
   ];
 }
 
 function collectPendingResponsesFunctionCalls(
   state: ResponsesStreamParseState | undefined,
-  response: Record<string, unknown>,
+  response: Record<string, unknown>
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!state) return undefined;
   const pending: NonNullable<AIResponse['tool_calls']> = [];
@@ -1272,12 +1639,12 @@ function collectPendingResponsesFunctionCalls(
 }
 
 function toPartialResponsesToolCall(
-  acc: ResponsesFunctionCallAccumulator,
+  acc: ResponsesFunctionCallAccumulator
 ): NonNullable<AIResponse['tool_calls']>[number] {
   return {
     id: acc.id,
     name: acc.name,
-    arguments: acc.argumentsText ? acc.argumentsText : {},
+    arguments: acc.argumentsText ? acc.argumentsText : {}
   };
 }
 
@@ -1292,6 +1659,7 @@ export function createResponsesStreamParseState(): ResponsesStreamParseState {
     reasoningStreamedText: '',
     functionCallsByKey: new Map(),
     emittedFunctionCallKeys: new Set(),
+    rawParts: []
   };
 }
 
@@ -1302,7 +1670,7 @@ function appendStreamedReasoning(state: ResponsesStreamParseState | undefined, t
 
 function resolveReasoningBackfill(
   reasoningFromOutput: string,
-  state?: ResponsesStreamParseState,
+  state?: ResponsesStreamParseState
 ): string | undefined {
   const trimmed = reasoningFromOutput.trim();
   if (!trimmed) return undefined;
@@ -1316,7 +1684,6 @@ function resolveReasoningBackfill(
   if (streamed.length < trimmed.length) return trimmed;
   return undefined;
 }
-
 
 function extractReasoningFromResponseOutput(response: Record<string, unknown>): string {
   const output = Array.isArray(response.output) ? response.output : [];
@@ -1378,6 +1745,10 @@ function reasoningEffortToThinkingBudget(effort?: string): number {
   }
 }
 
+function buildAnthropicCacheControl(): Record<string, string> {
+  return { type: 'ephemeral', ttl: '1h' };
+}
+
 function markAnthropicCacheControl(target: Record<string, unknown>): void {
   const content = target.content;
   if (typeof content === 'string') {
@@ -1385,7 +1756,7 @@ function markAnthropicCacheControl(target: Record<string, unknown>): void {
       {
         type: 'text',
         text: content,
-        cache_control: { type: 'ephemeral' }
+        cache_control: buildAnthropicCacheControl()
       }
     ];
     return;
@@ -1400,7 +1771,7 @@ function markAnthropicCacheControl(target: Record<string, unknown>): void {
     const record = block as Record<string, unknown>;
     const type = String(record.type || '');
     if (type === 'thinking' || type === 'redacted_thinking') continue;
-    record.cache_control = { type: 'ephemeral' };
+    record.cache_control = buildAnthropicCacheControl();
     return;
   }
 }
@@ -1425,7 +1796,13 @@ export function applyAnthropicPromptCache(
   // budget. Skip message breakpoints on the first turn (messages.length <= 1)
   // because the single user message is the dynamic latest input.
   const system = systemInstruction?.trim()
-    ? [{ type: 'text', text: systemInstruction.trim(), cache_control: { type: 'ephemeral' } }]
+    ? [
+        {
+          type: 'text',
+          text: systemInstruction.trim(),
+          cache_control: buildAnthropicCacheControl()
+        }
+      ]
     : undefined;
 
   if (messages.length <= 1) {
@@ -1452,18 +1829,18 @@ export function applyAnthropicPromptCache(
  *  No-op when caching is disabled or there are no tools. */
 export function markAnthropicToolsCacheControl(
   tools: Array<Record<string, unknown>> | undefined,
-  responseCache?: ResponseCacheRequest,
+  responseCache?: ResponseCacheRequest
 ): Array<Record<string, unknown>> | undefined {
   if (!responseCache?.cacheKey) return tools;
   if (!tools?.length) return undefined;
   const lastTool = tools[tools.length - 1];
   if (lastTool && typeof lastTool === 'object') {
-    lastTool.cache_control = { type: 'ephemeral' };
+    lastTool.cache_control = buildAnthropicCacheControl();
   }
   return tools;
 }
 
-function buildMessagesApiBody(
+export function buildMessagesApiBody(
   model: string,
   prompt: string | AIMessage[],
   tools: any[],
@@ -1478,34 +1855,38 @@ function buildMessagesApiBody(
   const keepHistoryReasoning = thinkingEnabled || responseCache?.keepHistoryReasoning === true;
 
   if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const { stableInstructions, dynamicSuffix } = splitStableInstructions(systemInstruction.trim());
     const converted = buildPiContextProviderRequest(
       prompt,
-      systemInstruction,
+      stableInstructions,
       tools,
       'anthropic',
       keepHistoryReasoning,
-      responseCache?.ephemeralMessageCount ?? 0,
+      responseCache?.ephemeralMessageCount ?? 0
     );
     const anthropicSystem =
       typeof converted.systemInstruction === 'string'
         ? converted.systemInstruction
-        : systemInstruction;
+        : stableInstructions;
     const cached = applyAnthropicPromptCache(
       converted.messages as Array<Record<string, unknown>>,
       anthropicSystem,
-      responseCache,
+      responseCache
     );
+    const messages = dynamicSuffix
+      ? appendDynamicSuffixToInput(cached.messages, dynamicSuffix)
+      : cached.messages;
     const body: Record<string, unknown> = {
       model,
       max_tokens: 4096,
-      messages: cached.messages,
+      messages
     };
     if (cached.system) {
       body.system = cached.system;
     }
     const apiTools = markAnthropicToolsCacheControl(
       converted.tools ?? toMessagesApiTools(tools),
-      responseCache,
+      responseCache
     );
     if (apiTools?.length) {
       body.tools = apiTools;
@@ -1513,7 +1894,7 @@ function buildMessagesApiBody(
     if (reasoningEffort && reasoningEffort !== 'none') {
       body.thinking = {
         type: 'enabled',
-        budget_tokens: reasoningEffortToThinkingBudget(reasoningEffort),
+        budget_tokens: reasoningEffortToThinkingBudget(reasoningEffort)
       };
     }
     return body;
@@ -1527,10 +1908,11 @@ function buildMessagesApiBody(
   const { stableInstructions, dynamicSuffix } = splitStableInstructions(
     split.systemInstruction?.trim() || 'You are a helpful assistant.'
   );
-  const trailingDynamic = [split.dynamicSystemSuffix, dynamicSuffix]
-    .map((s) => s?.trim())
-    .filter(Boolean)
-    .join('\n\n') || undefined;
+  const trailingDynamic =
+    [split.dynamicSystemSuffix, dynamicSuffix]
+      .map((s) => s?.trim())
+      .filter(Boolean)
+      .join('\n\n') || undefined;
 
   const cached = applyAnthropicPromptCache(
     toMessagesApiMessages(split.conversation, { keepHistoryReasoning }),
@@ -1671,7 +2053,9 @@ function isReasoningCapableOpenAIModel(model: string): boolean {
 export function parseResponsesStreamPayload(
   payload: Record<string, unknown>,
   state?: ResponsesStreamParseState
-): Partial<Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls'>> | null {
+): Partial<
+  Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls' | 'raw_parts'>
+> | null {
   const type = String(payload.type || '');
 
   if (type === 'response.completed' || type === 'response.done' || type === 'response.created') {
@@ -1695,13 +2079,23 @@ export function parseResponsesStreamPayload(
       type === 'response.completed' || type === 'response.done'
         ? collectPendingResponsesFunctionCalls(state, response)
         : undefined;
+    const completedRawParts = Array.isArray(response.output)
+      ? response.output.filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === 'object')
+        )
+      : [];
+    if (completedRawParts.length > 0 && state) {
+      state.rawParts = completedRawParts;
+    }
+    const rawParts = completedRawParts.length > 0 ? completedRawParts : (state?.rawParts ?? []);
 
-    if (usage || responseId || reasoningBackfill || tool_calls?.length) {
+    if (usage || responseId || reasoningBackfill || tool_calls?.length || rawParts.length > 0) {
       return {
         ...(responseId ? { response_id: responseId } : {}),
         ...(usage ? { usage } : {}),
         ...(reasoningBackfill ? { reasoning: reasoningBackfill } : {}),
         ...(tool_calls?.length ? { tool_calls } : {}),
+        ...(rawParts.length > 0 ? { raw_parts: rawParts } : {})
       };
     }
   }
@@ -1725,12 +2119,12 @@ export function parseResponsesStreamPayload(
     const argumentsText =
       typeof payload.arguments === 'string'
         ? payload.arguments
-        : state?.functionCallsByKey.get(key)?.argumentsText ?? '';
+        : (state?.functionCallsByKey.get(key)?.argumentsText ?? '');
     upsertResponsesFunctionCall(state, key, {
       id: key,
       name,
       argumentsText,
-      completed: true,
+      completed: true
     });
     const tool_calls = emitResponsesFunctionCall(state, key);
     if (tool_calls?.length) return { tool_calls };
@@ -1786,17 +2180,28 @@ export function parseResponsesStreamPayload(
     const item = payload.item;
     if (!item || typeof item !== 'object') return null;
     const record = item as Record<string, unknown>;
+    if (state) {
+      const recordId = typeof record.id === 'string' ? record.id : '';
+      const existingIndex = recordId
+        ? state.rawParts.findIndex((part) => part.id === recordId)
+        : -1;
+      if (existingIndex >= 0) {
+        state.rawParts[existingIndex] = record;
+      } else {
+        state.rawParts.push(record);
+      }
+    }
     if (record.type === 'function_call' || record.type === 'tool_call') {
       const key = functionCallStreamKey(record, itemId);
       const argumentsText =
         typeof record.arguments === 'string'
           ? record.arguments
-          : state?.functionCallsByKey.get(key)?.argumentsText ?? '';
+          : (state?.functionCallsByKey.get(key)?.argumentsText ?? '');
       upsertResponsesFunctionCall(state, key, {
         id: String(record.call_id || record.id || key),
         name: String(record.name || ''),
         argumentsText,
-        completed: true,
+        completed: true
       });
       const tool_calls = emitResponsesFunctionCall(state, key);
       if (tool_calls?.length) return { tool_calls };
@@ -1824,7 +2229,7 @@ export function parseResponsesStreamPayload(
           id: String(record.call_id || record.id || key),
           name: String(record.name || ''),
           argumentsText,
-          completed: Boolean(argumentsText.trim()),
+          completed: Boolean(argumentsText.trim())
         });
         if (acc?.name && argumentsText.trim()) {
           const tool_calls = emitResponsesFunctionCall(state, key);
@@ -1861,7 +2266,7 @@ export function createChatCompletionsStreamParseState(): ChatCompletionsStreamPa
 function parseChatCompletionToolCallRecords(
   rawToolCalls: unknown,
   state?: ChatCompletionsStreamParseState,
-  options?: { allowPartial?: boolean },
+  options?: { allowPartial?: boolean }
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!Array.isArray(rawToolCalls)) return undefined;
   const tool_calls = rawToolCalls.flatMap((tc, fallbackIndex) => {
@@ -1897,15 +2302,15 @@ function parseChatCompletionToolCallRecords(
       {
         id,
         name,
-        arguments: argumentsText ? tryParseJson(argumentsText) : {},
-      },
+        arguments: argumentsText ? tryParseJson(argumentsText) : {}
+      }
     ];
   });
   return tool_calls.length > 0 ? tool_calls : undefined;
 }
 
 function compactChatCompletionToolCalls(
-  state?: ChatCompletionsStreamParseState,
+  state?: ChatCompletionsStreamParseState
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!state || state.toolCallsByIndex.size === 0) return undefined;
   const tool_calls = [...state.toolCallsByIndex.entries()].flatMap(([index, acc]) => {
@@ -1917,8 +2322,8 @@ function compactChatCompletionToolCalls(
       {
         id,
         name: acc.name,
-        arguments: tryParseJson(acc.argumentsText || '{}'),
-      },
+        arguments: tryParseJson(acc.argumentsText || '{}')
+      }
     ];
   });
   return tool_calls.length > 0 ? tool_calls : undefined;
@@ -1927,7 +2332,9 @@ function compactChatCompletionToolCalls(
 export function parseChatCompletionsStreamPayload(
   payload: Record<string, unknown>,
   state?: ChatCompletionsStreamParseState
-): Partial<Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls'>> | null {
+): Partial<
+  Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls' | 'raw_parts'>
+> | null {
   const usage = parseOpenAIUsage(payload.usage as Record<string, unknown> | undefined);
   const contextIds = extractProviderContextIds(payload);
   if (contextIds.completionId && state) {
@@ -1937,8 +2344,7 @@ export function parseChatCompletionsStreamPayload(
   const choice = Array.isArray(payload.choices) ? payload.choices[0] : undefined;
   if (!choice || typeof choice !== 'object') {
     if (contextIds.responseId || contextIds.completionId || contextIds.messageId) {
-      const response_id =
-        contextIds.responseId ?? contextIds.completionId ?? contextIds.messageId;
+      const response_id = contextIds.responseId ?? contextIds.completionId ?? contextIds.messageId;
       if (response_id) {
         return { response_id, content: '', reasoning: undefined };
       }
@@ -2013,7 +2419,7 @@ export function parseChatCompletionsStreamPayload(
 }
 
 function extractMessagesToolCallsFromContent(
-  content: unknown,
+  content: unknown
 ): NonNullable<AIResponse['tool_calls']> {
   if (!Array.isArray(content)) return [];
   const tool_calls: NonNullable<AIResponse['tool_calls']> = [];
@@ -2027,7 +2433,7 @@ function extractMessagesToolCallsFromContent(
     tool_calls.push({
       id,
       name,
-      arguments: tryParseJson(record.input ?? {}),
+      arguments: tryParseJson(record.input ?? {})
     });
   }
   return tool_calls;
@@ -2052,7 +2458,7 @@ type MessagesStreamParseState = {
 function upsertMessagesToolUse(
   state: MessagesStreamParseState | undefined,
   blockIndex: number,
-  patch: Partial<MessagesToolUseAccumulator>,
+  patch: Partial<MessagesToolUseAccumulator>
 ): MessagesToolUseAccumulator | undefined {
   if (!state) return undefined;
   const existing = state.toolUsesByBlock.get(blockIndex);
@@ -2061,7 +2467,7 @@ function upsertMessagesToolUse(
     id: patch.id || existing?.id || `msg_tool_${blockIndex}`,
     name: patch.name || existing?.name || '',
     inputJsonText: patch.inputJsonText ?? existing?.inputJsonText ?? '',
-    completed: patch.completed ?? existing?.completed ?? false,
+    completed: patch.completed ?? existing?.completed ?? false
   };
   state.toolUsesByBlock.set(blockIndex, next);
   return next;
@@ -2070,7 +2476,7 @@ function upsertMessagesToolUse(
 function appendMessagesToolUseInput(
   state: MessagesStreamParseState | undefined,
   blockIndex: number,
-  partialJson: string,
+  partialJson: string
 ): MessagesToolUseAccumulator | undefined {
   if (!state || !partialJson) return undefined;
   const existing = state.toolUsesByBlock.get(blockIndex);
@@ -2078,23 +2484,23 @@ function appendMessagesToolUseInput(
   return upsertMessagesToolUse(state, blockIndex, {
     id: existing?.id,
     name: existing?.name,
-    inputJsonText,
+    inputJsonText
   });
 }
 
 function toPartialMessagesToolCall(
-  acc: MessagesToolUseAccumulator,
+  acc: MessagesToolUseAccumulator
 ): NonNullable<AIResponse['tool_calls']>[number] {
   return {
     id: acc.id,
     name: acc.name,
-    arguments: acc.inputJsonText ? acc.inputJsonText : {},
+    arguments: acc.inputJsonText ? acc.inputJsonText : {}
   };
 }
 
 function emitMessagesToolCall(
   state: MessagesStreamParseState | undefined,
-  blockIndex: number,
+  blockIndex: number
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!state) return undefined;
   const acc = state.toolUsesByBlock.get(blockIndex);
@@ -2104,14 +2510,14 @@ function emitMessagesToolCall(
     {
       id: acc.id,
       name: acc.name,
-      arguments: tryParseJson(acc.inputJsonText || '{}'),
-    },
+      arguments: tryParseJson(acc.inputJsonText || '{}')
+    }
   ];
 }
 
 function collectPendingMessagesToolCalls(
   state: MessagesStreamParseState | undefined,
-  message: Record<string, unknown>,
+  message: Record<string, unknown>
 ): NonNullable<AIResponse['tool_calls']> | undefined {
   if (!state) return undefined;
   const pending: NonNullable<AIResponse['tool_calls']> = [];
@@ -2128,13 +2534,13 @@ export function createMessagesStreamParseState(): MessagesStreamParseState {
     reasoningDeltaCharsByBlock: new Map(),
     reasoningStreamedText: '',
     toolUsesByBlock: new Map(),
-    emittedToolUseIds: new Set(),
+    emittedToolUseIds: new Set()
   };
 }
 
 function appendMessagesStreamedReasoning(
   state: MessagesStreamParseState | undefined,
-  text: string,
+  text: string
 ): void {
   if (!state || !text) return;
   state.reasoningStreamedText += text;
@@ -2142,7 +2548,7 @@ function appendMessagesStreamedReasoning(
 
 function resolveMessagesReasoningBackfill(
   reasoningFromMessage: string,
-  state?: MessagesStreamParseState,
+  state?: MessagesStreamParseState
 ): string | undefined {
   const trimmed = reasoningFromMessage.trim();
   if (!trimmed) return undefined;
@@ -2160,7 +2566,9 @@ function resolveMessagesReasoningBackfill(
 export function parseMessagesStreamPayload(
   payload: Record<string, unknown>,
   state?: MessagesStreamParseState
-): Partial<Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls'>> | null {
+): Partial<
+  Pick<AIResponse, 'content' | 'reasoning' | 'response_id' | 'usage' | 'tool_calls'>
+> | null {
   const type = String(payload.type || '');
 
   const contextIds = extractProviderContextIds(payload);
@@ -2180,16 +2588,14 @@ export function parseMessagesStreamPayload(
         const id = String(record.id || `msg_tool_${blockIndex}`);
         const name = String(record.name || '');
         const input =
-          record.input &&
-          typeof record.input === 'object' &&
-          Object.keys(record.input).length > 0
+          record.input && typeof record.input === 'object' && Object.keys(record.input).length > 0
             ? JSON.stringify(record.input)
             : '';
         const acc = upsertMessagesToolUse(state, blockIndex, {
           id,
           name,
           inputJsonText: input,
-          completed: Boolean(input.trim()),
+          completed: Boolean(input.trim())
         });
         if (acc?.name && input.trim()) {
           const tool_calls = emitMessagesToolCall(state, blockIndex);
@@ -2240,16 +2646,14 @@ export function parseMessagesStreamPayload(
         const id = String(record.id || `msg_tool_${blockIndex}`);
         const name = String(record.name || '');
         const input =
-          record.input &&
-          typeof record.input === 'object' &&
-          Object.keys(record.input).length > 0
+          record.input && typeof record.input === 'object' && Object.keys(record.input).length > 0
             ? JSON.stringify(record.input)
-            : state?.toolUsesByBlock.get(blockIndex)?.inputJsonText ?? '';
+            : (state?.toolUsesByBlock.get(blockIndex)?.inputJsonText ?? '');
         upsertMessagesToolUse(state, blockIndex, {
           id,
           name,
           inputJsonText: input,
-          completed: true,
+          completed: true
         });
         const tool_calls = emitMessagesToolCall(state, blockIndex);
         if (tool_calls?.length) return { tool_calls };
@@ -2281,7 +2685,7 @@ export function parseMessagesStreamPayload(
         if (backfill) appendMessagesStreamedReasoning(state, backfill);
         return {
           ...(backfill ? { reasoning: backfill } : {}),
-          ...(tool_calls?.length ? { tool_calls } : {}),
+          ...(tool_calls?.length ? { tool_calls } : {})
         };
       }
     }
@@ -2447,7 +2851,17 @@ function extractOpenAIErrorMessage(text: string): string {
 }
 
 export function parseOpenAIChatResponseText(text: string): AIResponse {
-  const normalized = transformResponsesApiBody(normalizeResponseBodyText(text));
+  const normalizedText = normalizeResponseBodyText(text);
+  try {
+    const raw = JSON.parse(normalizedText) as Record<string, unknown>;
+    if (raw && raw.object === 'response') {
+      return extractResponsesApiResult(raw);
+    }
+  } catch {
+    // fall through to chat.completion parsing
+  }
+
+  const normalized = transformResponsesApiBody(normalizedText);
   const data = JSON.parse(normalized) as Record<string, unknown>;
 
   if (data.object === 'response') {
@@ -2512,7 +2926,7 @@ export class GeminiProvider implements AIProvider {
     model: string,
     dispatcher?: any,
     thinkingConfig?: GeminiThinkingConfig,
-    builtinSearch: GeminiBuiltinSearchMode = 'off',
+    builtinSearch: GeminiBuiltinSearchMode = 'off'
   ) {
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
@@ -2540,9 +2954,9 @@ export class GeminiProvider implements AIProvider {
       thinkingConfig: resolvedThinking
         ? {
             includeThoughts: resolvedThinking.includeThoughts,
-            thinkingBudget: resolvedThinking.thinkingBudget ?? 32000,
+            thinkingBudget: resolvedThinking.thinkingBudget ?? 32000
           }
-        : undefined,
+        : undefined
     });
 
     const customTools = normalizeTools(tools) || [];
@@ -2650,6 +3064,12 @@ export class OpenAIProvider implements AIProvider {
   protected apiEndpoint: OpenAIApiEndpointMode;
   protected reasoningEffort?: ReasoningEffort;
   public dispatcher?: any;
+  /** Sticky: gateway rejected prompt_cache_key; omit it on later calls in this process. */
+  protected promptCacheKeyUnsupported = false;
+  /** Sticky: gateway rejects thinking.type=enabled; omit the toggle on later calls. */
+  protected thinkingToggleUnsupported = false;
+  /** Sticky per endpoint: explicit prompt-cache fields are not universally supported. */
+  protected promptCacheBreakpointUnsupported = new Set<string>();
 
   get promptCacheCapability(): PromptCacheCapability {
     return resolvePromptCacheCapability(this.getProviderLabel(), this.apiEndpoint);
@@ -2725,27 +3145,30 @@ export class OpenAIProvider implements AIProvider {
     return `${this.resolveBaseUrl()}/messages`;
   }
 
-  protected messagesApiHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
-      'x-api-key': this.apiKey,
-      'anthropic-version': '2023-06-01',
-      // Prompt caching requires the beta header on the native Anthropic API;
-      // OpenAI-compatible /v1/messages gateways that proxy Claude also accept it.
-      'anthropic-beta': 'prompt-caching-2024-07-31'
-    };
+  protected messagesApiHeaders(responseCache?: ResponseCacheRequest): Record<string, string> {
+    return withSessionAffinityHeader(
+      {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+        'x-api-key': this.apiKey,
+        'anthropic-version': '2023-06-01',
+        // Prompt caching requires the beta header on the native Anthropic API;
+        // OpenAI-compatible /v1/messages gateways that proxy Claude also accept it.
+        'anthropic-beta': 'prompt-caching-2024-07-31'
+      },
+      responseCache
+    );
   }
 
   protected async postMessagesApiJson(
     body: Record<string, unknown>,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; responseCache?: ResponseCacheRequest }
   ): Promise<AIResponse> {
     const url = this.messagesEndpoint();
     LogService.info(`[${this.getProviderLabel()}] POST ${url}`);
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.messagesApiHeaders(),
+      headers: this.messagesApiHeaders(options?.responseCache),
       body: JSON.stringify(body),
       dispatcher: this.dispatcher,
       signal: options?.signal
@@ -2803,8 +3226,7 @@ export class OpenAIProvider implements AIProvider {
   /** Pin auto routing to the first successful endpoint for session affinity. */
   protected pinApiEndpoint(endpoint: OpenAIApiEndpointMode | string): void {
     if (this.apiEndpoint !== 'auto') return;
-    const mapped =
-      typeof endpoint === 'string' ? mapAttemptLabelToApiEndpoint(endpoint) : endpoint;
+    const mapped = typeof endpoint === 'string' ? mapAttemptLabelToApiEndpoint(endpoint) : endpoint;
     if (!mapped || mapped === 'auto') return;
     this.apiEndpoint = mapped;
     LogService.info(
@@ -2816,12 +3238,158 @@ export class OpenAIProvider implements AIProvider {
     return this.apiEndpoint;
   }
 
+  protected resolveCallResponseCache(
+    responseCache?: ResponseCacheRequest
+  ): ResponseCacheRequest | undefined {
+    return this.promptCacheKeyUnsupported ? withoutPromptCacheKey(responseCache) : responseCache;
+  }
+
+  protected sanitizeGatewayBody(
+    body: Record<string, unknown>,
+    endpointHint?: string
+  ): Record<string, unknown> {
+    let next = body;
+    if (this.promptCacheKeyUnsupported) next = omitPromptCacheKey(next);
+    if (this.thinkingToggleUnsupported) next = omitEnabledThinking(next);
+    if (endpointHint && this.promptCacheBreakpointUnsupported.has(endpointHint)) {
+      next = omitPromptCacheBreakpoints(next);
+    }
+    return next;
+  }
+
+  protected markPromptCacheKeyUnsupported(endpointHint?: string): void {
+    if (this.promptCacheKeyUnsupported) return;
+    this.promptCacheKeyUnsupported = true;
+    LogService.warn(
+      `[${this.getProviderLabel()}] ${endpointHint || this.apiEndpoint} rejected prompt_cache_key; omitting it for this provider instance`
+    );
+  }
+
+  protected markThinkingToggleUnsupported(endpointHint?: string): void {
+    if (this.thinkingToggleUnsupported) return;
+    this.thinkingToggleUnsupported = true;
+    LogService.warn(
+      `[${this.getProviderLabel()}] ${endpointHint || this.apiEndpoint} rejected thinking.type=enabled; omitting it for this provider instance`
+    );
+  }
+
+  protected markPromptCacheBreakpointUnsupported(endpointHint: string): void {
+    if (this.promptCacheBreakpointUnsupported.has(endpointHint)) return;
+    this.promptCacheBreakpointUnsupported.add(endpointHint);
+    LogService.warn(
+      `[${this.getProviderLabel()}] ${endpointHint} rejected explicit prompt-cache breakpoints; falling back to automatic prefix caching`
+    );
+  }
+
+  /**
+   * POST once; if the gateway rejects prompt_cache_key or thinking.type=enabled,
+   * strip the unsupported field and retry the same endpoint.
+   */
+  protected async postWithPromptCacheKeyFallback(input: {
+    url: string;
+    headers: Record<string, string>;
+    body: Record<string, unknown>;
+    promptCacheBreakpointFallbackBody?: Record<string, unknown>;
+    signal?: AbortSignal;
+  }): Promise<{
+    response: Response;
+    strippedPromptCacheKey: boolean;
+    strippedPromptCacheBreakpoints: boolean;
+  }> {
+    const post = async (body: Record<string, unknown>) => {
+      LogService.info(`[${this.getProviderLabel()}] POST ${input.url}`);
+      return fetch(input.url, {
+        method: 'POST',
+        headers: input.headers,
+        body: JSON.stringify(body),
+        dispatcher: this.dispatcher,
+        signal: input.signal
+      });
+    };
+
+    const endpointHint = /\/responses(?:\?|$)/i.test(input.url)
+      ? 'responses'
+      : /\/messages(?:\?|$)/i.test(input.url)
+        ? 'messages'
+        : 'chat_completions';
+
+    const hasPromptCacheBreakpoints =
+      Object.prototype.hasOwnProperty.call(input.body, 'prompt_cache_options') ||
+      JSON.stringify(input.body)?.includes('prompt_cache_breakpoint') === true;
+    const canonicalBreakpointFallback = input.promptCacheBreakpointFallbackBody
+      ? this.sanitizeGatewayBody(input.promptCacheBreakpointFallbackBody, endpointHint)
+      : undefined;
+    let body =
+      this.promptCacheBreakpointUnsupported.has(endpointHint) &&
+      hasPromptCacheBreakpoints &&
+      canonicalBreakpointFallback
+        ? canonicalBreakpointFallback
+        : this.sanitizeGatewayBody(input.body, endpointHint);
+    let strippedPromptCacheKey =
+      this.promptCacheKeyUnsupported &&
+      Object.prototype.hasOwnProperty.call(input.body, 'prompt_cache_key');
+    let strippedPromptCacheBreakpoints =
+      this.promptCacheBreakpointUnsupported.has(endpointHint) && hasPromptCacheBreakpoints;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await post(body);
+      if (response.ok) {
+        return {
+          response,
+          strippedPromptCacheKey,
+          strippedPromptCacheBreakpoints
+        };
+      }
+
+      const text = await response.text();
+      const error = new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
+      let changed = false;
+
+      if (
+        isUnsupportedPromptCacheKeyError(error) &&
+        Object.prototype.hasOwnProperty.call(body, 'prompt_cache_key')
+      ) {
+        this.markPromptCacheKeyUnsupported(endpointHint);
+        body = omitPromptCacheKey(body);
+        strippedPromptCacheKey = true;
+        changed = true;
+        LogService.warn(
+          `[${this.getProviderLabel()}] Retrying without prompt_cache_key: ${error.message}`
+        );
+      } else if (
+        isUnsupportedPromptCacheBreakpointError(error) &&
+        (Object.prototype.hasOwnProperty.call(body, 'prompt_cache_options') ||
+          JSON.stringify(body)?.includes('prompt_cache_breakpoint') === true)
+      ) {
+        this.markPromptCacheBreakpointUnsupported(endpointHint);
+        body = canonicalBreakpointFallback ?? omitPromptCacheBreakpoints(body);
+        strippedPromptCacheBreakpoints = true;
+        changed = true;
+        LogService.warn(
+          `[${this.getProviderLabel()}] Retrying without explicit prompt-cache breakpoints: ${error.message}`
+        );
+      } else if (isUnsupportedThinkingEnabledError(error) && hasEnabledThinking(body)) {
+        this.markThinkingToggleUnsupported(endpointHint);
+        body = omitEnabledThinking(body);
+        changed = true;
+        LogService.warn(
+          `[${this.getProviderLabel()}] Retrying without thinking.type=enabled: ${error.message}`
+        );
+      }
+
+      if (!changed) throw error;
+    }
+
+    throw new Error('AI request failed after gateway field fallbacks');
+  }
+
   protected async invokeCompatibleOpenAIEndpoints(
     prompt: string | AIMessage[],
     tools: any[],
     systemInstruction?: string,
     options?: AIProviderCallOptions
   ): Promise<AIResponse> {
+    const responseCache = this.resolveCallResponseCache(options?.responseCache);
     const allAttempts = [
       {
         label: 'chat/completions',
@@ -2832,7 +3400,16 @@ export class OpenAIProvider implements AIProvider {
           tools,
           systemInstruction,
           this.reasoningEffort,
-          options?.responseCache
+          responseCache
+        ),
+        promptCacheBreakpointFallbackBody: buildChatCompletionsBody(
+          this.model,
+          prompt,
+          tools,
+          systemInstruction,
+          this.reasoningEffort,
+          responseCache,
+          { includeExplicitPromptCacheBreakpoints: false }
         ),
         parse: (text: string) => parseOpenAIChatResponseText(text)
       },
@@ -2845,7 +3422,16 @@ export class OpenAIProvider implements AIProvider {
           tools,
           systemInstruction,
           this.reasoningEffort,
-          options?.responseCache
+          responseCache
+        ),
+        promptCacheBreakpointFallbackBody: buildResponsesApiBody(
+          this.model,
+          prompt,
+          tools,
+          systemInstruction,
+          this.reasoningEffort,
+          responseCache,
+          { includeExplicitPromptCacheBreakpoints: false }
         ),
         parse: (text: string) => parseOpenAIChatResponseText(text)
       },
@@ -2858,10 +3444,12 @@ export class OpenAIProvider implements AIProvider {
           tools,
           systemInstruction,
           this.reasoningEffort,
-          options?.responseCache
+          responseCache
         ),
         parse: (text: string) =>
-          extractMessagesApiResult(JSON.parse(normalizeResponseBodyText(text)) as Record<string, unknown>)
+          extractMessagesApiResult(
+            JSON.parse(normalizeResponseBodyText(text)) as Record<string, unknown>
+          )
       }
     ];
     const attempts = this.resolveEndpointAttempts(allAttempts);
@@ -2870,33 +3458,38 @@ export class OpenAIProvider implements AIProvider {
     for (let i = 0; i < attempts.length; i++) {
       const attempt = attempts[i];
       try {
-        LogService.info(`[${this.getProviderLabel()}] POST ${attempt.url}`);
-        const response = await fetch(attempt.url, {
-          method: 'POST',
-          headers:
-            attempt.label === 'messages'
-              ? this.messagesApiHeaders()
-              : {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${this.apiKey}`
-                },
-          body: JSON.stringify(attempt.body),
-          dispatcher: this.dispatcher,
-          signal: options?.signal
-        });
+        const { response, strippedPromptCacheKey, strippedPromptCacheBreakpoints } =
+          await this.postWithPromptCacheKeyFallback({
+            url: attempt.url,
+            headers:
+              attempt.label === 'messages'
+                ? this.messagesApiHeaders(responseCache)
+                : withSessionAffinityHeader(
+                    {
+                      'Content-Type': 'application/json',
+                      Authorization: `Bearer ${this.apiKey}`
+                    },
+                    responseCache
+                  ),
+            body: attempt.body,
+            promptCacheBreakpointFallbackBody: attempt.promptCacheBreakpointFallbackBody,
+            signal: options?.signal
+          });
 
         const text = await response.text();
-        if (!response.ok) {
-          throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
-        }
-
         this.pinApiEndpoint(attempt.label);
+        let effectiveCache = strippedPromptCacheKey
+          ? withoutPromptCacheKey(responseCache)
+          : responseCache;
+        if (strippedPromptCacheBreakpoints) {
+          effectiveCache = withoutPromptCacheBreakpoint(effectiveCache);
+        }
         const enrichedCache = resolvePromptCacheContext(
-          options?.responseCache,
+          effectiveCache,
           prompt,
           systemInstruction,
           tools,
-          mapAttemptLabelToProviderFormat(attempt.label),
+          mapAttemptLabelToProviderFormat(attempt.label)
         );
         return attachPromptCacheUsage(attempt.parse(text), enrichedCache);
       } catch (error: unknown) {
@@ -2984,12 +3577,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
-    const enrichedCache = resolvePromptCacheContext(
-      options?.responseCache,
+    const responseCache = this.resolveCallResponseCache(options?.responseCache);
+    let enrichedCache = resolvePromptCacheContext(
+      responseCache,
       prompt,
       systemInstruction,
       tools ?? [],
-      'chat_completions',
+      'chat_completions'
     );
     const body: Record<string, unknown> = {
       ...buildChatCompletionsBody(
@@ -2998,29 +3592,46 @@ export class OpenAIProvider implements AIProvider {
         tools ?? [],
         systemInstruction,
         this.reasoningEffort,
-        options?.responseCache
+        responseCache
+      ),
+      stream: true
+    };
+    const promptCacheBreakpointFallbackBody: Record<string, unknown> = {
+      ...buildChatCompletionsBody(
+        this.model,
+        prompt,
+        tools ?? [],
+        systemInstruction,
+        this.reasoningEffort,
+        responseCache,
+        { includeExplicitPromptCacheBreakpoints: false }
       ),
       stream: true
     };
     applyReasoningRequestFields(body, this.reasoningEffort);
+    applyReasoningRequestFields(promptCacheBreakpointFallbackBody, this.reasoningEffort);
 
     const url = this.chatCompletionsEndpoint();
-    LogService.info(`[${this.getProviderLabel()}] POST ${url}`);
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-        Accept: 'text/event-stream'
-      },
-      body: JSON.stringify(body),
-      dispatcher: this.dispatcher,
-      signal: options?.signal
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
+    const { response, strippedPromptCacheKey, strippedPromptCacheBreakpoints } =
+      await this.postWithPromptCacheKeyFallback({
+        url,
+        headers: withSessionAffinityHeader(
+          {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: 'text/event-stream'
+          },
+          responseCache
+        ),
+        body,
+        promptCacheBreakpointFallbackBody,
+        signal: options?.signal
+      });
+    if (strippedPromptCacheKey) {
+      enrichedCache = withoutPromptCacheKey(enrichedCache);
+    }
+    if (strippedPromptCacheBreakpoints) {
+      enrichedCache = withoutPromptCacheBreakpoint(enrichedCache);
     }
 
     const streamState = createChatCompletionsStreamParseState();
@@ -3104,12 +3715,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
-    const enrichedCache = resolvePromptCacheContext(
-      options?.responseCache,
+    const responseCache = this.resolveCallResponseCache(options?.responseCache);
+    let enrichedCache = resolvePromptCacheContext(
+      responseCache,
       prompt,
       systemInstruction,
       tools ?? [],
-      'responses',
+      'responses'
     );
     const body = buildResponsesApiBody(
       this.model,
@@ -3117,7 +3729,16 @@ export class OpenAIProvider implements AIProvider {
       tools ?? [],
       systemInstruction,
       this.reasoningEffort,
-      options?.responseCache
+      responseCache
+    );
+    const promptCacheBreakpointFallbackBody = buildResponsesApiBody(
+      this.model,
+      prompt,
+      tools ?? [],
+      systemInstruction,
+      this.reasoningEffort,
+      responseCache,
+      { includeExplicitPromptCacheBreakpoints: false }
     );
     if (!body.reasoning && this.reasoningEffort && this.reasoningEffort !== 'none') {
       body.reasoning = {
@@ -3126,22 +3747,38 @@ export class OpenAIProvider implements AIProvider {
       };
     }
     body.stream = true;
+    if (
+      !promptCacheBreakpointFallbackBody.reasoning &&
+      this.reasoningEffort &&
+      this.reasoningEffort !== 'none'
+    ) {
+      promptCacheBreakpointFallbackBody.reasoning = {
+        effort: this.reasoningEffort,
+        summary: 'detailed'
+      };
+    }
+    promptCacheBreakpointFallbackBody.stream = true;
 
-    const response = await fetch(this.responsesEndpoint(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-        Accept: 'text/event-stream'
-      },
-      body: JSON.stringify(body),
-      dispatcher: this.dispatcher,
-      signal: options?.signal
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
+    const { response, strippedPromptCacheKey, strippedPromptCacheBreakpoints } =
+      await this.postWithPromptCacheKeyFallback({
+        url: this.responsesEndpoint(),
+        headers: withSessionAffinityHeader(
+          {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: 'text/event-stream'
+          },
+          responseCache
+        ),
+        body,
+        promptCacheBreakpointFallbackBody,
+        signal: options?.signal
+      });
+    if (strippedPromptCacheKey) {
+      enrichedCache = withoutPromptCacheKey(enrichedCache);
+    }
+    if (strippedPromptCacheBreakpoints) {
+      enrichedCache = withoutPromptCacheBreakpoint(enrichedCache);
     }
 
     const streamState = createResponsesStreamParseState();
@@ -3159,13 +3796,15 @@ export class OpenAIProvider implements AIProvider {
       }
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
+      if (parsed.raw_parts?.length) result.raw_parts = parsed.raw_parts;
       attachPromptCacheUsage(result, enrichedCache);
       if (
         result.content ||
         result.reasoning ||
         result.response_id ||
         result.usage ||
-        result.tool_calls
+        result.tool_calls ||
+        result.raw_parts
       ) {
         yield result;
       }
@@ -3182,12 +3821,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
-    const enrichedCache = resolvePromptCacheContext(
-      options?.responseCache,
+    const responseCache = this.resolveCallResponseCache(options?.responseCache);
+    let enrichedCache = resolvePromptCacheContext(
+      responseCache,
       prompt,
       systemInstruction,
       tools ?? [],
-      'anthropic',
+      'anthropic'
     );
     const body = {
       ...buildMessagesApiBody(
@@ -3196,25 +3836,26 @@ export class OpenAIProvider implements AIProvider {
         tools ?? [],
         systemInstruction,
         this.reasoningEffort,
-        options?.responseCache
+        responseCache
       ),
       stream: true
     };
 
-    const response = await fetch(this.messagesEndpoint(), {
-      method: 'POST',
-      headers: {
-        ...this.messagesApiHeaders(),
-        Accept: 'text/event-stream'
-      },
-      body: JSON.stringify(body),
-      dispatcher: this.dispatcher,
-      signal: options?.signal
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
+    const { response, strippedPromptCacheKey, strippedPromptCacheBreakpoints } =
+      await this.postWithPromptCacheKeyFallback({
+        url: this.messagesEndpoint(),
+        headers: {
+          ...this.messagesApiHeaders(responseCache),
+          Accept: 'text/event-stream'
+        },
+        body,
+        signal: options?.signal
+      });
+    if (strippedPromptCacheKey) {
+      enrichedCache = withoutPromptCacheKey(enrichedCache);
+    }
+    if (strippedPromptCacheBreakpoints) {
+      enrichedCache = withoutPromptCacheBreakpoint(enrichedCache);
     }
 
     const messagesStreamState = createMessagesStreamParseState();
@@ -3468,7 +4109,7 @@ export function createAIProvider(config: any, dispatcher?: any): AIProvider | nu
         model,
         dispatcher,
         config.thinkingConfig,
-        config.builtinSearch === 'full' ? 'full' : 'off',
+        config.builtinSearch === 'full' ? 'full' : 'off'
       );
     default:
       return null;

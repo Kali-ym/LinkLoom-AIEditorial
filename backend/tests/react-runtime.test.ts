@@ -1095,4 +1095,73 @@ describe('ReActRuntime', () => {
       name: 'ask_user_question'
     });
   });
+
+  it('preserves prompt_cache usage when a trailing stream chunk only carries governance metadata', async () => {
+    const toolRegistry = ToolRegistry.getInstance();
+    const testTools = [new EchoReactTestTool()];
+    for (const tool of testTools) {
+      toolRegistry.registerTool(tool as BaseTool);
+    }
+
+    const substantiveUsage: AIResponse['usage'] = {
+      prompt_tokens: 6089,
+      completion_tokens: 42,
+      total_tokens: 6131,
+      prompt_cache: {
+        cacheStatus: 'hit',
+        cachedInputTokens: 5632,
+        cacheWriteInputTokens: 0,
+        uncachedInputTokens: 457,
+        requested: true,
+        eligible: true
+      }
+    };
+    const governanceOnlyUsage: AIResponse['usage'] = {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      governance: {
+        budget: {
+          cumulative: {
+            cachedInputTokens: 5632,
+            promptTokens: 6089
+          }
+        }
+      }
+    };
+
+    const runtime = new ReActRuntime({
+      agentDef: createAgent({ mode: 'react', maxRounds: 1, returnTrace: true }),
+      provider: {
+        name: 'test-stream-provider',
+        async *streamContent() {
+          yield { content: 'hello' };
+          yield { usage: substantiveUsage };
+          yield { content: '', response_id: 'resp_trailing', usage: governanceOnlyUsage };
+        }
+      },
+      tools: testTools,
+      mcpConfigs: [],
+      mcpService: { callTool: async () => ({}) } as any,
+      toolRegistry,
+      messages: [{ role: 'user', content: 'stream cache test' }],
+      silent: true
+    });
+
+    const chunks: unknown[] = [];
+    for await (const chunk of runtime.stream()) {
+      chunks.push(chunk);
+    }
+
+    const finalContent = chunks.find(
+      (chunk) =>
+        !!chunk &&
+        typeof chunk === 'object' &&
+        (chunk as { type?: string }).type === 'final_content'
+    ) as { usage?: AIResponse['usage']; budget?: { cachedInputTokens?: number } } | undefined;
+
+    expect(finalContent?.usage?.prompt_cache?.cachedInputTokens).toBe(5632);
+    expect(finalContent?.usage?.prompt_cache?.cacheStatus).toBe('hit');
+    expect(finalContent?.budget?.cachedInputTokens).toBe(5632);
+  });
 });

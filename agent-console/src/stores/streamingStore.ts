@@ -25,6 +25,8 @@ export interface ActiveRunContext {
   runId: string;
   permissionId?: string;
   hitlRequestId?: string;
+  /** LLM tool_call id; for askUserQuestion this often differs from hitlRequestId. */
+  toolCallId?: string;
   lastEventSeq?: number;
 }
 
@@ -88,6 +90,7 @@ export function mergeRunContextForTopic(
     runId,
     permissionId: topicCtx?.permissionId ?? activeRunContext?.permissionId,
     hitlRequestId: topicCtx?.hitlRequestId ?? activeRunContext?.hitlRequestId,
+    toolCallId: topicCtx?.toolCallId ?? activeRunContext?.toolCallId,
   };
 }
 
@@ -297,8 +300,16 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
 
   recordPendingApprovalContext: (topicId, context) =>
     set((s) => {
+      const previous = s.pendingApprovalContextByTopicId[topicId];
+      const sameRun = previous?.runId && previous.runId === context.runId;
       const lastEventSeq = context.lastEventSeq ?? s.lastEventSeqByRunId[context.runId] ?? 0;
-      const merged = { ...context, lastEventSeq };
+      const merged: ActiveRunContext = {
+        runId: context.runId,
+        permissionId: context.permissionId ?? (sameRun ? previous?.permissionId : undefined),
+        hitlRequestId: context.hitlRequestId ?? (sameRun ? previous?.hitlRequestId : undefined),
+        toolCallId: context.toolCallId ?? (sameRun ? previous?.toolCallId : undefined),
+        lastEventSeq,
+      };
       return {
         streamsByTopicId: patchTopicRuntime(s.streamsByTopicId, topicId, { activeRunContext: merged }),
         pendingApprovalContextByTopicId: {

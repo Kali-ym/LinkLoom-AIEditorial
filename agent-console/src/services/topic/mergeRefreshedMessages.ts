@@ -193,14 +193,22 @@ function mergeLocalTurnSegments(local: Message, merged: Message): Message {
   return { ...merged, turnSegments };
 }
 
-function userMatchKey(message: Message): string {
-  return `${message.content.trim()}::${message.createdAt?.slice(0, 16) ?? ''}`;
-}
-
 function messageTimestamp(message: Message): number | undefined {
   if (!message.createdAt) return undefined;
   const timestamp = Date.parse(message.createdAt);
   return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+/** Optimistic u-* bubbles and API copies can drift by minutes across a slow tool turn. */
+const USER_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+
+function isNearDuplicateUser(a: Message, b: Message): boolean {
+  if (a.role !== 'user' || b.role !== 'user') return false;
+  if (a.content.trim() !== b.content.trim() || !a.content.trim()) return false;
+  const ta = messageTimestamp(a);
+  const tb = messageTimestamp(b);
+  if (ta === undefined || tb === undefined) return true;
+  return Math.abs(ta - tb) <= USER_DEDUP_WINDOW_MS;
 }
 
 /**
@@ -246,7 +254,7 @@ function removeRefreshedCopiesOfOptimisticUsers(
     // A persisted copy normally has a nearly identical timestamp. The
     // generous bound only covers slow tool runs; repeated questions remain
     // separate once they are farther apart than one turn.
-    if (bestIndex >= 0 && (bestDistance <= 10 * 60 * 1000 || !Number.isFinite(bestDistance))) {
+    if (bestIndex >= 0 && (bestDistance <= USER_DEDUP_WINDOW_MS || !Number.isFinite(bestDistance))) {
       matchedLocalIndexes.add(bestIndex);
       continue;
     }
@@ -261,14 +269,13 @@ export function preserveMissingLocalUserMessages(merged: Message[], localMessage
   if (localMessages.length === 0) return merged;
 
   const mergedIds = new Set(merged.map((message) => message.id));
-  const remoteUserKeys = new Set(
-    merged.filter((message) => message.role === 'user').map(userMatchKey),
-  );
 
   const missingUsers = localMessages.filter((message) => {
     if (message.role !== 'user' || !message.content.trim()) return false;
     if (mergedIds.has(message.id)) return false;
-    if (remoteUserKeys.has(userMatchKey(message))) return false;
+    // Same content+time window as removeRefreshedCopiesOfOptimisticUsers —
+    // do not re-insert an optimistic bubble whose API copy already survived.
+    if (merged.some((peer) => isNearDuplicateUser(peer, message))) return false;
     return true;
   });
 
@@ -302,6 +309,64 @@ export function preserveMissingLocalUserMessages(merged: Message[], localMessage
     mergedIds.add(user.id);
   }
 
+  return result;
+}
+
+/**
+ * Place orphan local assistants after their preceding user turn instead of
+ * blindly appending (which reorders paused askUserQuestion below newer turns).
+ */
+function placeTrailingAssistants(
+  merged: Message[],
+  localMessages: Message[],
+  trailingAssistants: Message[],
+): Message[] {
+  if (trailingAssistants.length === 0) return merged;
+
+  const result = [...merged];
+  for (const assistant of trailingAssistants) {
+    if (result.some((message) => message.id === assistant.id)) continue;
+
+    const localIdx = localMessages.findIndex((message) => message.id === assistant.id);
+    const precedingUser =
+      localIdx > 0
+        ? [...localMessages.slice(0, localIdx)].reverse().find((message) => message.role === 'user')
+        : undefined;
+
+    let insertAt = result.length;
+    if (precedingUser) {
+      const userIdx = result.findIndex(
+        (message) =>
+          message.id === precedingUser.id || isNearDuplicateUser(message, precedingUser),
+      );
+      if (userIdx >= 0) {
+        insertAt = userIdx + 1;
+        while (insertAt < result.length && result[insertAt]?.role === 'assistant') {
+          const peerLocalIdx = localMessages.findIndex(
+            (message) => message.id === result[insertAt]!.id,
+          );
+          if (peerLocalIdx >= 0 && localIdx >= 0 && peerLocalIdx < localIdx) {
+            insertAt += 1;
+            continue;
+          }
+          break;
+        }
+      } else {
+        const followingUser = localMessages
+          .slice(localIdx + 1)
+          .find((message) => message.role === 'user');
+        if (followingUser) {
+          const followingIdx = result.findIndex(
+            (message) =>
+              message.id === followingUser.id || isNearDuplicateUser(message, followingUser),
+          );
+          if (followingIdx >= 0) insertAt = followingIdx;
+        }
+      }
+    }
+
+    result.splice(insertAt, 0, assistant);
+  }
   return result;
 }
 
@@ -381,8 +446,11 @@ export function mergeRefreshedMessages(localMessages: Message[], apiMessages: Me
         Boolean(message.content?.trim()) ||
         hasAssistantTools(message)),
   );
-  const withTrailingAssistants =
-    trailingAssistants.length === 0 ? merged : [...merged, ...trailingAssistants];
+  const withTrailingAssistants = placeTrailingAssistants(
+    merged,
+    localMessages,
+    trailingAssistants,
+  );
   return preserveMissingLocalUserMessages(
     removeRefreshedCopiesOfOptimisticUsers(withTrailingAssistants, localMessages),
     localMessages,

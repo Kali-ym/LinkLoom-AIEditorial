@@ -26,6 +26,11 @@ export type PromptCacheDiagnosticCall = {
   endpoint?: string;
   timestampMs?: number;
   turnContextFingerprint?: string;
+  stablePrefixHash?: string;
+  cacheKeyPresent?: boolean;
+  cacheEligibility?: boolean;
+  cacheDisableReason?: string;
+  ephemeralMessageCount?: number;
   sourceErrors?: Array<{ source: string; code: string }>;
   conversionDiagnostics?: string[];
   /** True when this call followed a context compaction / summary rewrite. */

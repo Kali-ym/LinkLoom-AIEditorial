@@ -145,3 +145,17 @@ function canonicalizeToolCall(value: unknown): CanonicalToolCall {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
+
+export function stampCanonicalToolMessageVersion(message: AIMessage): AIMessage {
+  if (message.role === 'tool') {
+    return { ...message, canonical_message_version: CANONICAL_MESSAGE_SERIALIZATION_VERSION };
+  }
+  if (
+    message.role === 'assistant' &&
+    Array.isArray(message.tool_calls) &&
+    message.tool_calls.length > 0
+  ) {
+    return { ...message, canonical_message_version: CANONICAL_MESSAGE_SERIALIZATION_VERSION };
+  }
+  return message;
+}

@@ -88,22 +88,29 @@ export function selectPendingInterventionsFromStreaming(
   return selectPendingInterventions([pseudoMessage]);
 }
 
+function runContextInterventionRefs(
+  runContext: Pick<ActiveRunContext, 'permissionId' | 'hitlRequestId' | 'toolCallId'> | null,
+): string[] {
+  if (!runContext) return [];
+  return [runContext.permissionId, runContext.hitlRequestId, runContext.toolCallId].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+}
+
 /** Fallback when run context has permissionId but message state was overwritten by API error. */
 export function selectPendingInterventionsFromRunContext(
   messages: Message[],
   runContext: ActiveRunContext | null,
 ): PendingIntervention[] {
-  if (!runContext?.permissionId && !runContext?.hitlRequestId) return [];
-
-  const ref = runContext.permissionId ?? runContext.hitlRequestId;
-  if (!ref) return [];
+  const refs = runContextInterventionRefs(runContext);
+  if (refs.length === 0) return [];
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role !== 'assistant') continue;
 
     for (const tool of collectToolsFromMessage(msg)) {
-      if (!matchesToolReference(tool, ref)) continue;
+      if (!refs.some((ref) => matchesToolReference(tool, ref))) continue;
       if (isToolAwaitingIntervention(tool)) {
         const pending = pendingFromTool(msg, tool);
         if (pending) return [pending];
@@ -134,7 +141,7 @@ export function selectPendingInterventionsFromRunContext(
 export function selectAllPendingInterventions(
   messages: Message[],
   streaming: StreamingMessage | null,
-  runContext: Pick<ActiveRunContext, 'permissionId' | 'hitlRequestId'> | null,
+  runContext: Pick<ActiveRunContext, 'permissionId' | 'hitlRequestId' | 'toolCallId'> | null,
 ): PendingIntervention[] {
   const fromMessages = selectPendingInterventions(messages);
   const fromStreaming = selectPendingInterventionsFromStreaming(streaming);
@@ -149,16 +156,20 @@ export function selectAllPendingInterventions(
 
   const activePermissionId = runContext?.permissionId;
   const activeHitlRequestId = runContext?.hitlRequestId;
+  const activeToolCallId = runContext?.toolCallId;
+  const hasActiveHitlRef = Boolean(activeHitlRequestId || activeToolCallId);
   const matchesActiveRunContext = (item: PendingIntervention): boolean => {
     if (activePermissionId) return item.permissionId === activePermissionId;
-    if (activeHitlRequestId) return item.toolCallId === activeHitlRequestId;
+    if (hasActiveHitlRef) {
+      return item.toolCallId === activeHitlRequestId || item.toolCallId === activeToolCallId;
+    }
     return true;
   };
 
   const contextual = merged.filter(matchesActiveRunContext);
   if (contextual.length > 0) return contextual;
   if (merged.length > 0) {
-    if (activePermissionId || activeHitlRequestId) {
+    if (activePermissionId || hasActiveHitlRef) {
       const freshestPermission = [...merged].reverse().find((item) => item.permissionId)?.permissionId;
       if (freshestPermission && freshestPermission !== activePermissionId) {
         return merged.filter((item) => item.permissionId === freshestPermission);
@@ -168,7 +179,7 @@ export function selectAllPendingInterventions(
     return merged;
   }
 
-  if (!activePermissionId && !activeHitlRequestId) return [];
+  if (!activePermissionId && !hasActiveHitlRef) return [];
 
   const candidates: Message[] = [...messages];
   if (streaming?.segments?.length) {
@@ -193,5 +204,6 @@ export function selectAllPendingInterventions(
     runId: '',
     permissionId: runContext.permissionId,
     hitlRequestId: runContext.hitlRequestId,
+    toolCallId: runContext.toolCallId,
   });
 }

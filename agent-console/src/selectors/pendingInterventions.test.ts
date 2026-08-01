@@ -134,4 +134,44 @@ describe('mock intervention smoke (M2)', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0]?.toolCallId).toBe(activeToolCallId);
   });
+
+  it('matches askUserQuestion when hitlRequestId differs from toolCallId', () => {
+    const toolCallId = 'tc_ask_1';
+    const hitlRequestId = 'hitl-ask-1';
+    const messages = [
+      {
+        id: 'assistant-ask',
+        role: 'assistant' as const,
+        content: '',
+        createdAt: new Date().toISOString(),
+        turnSegments: [
+          {
+            kind: 'tool' as const,
+            id: 'seg-ask',
+            tool: {
+              id: toolCallId,
+              toolCallId,
+              apiName: 'askUserQuestion',
+              identifier: 'linkloom-user-interaction',
+              hitlKind: 'needs_input' as const,
+              intervention: { status: 'pending' as const },
+              state: 'executing' as const,
+            },
+          },
+        ],
+      },
+    ];
+
+    const pending = selectAllPendingInterventions(messages, null, {
+      hitlRequestId,
+      toolCallId,
+    });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.toolCallId).toBe(toolCallId);
+
+    const missed = selectAllPendingInterventions(messages, null, {
+      hitlRequestId,
+    });
+    expect(missed).toHaveLength(0);
+  });
 });

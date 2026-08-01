@@ -39,12 +39,28 @@ export function rehydratePersistedMessages(
   };
 }
 
+/**
+ * Request-only tool_calls (id/name/arguments) are fine for prompt-cache.
+ * Result-bearing records are cache-safe when content or canonicalMessageContent
+ * is present; only structured payloads without a replayable string are legacy.
+ */
+export function isLegacyResultBearingToolCall(toolCall: unknown): boolean {
+  if (!toolCall || typeof toolCall !== 'object') return true;
+  const record = toolCall as Record<string, unknown>;
+  if (typeof record.canonicalMessageContent === 'string') return false;
+  if (typeof record.content === 'string' && record.content.trim()) return false;
+
+  return (
+    record.data !== undefined ||
+    typeof record.error === 'string' ||
+    record.success === true ||
+    record.success === false
+  );
+}
+
 function countLegacyToolMessages(message: AgentMessage): number {
   if (message.role !== 'assistant') return 0;
   const toolCalls = message.metadata?.toolCalls;
   if (!Array.isArray(toolCalls)) return 0;
-  return toolCalls.filter((toolCall) => {
-    if (!toolCall || typeof toolCall !== 'object') return true;
-    return typeof (toolCall as Record<string, unknown>).canonicalMessageContent !== 'string';
-  }).length;
+  return toolCalls.filter((toolCall) => isLegacyResultBearingToolCall(toolCall)).length;
 }

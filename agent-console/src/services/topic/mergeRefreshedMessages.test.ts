@@ -442,4 +442,77 @@ describe('mergeRefreshedMessages', () => {
     expect(merged.filter((message) => message.role === 'user')).toHaveLength(1);
     expect(merged[0]?.content).toBe('你是什么模型');
   });
+
+  it('keeps paused askUser assistant before a newer superseded user turn', () => {
+    const local: Message[] = [
+      {
+        id: 'u-ask',
+        role: 'user',
+        content: '问我一个问题',
+        createdAt: '2026-06-29T08:00:00.000Z',
+      },
+      {
+        id: 'a-paused-ask',
+        role: 'assistant',
+        content: '',
+        createdAt: '2026-06-29T08:00:05.000Z',
+        turnSegments: [
+          {
+            kind: 'tool',
+            id: 'tc_ask_1',
+            tool: {
+              id: 'tc_ask_1',
+              toolCallId: 'tc_ask_1',
+              apiName: 'askUserQuestion',
+              identifier: 'linkloom-user-interaction',
+              state: 'executing',
+              intervention: { status: 'pending' },
+              hitlKind: 'needs_input',
+            },
+          },
+        ],
+      },
+      {
+        id: 'u-new',
+        role: 'user',
+        content: '写个文件',
+        createdAt: '2026-06-29T08:01:00.000Z',
+      },
+      {
+        id: 'a-new',
+        role: 'assistant',
+        content: '好的',
+        createdAt: '2026-06-29T08:01:05.000Z',
+      },
+    ];
+    const api: Message[] = [
+      {
+        id: 'run-ask:input:0',
+        role: 'user',
+        content: '问我一个问题',
+        createdAt: '2026-06-29T08:00:00.000Z',
+      },
+      {
+        id: 'run-new:input:0',
+        role: 'user',
+        content: '写个文件',
+        createdAt: '2026-06-29T08:01:00.000Z',
+      },
+      {
+        id: 'a-new',
+        role: 'assistant',
+        content: '好的',
+        createdAt: '2026-06-29T08:01:05.000Z',
+      },
+    ];
+
+    const merged = mergeRefreshedMessages(local, api);
+    const roles = merged.map((message) => `${message.role}:${message.content || message.id}`);
+    expect(roles).toEqual([
+      'user:问我一个问题',
+      'assistant:a-paused-ask',
+      'user:写个文件',
+      'assistant:好的',
+    ]);
+  });
 });

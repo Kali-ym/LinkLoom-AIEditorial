@@ -441,6 +441,12 @@ function attachGovernanceMetadata(
     candidateKeys: string[];
   }
 ): AIResponse {
+  // Streaming providers often emit a trailing response_id-only chunk after
+  // response.completed. Do not synthesize zero-token usage for those chunks;
+  // downstream runtimes would otherwise overwrite prompt_cache-bearing usage.
+  if (!response.usage) {
+    return response;
+  }
   const usage = normalizeUsage(response.usage);
   const cost = resolveCost(usage, input.candidate.cost, response.usage);
   const nextUsage: AIUsage = {

@@ -114,13 +114,20 @@ export const DesktopChatInput = memo(function DesktopChatInput({
     const runtimeCtx = s.streamsByTopicId[activeTopicId]?.activeRunContext;
     return topicCtx?.hitlRequestId ?? runtimeCtx?.hitlRequestId;
   });
+  const pendingToolCallId = useStreamingStore((s) => {
+    if (!activeTopicId) return undefined;
+    const topicCtx = s.pendingApprovalContextByTopicId[activeTopicId];
+    const runtimeCtx = s.streamsByTopicId[activeTopicId]?.activeRunContext;
+    return topicCtx?.toolCallId ?? runtimeCtx?.toolCallId;
+  });
   const pendingInterventions = useMemo(
     () =>
       selectAllPendingInterventions(messages, streamingMessage, {
         permissionId: pendingPermissionId,
         hitlRequestId: pendingHitlRequestId,
+        toolCallId: pendingToolCallId,
       }),
-    [messages, streamingMessage, pendingPermissionId, pendingHitlRequestId],
+    [messages, streamingMessage, pendingPermissionId, pendingHitlRequestId, pendingToolCallId],
   );
   const hasPendingInterventions = pendingInterventions.length > 0;
   const featureSlash = useInputStore((s) => s.featureSlash);

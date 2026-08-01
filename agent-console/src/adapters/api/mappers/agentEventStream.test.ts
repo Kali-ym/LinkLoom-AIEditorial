@@ -287,7 +287,12 @@ describe('mapAgentEventToChatStreamEvents', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({
       type: 'hitl_context',
-      data: { runId: 'run-exec', permissionId: 'perm-exec-1', hitlRequestId: undefined },
+      data: {
+        runId: 'run-exec',
+        permissionId: 'perm-exec-1',
+        hitlRequestId: undefined,
+        toolCallId: undefined,
+      },
     });
     expect(events[1]).toEqual({
       type: 'tool_calls',
@@ -486,6 +491,15 @@ describe('mapAgentEventToChatStreamEvents', () => {
     });
 
     expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      type: 'hitl_context',
+      data: {
+        runId: 'run-ask',
+        permissionId: undefined,
+        hitlRequestId: 'hitl-ask-1',
+        toolCallId: 'tc_ask_1',
+      },
+    });
     expect(events[1]).toEqual({
       type: 'tool_calls',
       tools: [
@@ -521,7 +535,12 @@ describe('mapAgentEventToChatStreamEvents', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({
       type: 'hitl_context',
-      data: { runId: 'run-1', permissionId: undefined, hitlRequestId: 'hitl-1' },
+      data: {
+        runId: 'run-1',
+        permissionId: undefined,
+        hitlRequestId: 'hitl-1',
+        toolCallId: undefined,
+      },
     });
     expect(events[1]).toEqual({
       type: 'tool_calls',

@@ -52,7 +52,11 @@ import type {
 import { createObservationPolicyTracker } from '../engine/ObservationPolicy.js';
 import type { AIMessage, AIResponse } from '../../../types/index.js';
 import type { AIProvider } from '../../AIProvider.js';
-import type { ResponseCacheRequest } from '../engine/responseContextCache.js';
+import {
+  buildPromptCacheReplayHistoryMetadata,
+  extractPromptCacheReplayContext,
+  type ResponseCacheRequest
+} from '../engine/responseContextCache.js';
 import { LogService } from '../../LogService.js';
 import { emitPacedStreamChunks } from './streamTextChunks.js';
 import {
@@ -581,6 +585,21 @@ function extractProviderGovernanceMetadata(usage: unknown): Record<string, any> 
     : undefined;
 }
 
+function isSubstantiveProviderUsage(usage: AIResponse['usage'] | undefined): boolean {
+  if (!usage || typeof usage !== 'object') return false;
+  const record = usage as Record<string, unknown>;
+  const promptTokens = Number(record.prompt_tokens ?? record.input_tokens ?? 0);
+  if (promptTokens > 0) return true;
+  const promptCache =
+    record.prompt_cache && typeof record.prompt_cache === 'object'
+      ? (record.prompt_cache as Record<string, unknown>)
+      : undefined;
+  if (Number(promptCache?.cachedInputTokens ?? 0) > 0) return true;
+  if (Number(record.cached_tokens ?? 0) > 0) return true;
+  if (Number(record.cache_read_input_tokens ?? 0) > 0) return true;
+  return false;
+}
+
 function toRoundProviderTrace(governance: Record<string, any>): AgentRunRound['provider'] {
   return {
     providerId:
@@ -769,6 +788,7 @@ export class ReActRuntime {
   private readonly contextManager = new DefaultContextManager();
   private readonly contextBuilder = new AgentContextBuilder(this.contextManager);
   private lastProviderResponseId?: string;
+  private lastProviderRequestMessages?: AIMessage[];
   private lastCompactionFingerprint?: string;
 
   constructor(private readonly options: ReActRuntimeOptions) {}
@@ -788,6 +808,16 @@ export class ReActRuntime {
     return this.lastProviderResponseId;
   }
 
+  /**
+   * Return only the current turn's request-only context. The canonical
+   * trajectory is persisted normally; this small hidden metadata is replayed
+   * before the next run's assistant/tool suffix to preserve the prior prefix.
+   */
+  getPromptCacheReplayContext(): AIMessage[] {
+    if (!this.lastProviderRequestMessages) return [];
+    return extractPromptCacheReplayContext(this.lastProviderRequestMessages, this.options.messages);
+  }
+
   private isCancelled(): boolean {
     return this.options.signal?.aborted === true;
   }
@@ -802,6 +832,14 @@ export class ReActRuntime {
       String(record.message || '')
         .toLowerCase()
         .includes('abort')
+    );
+  }
+
+  getPromptCacheReplayHistory(): Record<string, unknown> | undefined {
+    if (!this.lastProviderRequestMessages) return undefined;
+    return buildPromptCacheReplayHistoryMetadata(
+      this.lastProviderRequestMessages,
+      this.options.messages
     );
   }
 
@@ -1672,6 +1710,7 @@ export class ReActRuntime {
       let roundContent = '';
       let roundReasoning = '';
       let roundUsage: AIResponse['usage'] | undefined;
+      let roundRawParts: AIResponse['raw_parts'];
       let roundProvider: AgentRunRound['provider'] | undefined;
       let roundBudget: AgentRunRound['budget'] | undefined;
       const toolCallState = new Map<string, StreamToolCallAccumulator>();
@@ -1683,12 +1722,17 @@ export class ReActRuntime {
             return;
           }
           const governance = extractProviderGovernanceMetadata(chunk.usage);
-          if (chunk.usage) roundUsage = chunk.usage;
+          if (chunk.usage && isSubstantiveProviderUsage(chunk.usage)) {
+            roundUsage = chunk.usage;
+          }
           if (governance) {
             roundProvider = toRoundProviderTrace(governance);
             roundBudget = toRoundBudgetTrace(governance);
           }
           this.captureProviderResponseId(chunk);
+          if (chunk.raw_parts?.length) {
+            roundRawParts = chunk.raw_parts;
+          }
           if (chunk.reasoning) {
             roundReasoning += chunk.reasoning;
             for await (const piece of emitPacedStreamChunks(chunk.reasoning)) {
@@ -1750,7 +1794,8 @@ export class ReActRuntime {
         result: {
           content: roundContent,
           tool_calls: compactStreamToolCalls(toolCallState),
-          usage: roundUsage
+          usage: roundUsage,
+          raw_parts: roundRawParts
         }
       });
 
@@ -1833,7 +1878,8 @@ export class ReActRuntime {
           scheduledToolCalls.length > 0
             ? scheduledToolCalls.map((item) => item.toolCall)
             : undefined,
-        reasoning: roundReasoning.trim() || undefined
+        reasoning: roundReasoning.trim() || undefined,
+        raw_parts: roundRawParts
       });
 
       if (scheduledToolCalls.length > 0) {
@@ -2446,9 +2492,16 @@ export class ReActRuntime {
     });
     const toolErrorCount = (input.toolFailureCounts.get(toolErrorSignature) || 0) + 1;
     input.toolFailureCounts.set(toolErrorSignature, toolErrorCount);
+    // A policy denial is an observation for the model, not a terminal runtime
+    // failure. Let the next round choose a non-network fallback instead of
+    // ending the run before the provider can see the denial.
+    const policyObservation =
+      input.envelope?.error?.code === 'sandbox_denied' &&
+      input.envelope.sandbox?.code === 'network_disabled';
     const nonRetryable =
       input.envelope?.error?.retryable === false &&
-      input.envelope.error.code !== 'validation_error';
+      input.envelope.error.code !== 'validation_error' &&
+      !policyObservation;
     if (
       nonRetryable ||
       (input.stopOnRepeatedToolError &&
@@ -2870,6 +2923,7 @@ export class ReActRuntime {
         result.compacted,
         requestContext.systemInstruction
       );
+      this.lastProviderRequestMessages = structuredClone(requestContext.messages);
 
       return {
         messages: requestContext.messages,
@@ -2882,6 +2936,7 @@ export class ReActRuntime {
 
     const modelMessages = result.compacted ? messages : result.messages;
     const snapshot = await this.measureContextUsage(modelMessages, roundIndex, result.compacted);
+    this.lastProviderRequestMessages = structuredClone(modelMessages);
     return {
       messages: modelMessages,
       providerTools: this.options.providerTools ?? this.options.tools,
