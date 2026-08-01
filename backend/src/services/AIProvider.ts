@@ -26,6 +26,26 @@ import {
 } from './agents/engine/responseContextCache.js';
 import { LogService } from './LogService.js';
 import type { GeminiBuiltinSearchMode } from './agents/search/types.js';
+import {
+  normalizeApiMessageContent,
+  toChatCompletionsApiMessages,
+  toMessagesApiMessages,
+  toMessagesApiTools,
+  toOpenAIApiTools,
+  toResponsesApiInputItems,
+  toResponsesApiMessageContent,
+  toResponsesApiTools,
+} from './agents/context/LlmMessageConverter.js';
+
+export {
+  normalizeApiMessageContent,
+  toChatCompletionsApiMessages,
+  toMessagesApiMessages,
+  toMessagesApiTools,
+  toResponsesApiInputItems,
+  toResponsesApiMessageContent,
+  toResponsesApiTools,
+};
 
 export type AIProviderCallOptions = {
   signal?: AbortSignal;
@@ -532,101 +552,6 @@ function stableToolArguments(value: unknown): string {
   }
 }
 
-function normalizeUserContentPart(part: unknown): Record<string, unknown> | null {
-  if (typeof part === 'string') {
-    const text = part.trim();
-    return text ? { type: 'text', text } : null;
-  }
-  if (!part || typeof part !== 'object') return null;
-  const record = part as Record<string, unknown>;
-  if (record.type === 'text' && typeof record.text === 'string') {
-    return { type: 'text', text: record.text };
-  }
-  if (record.type === 'image_url') {
-    const imageUrl = record.image_url;
-    if (typeof imageUrl === 'string' && imageUrl.trim()) {
-      return { type: 'image_url', image_url: { url: imageUrl } };
-    }
-    if (imageUrl && typeof imageUrl === 'object') {
-      const url = (imageUrl as Record<string, unknown>).url;
-      if (typeof url === 'string' && url.trim()) {
-        const detail = (imageUrl as Record<string, unknown>).detail;
-        return {
-          type: 'image_url',
-          image_url: {
-            url,
-            ...(detail === 'auto' || detail === 'low' || detail === 'high' ? { detail } : {}),
-          },
-        };
-      }
-    }
-  }
-  return null;
-}
-
-export function normalizeApiMessageContent(
-  content: unknown,
-  role: string,
-): string | Array<Record<string, unknown>> {
-  if (role === 'assistant') return normalizeRuntimeMessageContent(content);
-  if (typeof content === 'string') return content;
-  if (content == null) return '';
-  if (Array.isArray(content)) {
-    const parts = content
-      .map((part) => normalizeUserContentPart(part))
-      .filter((part): part is Record<string, unknown> => part != null);
-    if (parts.some((part) => part.type === 'image_url') && role === 'user') {
-      return parts;
-    }
-    return parts
-      .filter((part) => part.type === 'text' && typeof part.text === 'string')
-      .map((part) => part.text as string)
-      .join('\n\n');
-  }
-  try {
-    return JSON.stringify(content);
-  } catch {
-    return String(content);
-  }
-}
-
-function parseDataImageUrl(url: string | undefined): { mime: string; data: string } | null {
-  if (!url) return null;
-  const match = /^data:([^;]+);base64,(.+)$/i.exec(url.trim());
-  if (!match) return null;
-  return { mime: match[1], data: match[2] };
-}
-
-function toAnthropicMessageContent(
-  content: AIMessage['content'],
-): string | Array<Record<string, unknown>> {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return content == null ? '' : String(content);
-
-  const blocks: Array<Record<string, unknown>> = [];
-  for (const part of content) {
-    if (part.type === 'text' && part.text) {
-      blocks.push({ type: 'text', text: part.text });
-      continue;
-    }
-    if (part.type !== 'image_url') continue;
-    const url =
-      typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
-    const parsed = parseDataImageUrl(url);
-    if (!parsed) continue;
-    blocks.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: parsed.mime,
-        data: parsed.data,
-      },
-    });
-  }
-
-  return blocks.length > 0 ? blocks : '';
-}
-
 /** Normalize a system-role message content into a plain string (system
  *  messages never carry image parts, so the array branch of
  *  normalizeApiMessageContent is irrelevant here). */
@@ -764,85 +689,6 @@ function toOpenAIApiMessages(
   systemInstruction?: string,
 ): Array<Record<string, unknown>> {
   return toChatCompletionsApiMessages(prompt, systemInstruction);
-}
-
-function toChatCompletionsUserContent(
-  content: AIMessage['content'],
-): string | Array<Record<string, unknown>> {
-  const normalized = normalizeApiMessageContent(content, 'user');
-  if (typeof normalized === 'string' || Array.isArray(normalized)) {
-    return normalized;
-  }
-  return normalized == null ? '' : String(normalized);
-}
-
-/** Chat Completions `/v1/chat/completions` messages array for multi-turn tool runs. */
-export function toChatCompletionsApiMessages(
-  prompt: string | AIMessage[],
-  systemInstruction?: string,
-  options?: { keepHistoryReasoning?: boolean },
-): Array<Record<string, unknown>> {
-  const messages: Array<Record<string, unknown>> = [];
-  const keepReasoning = options?.keepHistoryReasoning === true;
-  if (systemInstruction) {
-    messages.push({ role: 'system', content: systemInstruction });
-  }
-  if (typeof prompt === 'string') {
-    messages.push({ role: 'user', content: prompt });
-    return messages;
-  }
-
-  for (const message of prompt) {
-    if (message.role === 'system') continue;
-
-    if (message.role === 'assistant') {
-      const text = normalizeApiMessageContent(message.content, 'assistant');
-      const textContent = typeof text === 'string' ? text : '';
-      const hasToolCalls = (message.tool_calls?.length ?? 0) > 0;
-      const msg: Record<string, unknown> = {
-        role: 'assistant',
-        content: hasToolCalls && !textContent ? null : textContent,
-      };
-
-      if (keepReasoning && message.reasoning?.trim()) {
-        msg.reasoning_content = message.reasoning.trim();
-      }
-
-      if (hasToolCalls) {
-        msg.tool_calls = message.tool_calls!.map((toolCall) => ({
-          id: toolCall.id,
-          type: 'function',
-          function: {
-            name: toolCall.name,
-            arguments: stableToolArguments(toolCall.arguments),
-          },
-        }));
-      }
-
-      messages.push(msg);
-      continue;
-    }
-
-    if (message.role === 'tool') {
-      const toolContent = normalizeApiMessageContent(message.content, 'tool');
-      messages.push({
-        role: 'tool',
-        tool_call_id: message.tool_call_id || message.name || 'tool',
-        ...(message.name ? { name: message.name } : {}),
-        content: typeof toolContent === 'string' ? toolContent : JSON.stringify(toolContent),
-      });
-      continue;
-    }
-
-    if (message.role === 'user') {
-      messages.push({
-        role: 'user',
-        content: toChatCompletionsUserContent(message.content),
-      });
-    }
-  }
-
-  return messages;
 }
 
 export function extractResponsesApiResult(data: Record<string, unknown>): AIResponse {
@@ -1090,142 +936,6 @@ function buildChatCompletionsBody(
   }
   applyReasoningRequestFields(body, reasoningEffort);
   return body;
-}
-
-export function toResponsesApiMessageContent(
-  content: unknown,
-): string | Array<Record<string, unknown>> {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return content == null ? '' : String(content);
-
-  const parts: Array<Record<string, unknown>> = [];
-  for (const part of content) {
-    if (!part || typeof part !== 'object') continue;
-    const record = part as Record<string, unknown>;
-    if (record.type === 'text' && typeof record.text === 'string') {
-      parts.push({ type: 'input_text', text: record.text });
-      continue;
-    }
-    if (record.type === 'image_url') {
-      const imageUrl = record.image_url;
-      const url =
-        typeof imageUrl === 'string'
-          ? imageUrl
-          : imageUrl && typeof imageUrl === 'object'
-            ? (imageUrl as Record<string, unknown>).url
-            : undefined;
-      if (typeof url === 'string' && url.trim()) {
-        const detail =
-          imageUrl && typeof imageUrl === 'object'
-            ? (imageUrl as Record<string, unknown>).detail
-            : undefined;
-        parts.push({
-          type: 'input_image',
-          image_url: url,
-          detail: detail === 'low' || detail === 'high' ? detail : 'auto',
-        });
-      }
-    }
-  }
-
-  return parts.length > 0 ? parts : '';
-}
-
-function toResponsesApiInputMessages(
-  messages: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  return messages.map((message) => ({
-    ...message,
-    content: toResponsesApiMessageContent(message.content),
-  }));
-}
-
-/** Responses API input Items — not Chat Completions `role: tool` messages. */
-export function toResponsesApiInputItems(
-  prompt: string | AIMessage[],
-  options?: { keepHistoryReasoning?: boolean },
-): Array<Record<string, unknown>> {
-  if (typeof prompt === 'string') {
-    return [{ role: 'user', content: toResponsesApiMessageContent(prompt) }];
-  }
-
-  const keepReasoning = options?.keepHistoryReasoning === true;
-
-  const items: Array<Record<string, unknown>> = [];
-
-  for (let index = 0; index < prompt.length; index += 1) {
-    const message = prompt[index]!;
-
-    if (message.role === 'system') continue;
-
-    if (message.role === 'assistant') {
-      if (Array.isArray(message.raw_parts) && message.raw_parts.length > 0) {
-        for (const part of message.raw_parts) {
-          if (part && typeof part === 'object') {
-            items.push(part as Record<string, unknown>);
-          }
-        }
-        continue;
-      }
-
-      if (keepReasoning && message.reasoning?.trim()) {
-        items.push({
-          type: 'reasoning',
-          summary: [{ type: 'summary_text', text: message.reasoning.trim() }],
-        });
-      }
-
-      const text = normalizeApiMessageContent(message.content, 'assistant');
-      const toolCalls = message.tool_calls ?? [];
-
-      if (text) {
-        items.push({
-          role: 'assistant',
-          content: toResponsesApiMessageContent(text),
-        });
-      }
-
-      for (const toolCall of toolCalls) {
-        if (!toolCall || typeof toolCall !== 'object') continue;
-        const record = toolCall as Record<string, unknown>;
-        const callId = typeof record.id === 'string' ? record.id : '';
-        const name = typeof record.name === 'string' ? record.name : '';
-        if (!callId || !name) continue;
-        items.push({
-          type: 'function_call',
-          call_id: callId,
-          name,
-          arguments: stableToolArguments(record.arguments),
-        });
-      }
-      continue;
-    }
-
-    if (message.role === 'tool') {
-      let cursor = index;
-      while (cursor < prompt.length && prompt[cursor]?.role === 'tool') {
-        const toolMessage = prompt[cursor]!;
-        const output = normalizeApiMessageContent(toolMessage.content, 'tool');
-        items.push({
-          type: 'function_call_output',
-          call_id: toolMessage.tool_call_id || toolMessage.name || 'tool',
-          output: typeof output === 'string' ? output : JSON.stringify(output),
-        });
-        cursor += 1;
-      }
-      index = cursor - 1;
-      continue;
-    }
-
-    if (message.role === 'user') {
-      items.push({
-        role: 'user',
-        content: toResponsesApiMessageContent(message.content),
-      });
-    }
-  }
-
-  return items;
 }
 
 function buildResponsesApiBody(
@@ -1502,109 +1212,6 @@ function reasoningEffortToThinkingBudget(effort?: string): number {
     default:
       return 12000;
   }
-}
-
-function toAnthropicApiMessages(prompt: string | AIMessage[]): Array<Record<string, unknown>> {
-  return toMessagesApiMessages(prompt);
-}
-
-/** Anthropic Messages API — preserves tool_use / tool_result blocks for multi-turn tool runs. */
-export function toMessagesApiMessages(
-  prompt: string | AIMessage[],
-  options?: { keepHistoryReasoning?: boolean },
-): Array<Record<string, unknown>> {
-  if (typeof prompt === 'string') {
-    return [{ role: 'user', content: prompt }];
-  }
-
-  const result: Array<Record<string, unknown>> = [];
-  const keepReasoning = options?.keepHistoryReasoning === true;
-
-  for (let index = 0; index < prompt.length; index += 1) {
-    const message = prompt[index]!;
-
-    if (message.role === 'system') continue;
-
-    if (message.role === 'assistant') {
-      const blocks: Array<Record<string, unknown>> = [];
-
-      if (keepReasoning && message.reasoning?.trim()) {
-        blocks.push({ type: 'thinking', thinking: message.reasoning.trim() });
-      }
-
-      const text = normalizeApiMessageContent(message.content, 'assistant');
-      if (text) {
-        blocks.push({ type: 'text', text });
-      }
-
-      for (const toolCall of message.tool_calls ?? []) {
-        if (!toolCall || typeof toolCall !== 'object') continue;
-        const record = toolCall as Record<string, unknown>;
-        const id = typeof record.id === 'string' ? record.id : '';
-        const name = typeof record.name === 'string' ? record.name : '';
-        if (!id || !name) continue;
-        const args = record.arguments;
-        blocks.push({
-          type: 'tool_use',
-          id,
-          name,
-          input:
-            args && typeof args === 'object' && !Array.isArray(args)
-              ? args
-              : tryParseJson(typeof args === 'string' ? args : '{}'),
-        });
-      }
-
-      if (blocks.length === 0) {
-        result.push({ role: 'assistant', content: '' });
-      } else if (blocks.length === 1 && blocks[0]?.type === 'text') {
-        result.push({ role: 'assistant', content: (blocks[0] as { text: string }).text });
-      } else {
-        result.push({ role: 'assistant', content: blocks });
-      }
-      continue;
-    }
-
-    if (message.role === 'tool') {
-      const toolResults: Array<Record<string, unknown>> = [];
-      let cursor = index;
-      while (cursor < prompt.length && prompt[cursor]?.role === 'tool') {
-        const toolMessage = prompt[cursor]!;
-        const toolContent = normalizeApiMessageContent(toolMessage.content, 'tool');
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolMessage.tool_call_id || toolMessage.name || 'tool',
-          content: toolContent || '{}',
-        });
-        cursor += 1;
-      }
-      index = cursor - 1;
-      result.push({ role: 'user', content: toolResults });
-      continue;
-    }
-
-    if (message.role === 'user') {
-      result.push({
-        role: 'user',
-        content: toAnthropicMessageContent(message.content),
-      });
-    }
-  }
-
-  return result;
-}
-
-/** Messages API tools — `{ name, input_schema }` (lobehub `buildAnthropicTools`). */
-export function toMessagesApiTools(tools?: any[]): Array<Record<string, unknown>> | undefined {
-  const normalized = normalizeTools(tools);
-  if (!normalized?.length) return undefined;
-  return normalized.map((tool) => ({
-    name: tool.name,
-    description: tool.description || '',
-    input_schema: normalizeProviderJsonSchema(
-      tool.schema || tool.parameters || { type: 'object', properties: {} },
-    ),
-  }));
 }
 
 function markAnthropicCacheControl(target: Record<string, unknown>): void {
@@ -2564,35 +2171,6 @@ async function* iterateOpenAISseJson(
   } finally {
     reader.releaseLock();
   }
-}
-
-function toOpenAIApiTools(tools?: any[]): Array<Record<string, unknown>> | undefined {
-  const normalized = normalizeTools(tools);
-  if (!normalized?.length) return undefined;
-  return normalized.map((tool) => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description || '',
-      parameters: normalizeProviderJsonSchema(
-        tool.schema || tool.parameters || { type: 'object', properties: {} },
-      ),
-    }
-  }));
-}
-
-/** Responses API tools — flat `{ type, name, parameters }` (lobehub `convertChatCompletionToolToResponseTool`). */
-export function toResponsesApiTools(tools?: any[]): Array<Record<string, unknown>> | undefined {
-  const normalized = normalizeTools(tools);
-  if (!normalized?.length) return undefined;
-  return normalized.map((tool) => ({
-    type: 'function',
-    name: tool.name,
-    description: tool.description || '',
-    parameters: normalizeProviderJsonSchema(
-      tool.schema || tool.parameters || { type: 'object', properties: {} },
-    ),
-  }));
 }
 
 function normalizeResponseBodyText(text: string): string {
