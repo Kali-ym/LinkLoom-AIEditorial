@@ -286,11 +286,18 @@ describe('ReActAgentEngine run control plane', () => {
       status: 'running',
       metadata: {
         context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          builderVersion: 'agent-context-v2',
           compacted: true,
           fingerprint: expect.any(String)
         }
       }
     });
+    expect(
+      contextCheckpoints[0]?.messages.some((message) =>
+        JSON.stringify(message).includes('<linkloom_context')
+      )
+    ).toBe(false);
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'checkpoint_saved',

@@ -1,10 +1,60 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AgentEventRepository } from '../src/services/repositories/AgentEventRepository.js';
 import { AgentRunRepository } from '../src/services/repositories/AgentRunRepository.js';
 import { AgentSessionRepository } from '../src/services/repositories/AgentSessionRepository.js';
 import { LocalStoreAgentSessionStore } from '../src/services/agents/engine/AgentSessionStore.js';
+import { ReActAgentEngine } from '../src/services/agents/engine/ReActAgentEngine.js';
+import { InMemoryAgentRunRegistry } from '../src/services/agents/engine/AgentRunRegistry.js';
+import { InMemoryAgentSessionStore } from '../src/services/agents/engine/AgentSessionStore.js';
+import { InMemoryAgentEventBus } from '../src/services/agents/engine/EventBus.js';
+import {
+  assertResumeCheckpointContext,
+  buildCheckpointContextMetadata,
+  isValidV2CheckpointContext,
+  preserveRunContextMetadata,
+  readPersistedPiContextMetadata,
+  resolveLatestValidV2Checkpoint
+} from '../src/services/agents/engine/AgentSession.js';
+import {
+  createContextVersionUnsupportedError,
+  readStoredRunContextMetadata
+} from '../src/services/agents/AgentService.js';
 import type { AgentEvent } from '../src/services/agents/engine/AgentEvent.js';
 import type { AgentRunSpec } from '../src/services/agents/engine/AgentRunSpec.js';
+import { PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
+import { ToolRegistry } from '../src/registries/ToolRegistry.js';
+import { BaseTool } from '../src/plugins/base/BaseTool.js';
+import type { AIMessage } from '../src/types/index.js';
+
+class SimpleTrajectoryTool extends BaseTool {
+  readonly id = 'simple_trajectory_tool';
+  readonly name = 'simple_trajectory_tool';
+  readonly description = 'Simple tool for trajectory persistence tests';
+  readonly parameters = {
+    type: 'object',
+    properties: {}
+  };
+
+  async handler() {
+    return { ok: true };
+  }
+}
+class ResumePermissionTool extends BaseTool {
+  readonly id = 'resume_write_tool';
+  readonly name = 'resume_write_tool';
+  readonly description = 'Writes a value for permission resume tests';
+  readonly parameters = {
+    type: 'object',
+    properties: {
+      text: { type: 'string' }
+    },
+    required: ['text']
+  };
+
+  async handler(args: { text?: string }) {
+    return { resumed: args.text || '' };
+  }
+}
 
 /**
  * In-memory fake of {@link PgConnection} covering exactly the SQL the agent runtime
@@ -385,5 +435,458 @@ describe('LocalStoreAgentSessionStore (table-backed)', () => {
     const reader = new LocalStoreAgentSessionStore(legacyStore as any);
     const session = await reader.getSessionByRunId(spec.runId);
     expect(session?.events.map((event) => event.type)).toEqual(['run_started']);
+  });
+});
+
+describe('v2 checkpoint metadata persistence', () => {
+  function createV2Spec(id = 'checkpoint-meta'): AgentRunSpec {
+    return {
+      runId: `run_${id}`,
+      sessionId: `session_${id}`,
+      source: 'api',
+      input: {
+        prompt: 'hello',
+        messages: [{ role: 'user', content: 'hello' }]
+      },
+      metadata: {
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        turnId: 'turn-1',
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          builderVersion: 'agent-context-v2',
+          turnId: 'turn-1',
+          turnContextFingerprint: 'fp-1',
+          stablePrefixHash: 'stable-1',
+          variantHash: 'variant-1',
+          toolsetHash: 'toolset-1',
+          retrieval: { memoryEnabled: true }
+        }
+      }
+    } as AgentRunSpec;
+  }
+
+  it('persists compaction checkpoints with stable v2 metadata only', async () => {
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const spec = {
+      ...createV2Spec('compaction'),
+      contextPolicy: {
+        compactionStrategy: 'summarize' as const,
+        maxMessages: 3,
+        summarizeOlderThanMessages: 3,
+        maxInputTokens: 16
+      }
+    } satisfies AgentRunSpec;
+
+    await engine.prepareRun(spec);
+    await engine.run(spec, {
+      runtimeOptions: {
+        agentDef: {
+          id: 'checkpoint-agent',
+          name: 'Checkpoint Agent',
+          description: '',
+          systemPrompt: '',
+          providerId: 'test',
+          model: 'test',
+          temperature: 0,
+          toolIds: [],
+          skillIds: [],
+          mcpServerIds: [],
+          runtime: { mode: 'classic', maxRounds: 1, returnTrace: true }
+        } as any,
+        provider: {
+          name: 'test-provider',
+          async generateContent() {
+            return { content: 'final answer' };
+          }
+        } as any,
+        tools: [],
+        mcpConfigs: [],
+        mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+        toolRegistry: ToolRegistry.getInstance(),
+        messages: [
+          { role: 'user', content: 'first fact artifact_run_checkpoint_meta' },
+          { role: 'assistant', content: 'first answer' },
+          { role: 'user', content: 'second fact' },
+          { role: 'assistant', content: 'second answer' },
+          { role: 'user', content: 'latest question' }
+        ],
+        silent: true
+      }
+    });
+
+    const session = await engine.getSessionByRunId(spec.runId);
+    const checkpoint =
+      session?.checkpoints.find((item) => item.reason === 'context_compaction') ?? null;
+
+    expect(checkpoint).toBeTruthy();
+    expect(checkpoint?.metadata?.context).toMatchObject({
+      contextProtocolVersion: 'pi-context-v2',
+      builderVersion: 'agent-context-v2'
+    });
+    expect(JSON.stringify(checkpoint?.metadata?.context)).not.toContain('"summary":');
+    expect(JSON.stringify(checkpoint?.metadata?.context)).not.toContain('artifactIds');
+    expect(
+      checkpoint?.messages.some((message) =>
+        JSON.stringify(message).includes('<linkloom_context')
+      )
+    ).toBe(false);
+  });
+
+  it('persists permission checkpoints with stable v2 metadata only', async () => {
+    const toolRegistry = ToolRegistry.getInstance();
+    toolRegistry.registerTool(new ResumePermissionTool());
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const spec = {
+      ...createV2Spec('permission'),
+      agentDef: {
+        id: 'checkpoint-agent',
+        name: 'Checkpoint Agent',
+        description: '',
+        systemPrompt: '',
+        providerId: 'test',
+        model: 'test',
+        temperature: 0,
+        toolIds: ['resume_write_tool'],
+        skillIds: [],
+        mcpServerIds: [],
+        runtime: { mode: 'react', maxRounds: 3, returnTrace: true }
+      } as any,
+      tools: [new ResumePermissionTool()]
+    } satisfies AgentRunSpec;
+
+    await engine.prepareRun(spec);
+    const paused = await engine.run(spec, {
+      runtimeOptions: {
+        agentDef: spec.agentDef,
+        provider: {
+          name: 'test-provider',
+          async generateContent() {
+            return {
+              content: '',
+              tool_calls: [
+                { id: 'call-1', name: 'resume_write_tool', arguments: { text: 'approved' } }
+              ]
+            };
+          }
+        } as any,
+        tools: spec.tools ?? [],
+        mcpConfigs: [],
+        mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+        toolRegistry,
+        messages: [
+          { role: 'system', content: 'test' },
+          { role: 'user', content: 'run gated tool' }
+        ] as AIMessage[],
+        silent: true
+      }
+    });
+
+    expect(paused.stopReason).toBe('permission_required');
+    const session = await engine.getSessionByRunId(spec.runId);
+    const checkpoint = session?.checkpoints[0];
+
+    expect(checkpoint?.metadata?.context).toMatchObject({
+      contextProtocolVersion: 'pi-context-v2',
+      builderVersion: 'agent-context-v2',
+      turnId: 'turn-1',
+      turnContextFingerprint: 'fp-1'
+    });
+    expect(
+      checkpoint?.messages.some((message) =>
+        JSON.stringify(message).includes('<linkloom_context')
+      )
+    ).toBe(false);
+  });
+
+  it('rejects resume when the latest checkpoint carries an unsupported protocol version', () => {
+    const checkpoint = {
+      checkpointId: 'checkpoint-bad',
+      runId: 'run-bad',
+      sessionId: 'session-bad',
+      status: 'paused' as const,
+      messages: [{ role: 'user' as const, content: 'checkpoint trajectory' }],
+      createdAt: new Date().toISOString(),
+      metadata: {
+        context: {
+          contextProtocolVersion: 'agent-context-v1',
+          builderVersion: 'agent-context-v1'
+        }
+      }
+    };
+
+    expect(() => assertResumeCheckpointContext(checkpoint)).toThrowError(
+      expect.objectContaining({ code: 'context_version_unsupported' })
+    );
+    expect(resolveLatestValidV2Checkpoint([checkpoint])).toBeUndefined();
+  });
+
+  it('createSession preserves protocol metadata in the session head', async () => {
+    const sessionStore = new InMemoryAgentSessionStore();
+    const spec = createV2Spec('preserve-head');
+    const session = await sessionStore.createSession(spec);
+
+    expect(session.metadata?.contextProtocolVersion).toBe(PI_CONTEXT_PROTOCOL_VERSION);
+    expect(readStoredRunContextMetadata(session.metadata)).toMatchObject({
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      turnId: 'turn-1',
+      turnContextFingerprint: 'fp-1'
+    });
+    expect(JSON.stringify(session.metadata?.context)).not.toContain('<linkloom_context');
+  });
+
+  it('keeps context_compacted events when checkpoint persistence fails', async () => {
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const saveCheckpoint = vi
+      .spyOn(sessionStore, 'saveCheckpoint')
+      .mockRejectedValueOnce(new Error('checkpoint write failed'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const spec = {
+      ...createV2Spec('checkpoint-failure'),
+      contextPolicy: {
+        compactionStrategy: 'summarize' as const,
+        maxMessages: 3,
+        summarizeOlderThanMessages: 3,
+        maxInputTokens: 16
+      }
+    } satisfies AgentRunSpec;
+
+    await engine.prepareRun(spec);
+    await engine.run(spec, {
+      runtimeOptions: {
+        agentDef: {
+          id: 'checkpoint-agent',
+          name: 'Checkpoint Agent',
+          description: '',
+          systemPrompt: '',
+          providerId: 'test',
+          model: 'test',
+          temperature: 0,
+          toolIds: [],
+          skillIds: [],
+          mcpServerIds: [],
+          runtime: { mode: 'classic', maxRounds: 1, returnTrace: true }
+        } as any,
+        provider: {
+          name: 'test-provider',
+          async generateContent() {
+            return { content: 'still succeeds' };
+          }
+        } as any,
+        tools: [],
+        mcpConfigs: [],
+        mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+        toolRegistry: ToolRegistry.getInstance(),
+        messages: [
+          { role: 'user', content: 'first fact artifact_run_checkpoint_fail' },
+          { role: 'assistant', content: 'first answer' },
+          { role: 'user', content: 'second fact' },
+          { role: 'assistant', content: 'second answer' },
+          { role: 'user', content: 'latest question' }
+        ],
+        silent: true
+      }
+    });
+
+    const session = await engine.getSessionByRunId(spec.runId);
+    const events = await engine.getEvents(spec.runId);
+
+    expect(saveCheckpoint).toHaveBeenCalled();
+    expect(events.some((event) => event.type === 'context_compacted')).toBe(true);
+    expect(session?.checkpoints.filter((item) => item.reason === 'context_compaction')).toHaveLength(
+      0
+    );
+    saveCheckpoint.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('does not issue the next provider call when trajectory persistence fails', async () => {
+    const toolRegistry = ToolRegistry.getInstance();
+    toolRegistry.registerTool(new SimpleTrajectoryTool());
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const saveSession = vi
+      .spyOn(sessionStore, 'saveSession')
+      .mockImplementation(async (session) => {
+        if (session.messages.some((message) => message.role === 'tool')) {
+          throw new Error('trajectory write failed');
+        }
+        return InMemoryAgentSessionStore.prototype.saveSession.call(sessionStore, session);
+      });
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const spec = {
+      ...createV2Spec('trajectory-failure'),
+      agentDef: {
+        id: 'checkpoint-agent',
+        name: 'Checkpoint Agent',
+        description: '',
+        systemPrompt: '',
+        providerId: 'test',
+        model: 'test',
+        temperature: 0,
+        toolIds: ['simple_trajectory_tool'],
+        skillIds: [],
+        mcpServerIds: [],
+        runtime: { mode: 'react', maxRounds: 3, returnTrace: true }
+      } as any,
+      tools: [new SimpleTrajectoryTool()]
+    } satisfies AgentRunSpec;
+    let providerCalls = 0;
+
+    await engine.prepareRun(spec);
+    await expect(
+      engine.run(spec, {
+        runtimeOptions: {
+          agentDef: spec.agentDef,
+          provider: {
+            name: 'test-provider',
+            async generateContent() {
+              providerCalls += 1;
+              if (providerCalls === 1) {
+                return {
+                  content: '',
+                  tool_calls: [
+                    { id: 'call-1', name: 'simple_trajectory_tool', arguments: {} }
+                  ]
+                };
+              }
+              return { content: 'should not run' };
+            }
+          } as any,
+          tools: spec.tools ?? [],
+          mcpConfigs: [],
+          mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+          toolRegistry,
+          messages: [{ role: 'user', content: 'run tool' }] as AIMessage[],
+          silent: true
+        }
+      })
+    ).rejects.toThrow('trajectory write failed');
+
+    expect(providerCalls).toBe(1);
+    saveSession.mockRestore();
+  });
+
+  it('falls back to heuristic summary metadata when the primary summarizer throws', async () => {
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const spec = {
+      ...createV2Spec('heuristic-fallback'),
+      contextPolicy: {
+        compactionStrategy: 'summarize' as const,
+        maxMessages: 3,
+        summarizeOlderThanMessages: 3,
+        maxInputTokens: 16
+      }
+    } satisfies AgentRunSpec;
+
+    await engine.prepareRun(spec);
+    await engine.run(spec, {
+      runtimeOptions: {
+        agentDef: {
+          id: 'checkpoint-agent',
+          name: 'Checkpoint Agent',
+          description: '',
+          systemPrompt: '',
+          providerId: 'test',
+          model: 'test',
+          temperature: 0,
+          toolIds: [],
+          skillIds: [],
+          mcpServerIds: [],
+          runtime: { mode: 'classic', maxRounds: 1, returnTrace: true }
+        } as any,
+        provider: {
+          name: 'test-provider',
+          async generateContent() {
+            return { content: 'final answer' };
+          }
+        } as any,
+        tools: [],
+        mcpConfigs: [],
+        mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+        toolRegistry: ToolRegistry.getInstance(),
+        context: {
+          runId: spec.runId,
+          sessionId: spec.sessionId,
+          policy: spec.contextPolicy,
+          summarizer: async () => {
+            throw new Error('llm summarizer failed');
+          }
+        },
+        messages: [
+          { role: 'user', content: 'first fact artifact_run_heuristic_fallback' },
+          { role: 'assistant', content: 'first answer' },
+          { role: 'user', content: 'second fact' },
+          { role: 'assistant', content: 'second answer' },
+          { role: 'user', content: 'latest question' }
+        ],
+        silent: true
+      }
+    });
+
+    const session = await engine.getSessionByRunId(spec.runId);
+    const checkpoint =
+      session?.checkpoints.find((item) => item.reason === 'context_compaction') ?? null;
+    const compactedEvent = (await engine.getEvents(spec.runId)).find(
+      (event) => event.type === 'context_compacted'
+    );
+
+    expect(checkpoint?.metadata?.context).toMatchObject({
+      summarySource: 'heuristic'
+    });
+    expect(compactedEvent?.payload).toMatchObject({
+      summarySource: 'heuristic'
+    });
+  });
+
+  it('serializes checkpoint metadata without ephemeral context payloads', () => {
+    const serialized = buildCheckpointContextMetadata(
+      {
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          builderVersion: 'agent-context-v2',
+          turnId: 'turn-1',
+          retrieval: { memoryEnabled: true }
+        }
+      },
+      {
+        fingerprint: 'fp-compact',
+        compacted: true,
+        summarySource: 'heuristic'
+      }
+    );
+
+    expect(serialized).toMatchObject({
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      builderVersion: 'agent-context-v2',
+      fingerprint: 'fp-compact',
+      compacted: true,
+      summarySource: 'heuristic',
+      turnId: 'turn-1'
+    });
+    expect(JSON.stringify(serialized)).not.toContain('<linkloom_context');
+    expect(isValidV2CheckpointContext({ context: serialized })).toBe(true);
+    expect(
+      preserveRunContextMetadata({
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: serialized
+      })?.context
+    ).toEqual(serialized);
+  });
+
+  it('maps unsupported stored protocol versions to context_version_unsupported', () => {
+    const error = createContextVersionUnsupportedError('agent-context-v1');
+    expect(error.code).toBe('context_version_unsupported');
+    expect(readPersistedPiContextMetadata({ contextProtocolVersion: 'agent-context-v1' })).toBe(
+      undefined
+    );
   });
 });

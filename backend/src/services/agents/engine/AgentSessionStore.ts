@@ -8,6 +8,7 @@ import {
   evaluateRunStatusTransition
 } from './AgentRunStateMachine.js';
 import type { AgentCheckpoint, AgentSession, AgentArtifactRef } from './AgentSession.js';
+import { preserveRunContextMetadata } from './AgentSession.js';
 import type { PermissionDecision, PermissionRequest } from './PermissionPolicy.js';
 import type { WorkspaceRef } from './WorkspacePolicy.js';
 import { resolvePersistedRunMessages } from '../managers/AgentRunManager.js';
@@ -58,7 +59,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
       artifacts: [],
       createdAt: now,
       updatedAt: now,
-      metadata: spec.metadata
+      metadata: preserveRunContextMetadata(spec.metadata)
     };
     await this.saveSession(session);
     return cloneSession(session);

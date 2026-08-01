@@ -46,6 +46,15 @@ import {
   isExecutionLifecycleSuppressedStatus
 } from './AgentRunStateMachine.js';
 import type { AgentArtifactRef, AgentSession } from './AgentSession.js';
+import {
+  assertResumeCheckpointContext,
+  buildCheckpointContextMetadata,
+  filterPersistentCheckpointMessages,
+  mergePersistedTrajectoryMetadata,
+  isValidV2CheckpointContext,
+  readPersistedPiContextMetadata,
+  resolveLatestValidV2Checkpoint
+} from './AgentSession.js';
 import { InMemoryAgentSessionStore, type AgentSessionStore } from './AgentSessionStore.js';
 import type { ContextCompactionRecord } from './ContextManager.js';
 import { AGENT_CONTEXT_BUILDER_VERSION } from '../context/AgentContextBuilder.js';
@@ -459,6 +468,7 @@ export class ReActAgentEngine implements AgentEngine {
     if (options.checkpointId && !checkpoint) {
       throw new Error(`Agent checkpoint not found: ${options.checkpointId}`);
     }
+    assertResumeCheckpointContext(checkpoint);
     const checkpointId = checkpoint?.checkpointId;
     await this.publishPermissionResolved(session, options.decision);
     await this.sessionStore.resolvePermission(sessionId, options.decision);
@@ -621,6 +631,7 @@ export class ReActAgentEngine implements AgentEngine {
     if (options.checkpointId && !checkpoint) {
       throw new Error(`Agent checkpoint not found: ${options.checkpointId}`);
     }
+    assertResumeCheckpointContext(checkpoint);
     const checkpointId = checkpoint?.checkpointId ?? pendingHitl.checkpointId;
     await this.publishHitlResolved(session, options.resolution);
 
@@ -1095,9 +1106,23 @@ export class ReActAgentEngine implements AgentEngine {
             beforeModelCall: (input) => middleware.beforeModelCall(input),
             afterModelCall: (input) => middleware.afterModelCall(input),
             beforeToolCall: (input) => middleware.beforeToolCall(input),
-            afterToolCall: (input) => middleware.afterToolCall(input)
+            afterToolCall: async (input) => {
+              await middleware.afterToolCall(input);
+              await this.persistRuntimeTrajectory(
+                spec,
+                this.appendToolResultMessage(runtimeOptions.messages, input)
+              );
+            }
           }
-        : runtimeOptions.middleware,
+        : {
+            afterToolCall: async (input) => {
+              await this.persistRuntimeTrajectory(
+                spec,
+                this.appendToolResultMessage(runtimeOptions.messages, input)
+              );
+            },
+            ...runtimeOptions.middleware
+          },
       permission: {
         runId: spec.runId,
         sessionId: spec.sessionId,
@@ -2095,25 +2120,17 @@ export class ReActAgentEngine implements AgentEngine {
       sessionId: spec.sessionId,
       reason: 'context_compaction',
       status: 'running',
-      messages: this.toAgentMessages(runtimeOptions.messages),
+      messages: filterPersistentCheckpointMessages(this.toAgentMessages(runtimeOptions.messages)),
       events: this.eventBus.getEvents(spec.runId),
       workspace: runtimeOptions.workspace?.workspace,
       createdAt: new Date().toISOString(),
       metadata: {
-        context: {
-          builderVersion: record.builderVersion ?? AGENT_CONTEXT_BUILDER_VERSION,
+        context: buildCheckpointContextMetadata(spec.metadata, {
           fingerprint: record.fingerprint,
           compacted: record.compacted,
-          summary: record.summary,
           summarySource: record.summarySource,
-          artifactIds: record.artifactIds,
-          beforeMessages: record.beforeMessages,
-          afterMessages: record.afterMessages,
-          beforeTokens: record.beforeTokens,
-          afterTokens: record.afterTokens,
-          summarizedMessages: record.summarizedMessages,
-          retainedMessages: record.retainedMessages
-        }
+          builderVersion: record.builderVersion ?? AGENT_CONTEXT_BUILDER_VERSION
+        })
       }
     });
 
@@ -2150,7 +2167,7 @@ export class ReActAgentEngine implements AgentEngine {
       sessionId: spec.sessionId,
       reason: 'permission',
       status: 'paused',
-      messages: this.toAgentMessages(runtimeOptions.messages),
+      messages: filterPersistentCheckpointMessages(this.toAgentMessages(runtimeOptions.messages)),
       events: this.eventBus.getEvents(spec.runId),
       pendingPermission: request,
       pendingHitl: hitlRequest,
@@ -2161,7 +2178,7 @@ export class ReActAgentEngine implements AgentEngine {
         permissionId: request.permissionId,
         toolName: request.subject.toolName,
         workspaceId: runtimeOptions.workspace?.workspace?.workspaceId,
-        context: readCheckpointContextMetadata(spec.metadata)
+        context: buildCheckpointContextMetadata(spec.metadata)
       }
     });
     if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
@@ -2199,7 +2216,7 @@ export class ReActAgentEngine implements AgentEngine {
       sessionId: spec.sessionId,
       reason: 'needs_input',
       status: 'paused',
-      messages: this.toAgentMessages(runtimeOptions.messages),
+      messages: filterPersistentCheckpointMessages(this.toAgentMessages(runtimeOptions.messages)),
       events: this.eventBus.getEvents(spec.runId),
       pendingHitl: hitlRequest,
       workspace: runtimeOptions.workspace?.workspace,
@@ -2210,7 +2227,7 @@ export class ReActAgentEngine implements AgentEngine {
         toolName: request.toolName,
         toolCallId: request.toolCallId,
         workspaceId: runtimeOptions.workspace?.workspace?.workspaceId,
-        context: readCheckpointContextMetadata(spec.metadata)
+        context: buildCheckpointContextMetadata(spec.metadata)
       }
     });
     if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
@@ -2255,8 +2272,56 @@ export class ReActAgentEngine implements AgentEngine {
   }
 
   private resolveCheckpoint(session: AgentSession, checkpointId?: string) {
-    if (!checkpointId) return session.checkpoints.at(-1);
-    return session.checkpoints.find((checkpoint) => checkpoint.checkpointId === checkpointId);
+    if (checkpointId) {
+      const checkpoint = session.checkpoints.find((item) => item.checkpointId === checkpointId);
+      assertResumeCheckpointContext(checkpoint);
+      return checkpoint;
+    }
+
+    const hasV2SessionContext = Boolean(readPersistedPiContextMetadata(session.metadata));
+    if (!hasV2SessionContext) {
+      return session.checkpoints.at(-1);
+    }
+
+    const latest = session.checkpoints.at(-1);
+    if (latest && !isValidV2CheckpointContext(latest.metadata)) {
+      assertResumeCheckpointContext(latest);
+    }
+    return resolveLatestValidV2Checkpoint(session.checkpoints);
+  }
+
+  private appendToolResultMessage(
+    messages: ReActRuntimeOptions['messages'],
+    input: { toolName: string; result: unknown; arguments?: unknown }
+  ): ReActRuntimeOptions['messages'] {
+    const assistant = [...messages].reverse().find((message) => message.role === 'assistant');
+    const toolCallId = assistant?.tool_calls?.find((toolCall) => toolCall.name === input.toolName)?.id;
+    const content =
+      typeof input.result === 'string'
+        ? input.result
+        : JSON.stringify(input.result ?? {});
+    return [
+      ...messages,
+      {
+        role: 'tool',
+        tool_call_id: toolCallId,
+        name: input.toolName,
+        content
+      }
+    ];
+  }
+
+  private async persistRuntimeTrajectory(
+    spec: AgentRunSpec,
+    messages: ReActRuntimeOptions['messages']
+  ): Promise<void> {
+    const session = await this.sessionStore.getSessionByRunId(spec.runId);
+    if (!session) return;
+    const nextMessages = filterPersistentCheckpointMessages(this.toAgentMessages(messages));
+    await this.sessionStore.saveSession({
+      ...session,
+      messages: mergePersistedTrajectoryMetadata(session.messages, nextMessages)
+    });
   }
 
   private readPermissionPauseState(
@@ -2390,24 +2455,4 @@ function isEphemeralStreamEvent(event: AgentEvent): boolean {
   if (event.type !== 'custom') return false;
   const name = (event.payload as { name?: unknown } | undefined)?.name;
   return name === 'tool_calls_delta';
-}
-
-function readCheckpointContextMetadata(
-  metadata?: Record<string, unknown>
-): Record<string, unknown> | undefined {
-  if (!metadata || typeof metadata !== 'object') return undefined;
-  const nested = metadata.context;
-  const nestedRecord =
-    nested && typeof nested === 'object' && !Array.isArray(nested)
-      ? (nested as Record<string, unknown>)
-      : undefined;
-  const version = nestedRecord?.contextProtocolVersion ?? metadata.contextProtocolVersion;
-  if (version !== 'pi-context-v2') return undefined;
-  return {
-    contextProtocolVersion: version,
-    turnId: nestedRecord?.turnId ?? metadata.turnId,
-    turnContextFingerprint:
-      nestedRecord?.turnContextFingerprint ?? metadata.turnContextFingerprint,
-    retrieval: nestedRecord?.retrieval ?? metadata.retrieval
-  };
 }
