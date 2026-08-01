@@ -925,30 +925,89 @@ function isPiContextV2ResponseCache(responseCache?: ResponseCacheRequest): boole
   return responseCache?.cacheContractVersion === 'prompt-cache-v2';
 }
 
+function splitPiContextV2Conversation(
+  prompt: string | AIMessage[],
+  ephemeralMessageCount: number,
+): AIMessage[] {
+  if (typeof prompt === 'string') {
+    return [{ role: 'user' as const, content: prompt }];
+  }
+  const ephemeralStart = Math.max(0, prompt.length - ephemeralMessageCount);
+  const conversation: AIMessage[] = [];
+  for (let index = 0; index < prompt.length; index += 1) {
+    const message = prompt[index];
+    if (message.role !== 'system') {
+      conversation.push(message);
+      continue;
+    }
+    // Preserve ephemeral-slot system messages so converter can drop them with diagnostics.
+    if (index >= ephemeralStart) {
+      conversation.push(message);
+    }
+  }
+  return conversation;
+}
+
 function buildPiContextProviderRequest(
   prompt: string | AIMessage[],
   systemInstruction: string,
   tools: any[],
   format: LlmProviderFormat,
   keepHistoryReasoning?: boolean,
+  ephemeralMessageCount = 0,
 ) {
-  const split = splitSystemFromPrompt(prompt, systemInstruction, { piContextV2: true });
-  const { stableInstructions } = splitStableInstructions(split.systemInstruction?.trim() || systemInstruction);
-  const conversation =
-    typeof split.conversation === 'string'
-      ? [{ role: 'user' as const, content: split.conversation }]
-      : (split.conversation);
+  const { stableInstructions } = splitStableInstructions(systemInstruction.trim());
+  const conversation = splitPiContextV2Conversation(prompt, ephemeralMessageCount);
   return convertToProviderRequest({
     request: {
       systemInstruction: stableInstructions,
       messages: conversation,
       providerTools: tools,
       ephemeralMessages: [],
+      ephemeralMessageCount,
       turnContextFingerprint: '',
     },
     format,
     keepHistoryReasoning,
   });
+}
+
+function mapAttemptLabelToProviderFormat(label: string): LlmProviderFormat {
+  switch (label) {
+    case 'responses':
+      return 'responses';
+    case 'messages':
+      return 'anthropic';
+    default:
+      return 'chat_completions';
+  }
+}
+
+export function resolvePromptCacheContext(
+  responseCache: ResponseCacheRequest | undefined,
+  prompt: string | AIMessage[],
+  systemInstruction: string | undefined,
+  tools: any[],
+  format: LlmProviderFormat,
+): ResponseCacheRequest | undefined {
+  if (!responseCache || !isPiContextV2ResponseCache(responseCache) || !systemInstruction?.trim()) {
+    return responseCache;
+  }
+  const converted = buildPiContextProviderRequest(
+    prompt,
+    systemInstruction,
+    tools,
+    format,
+    responseCache.keepHistoryReasoning,
+    responseCache.ephemeralMessageCount ?? 0,
+  );
+  if (!converted.conversionDiagnostics?.length) {
+    return responseCache;
+  }
+  const merged = [
+    ...new Set([...(responseCache.conversionDiagnostics ?? []), ...converted.conversionDiagnostics]),
+  ];
+  return { ...responseCache, conversionDiagnostics: merged };
 }
 
 function buildChatCompletionsBody(
@@ -966,6 +1025,7 @@ function buildChatCompletionsBody(
       tools,
       'chat_completions',
       responseCache?.keepHistoryReasoning,
+      responseCache?.ephemeralMessageCount ?? 0,
     );
     const body: Record<string, unknown> = {
       model,
@@ -1029,6 +1089,7 @@ export function buildResponsesApiBody(
       tools,
       'responses',
       responseCache?.keepHistoryReasoning,
+      responseCache?.ephemeralMessageCount ?? 0,
     );
     const body: Record<string, unknown> = {
       model,
@@ -1423,6 +1484,7 @@ function buildMessagesApiBody(
       tools,
       'anthropic',
       keepHistoryReasoning,
+      responseCache?.ephemeralMessageCount ?? 0,
     );
     const anthropicSystem =
       typeof converted.systemInstruction === 'string'
@@ -2829,7 +2891,14 @@ export class OpenAIProvider implements AIProvider {
         }
 
         this.pinApiEndpoint(attempt.label);
-        return attachPromptCacheUsage(attempt.parse(text), options?.responseCache);
+        const enrichedCache = resolvePromptCacheContext(
+          options?.responseCache,
+          prompt,
+          systemInstruction,
+          tools,
+          mapAttemptLabelToProviderFormat(attempt.label),
+        );
+        return attachPromptCacheUsage(attempt.parse(text), enrichedCache);
       } catch (error: unknown) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const hasAlternate = i < attempts.length - 1;
@@ -2915,6 +2984,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
+    const enrichedCache = resolvePromptCacheContext(
+      options?.responseCache,
+      prompt,
+      systemInstruction,
+      tools ?? [],
+      'chat_completions',
+    );
     const body: Record<string, unknown> = {
       ...buildChatCompletionsBody(
         this.model,
@@ -2961,7 +3037,7 @@ export class OpenAIProvider implements AIProvider {
       if (typeof parsed.response_id === 'string') result.response_id = parsed.response_id;
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
-      attachPromptCacheUsage(result, options?.responseCache);
+      attachPromptCacheUsage(result, enrichedCache);
       if (
         result.content?.trim() ||
         result.reasoning?.trim() ||
@@ -3028,6 +3104,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
+    const enrichedCache = resolvePromptCacheContext(
+      options?.responseCache,
+      prompt,
+      systemInstruction,
+      tools ?? [],
+      'responses',
+    );
     const body = buildResponsesApiBody(
       this.model,
       prompt,
@@ -3076,7 +3159,7 @@ export class OpenAIProvider implements AIProvider {
       }
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
-      attachPromptCacheUsage(result, options?.responseCache);
+      attachPromptCacheUsage(result, enrichedCache);
       if (
         result.content ||
         result.reasoning ||
@@ -3099,6 +3182,13 @@ export class OpenAIProvider implements AIProvider {
     systemInstruction: string | undefined,
     options?: AIProviderCallOptions
   ): AsyncIterable<AIResponse> {
+    const enrichedCache = resolvePromptCacheContext(
+      options?.responseCache,
+      prompt,
+      systemInstruction,
+      tools ?? [],
+      'anthropic',
+    );
     const body = {
       ...buildMessagesApiBody(
         this.model,
@@ -3142,7 +3232,7 @@ export class OpenAIProvider implements AIProvider {
       if (typeof parsed.response_id === 'string') result.response_id = parsed.response_id;
       if (parsed.usage) result.usage = parsed.usage;
       if (parsed.tool_calls?.length) result.tool_calls = parsed.tool_calls;
-      attachPromptCacheUsage(result, options?.responseCache);
+      attachPromptCacheUsage(result, enrichedCache);
       if (
         result.content ||
         result.reasoning ||

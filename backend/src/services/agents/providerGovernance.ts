@@ -811,7 +811,11 @@ export function adaptCallOptionsForCandidate(
   if (!callOptions?.responseCache || candidate === primary) return callOptions;
 
   const cache = callOptions.responseCache;
-  const reasons = collectFallbackCacheMismatchReasons(cache, candidate);
+  const reasons = collectFallbackCacheMismatchReasons(
+    cache,
+    candidate,
+    cache.persistedResponseInputFingerprint,
+  );
   if (reasons.length === 0) return callOptions;
 
   return {

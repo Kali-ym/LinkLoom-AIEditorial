@@ -36,6 +36,7 @@ export interface PromptCacheObservation {
   turnContextFingerprint?: string;
   sourceErrors?: Array<{ source: string; code: string }>;
   conversionDiagnostics?: string[];
+  ephemeralMessageCount?: number;
 }
 
 export type PromptCacheSessionMissReason =

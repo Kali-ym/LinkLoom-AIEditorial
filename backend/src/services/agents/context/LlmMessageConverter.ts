@@ -630,9 +630,10 @@ export function convertToProviderRequest(input: {
 }): ProviderLlmRequest {
   const { request, format, keepHistoryReasoning } = input;
   const tools = toProviderTools(request.providerTools, format);
+  const ephemeralCount = request.ephemeralMessageCount ?? request.ephemeralMessages.length;
   const { messages: safeMessages, diagnostics } = filterSafeMessagesForProvider(
     request.messages,
-    request.ephemeralMessages.length,
+    ephemeralCount,
     format,
   );
   const conversionDiagnostics = diagnostics.length > 0 ? diagnostics : undefined;

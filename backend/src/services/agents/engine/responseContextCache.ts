@@ -41,6 +41,10 @@ export type ResponseCacheRequest = {
   previousMessageId?: string;
   previousResponseId?: string;
   responseInputFingerprint?: string;
+  /** Persisted session fingerprint used for fallback/recovery mismatch checks. */
+  persistedResponseInputFingerprint?: string;
+  /** Trailing ephemeral context slots appended after trajectory for v2 conversion. */
+  ephemeralMessageCount?: number;
   sourceErrors?: Array<{ source: string; code: string }>;
   conversionDiagnostics?: string[];
   /**

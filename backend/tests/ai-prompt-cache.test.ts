@@ -9,6 +9,7 @@ import {
   parseChatCompletionsStreamPayload,
   parseMessagesStreamPayload,
   parseResponsesStreamPayload,
+  resolvePromptCacheContext,
 } from '../src/services/AIProvider.js';
 
 describe('ai prompt cache usage parsing', () => {
@@ -281,6 +282,42 @@ describe('prompt cache route affinity helpers', () => {
 
     expect(body.store).toBe(false);
     expect(body.prompt_cache_key).toBe('cache-1');
+  });
+
+  it('records context_conversion_unsupported from v2 provider conversion into usage', () => {
+    const responseCache = {
+      enableStore: true,
+      cacheKey: 'cache-1',
+      cacheContractVersion: 'prompt-cache-v2',
+      cacheEligibility: true,
+      ephemeralMessageCount: 1,
+    };
+    const prompt = [
+      { role: 'user', content: 'hello' },
+      { role: 'system', content: 'private retrieval stack trace' },
+    ];
+    const enriched = resolvePromptCacheContext(
+      responseCache,
+      prompt,
+      'stable identity',
+      [],
+      'responses',
+    );
+
+    expect(enriched?.conversionDiagnostics).toEqual(['context_conversion_unsupported']);
+
+    const usage = attachPromptCacheUsage(
+      {
+        content: 'ok',
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      },
+      enriched,
+    );
+
+    expect(usage.usage?.prompt_cache?.conversionDiagnostics).toEqual([
+      'context_conversion_unsupported',
+    ]);
+    expect(JSON.stringify(usage)).not.toContain('private retrieval stack trace');
   });
 
   it('keeps linkloom_context user messages out of stable system instructions', async () => {

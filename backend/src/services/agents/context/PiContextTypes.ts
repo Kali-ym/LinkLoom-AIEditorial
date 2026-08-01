@@ -54,6 +54,8 @@ export interface LlmRequestContext {
   messages: AIMessage[];
   providerTools: ToolDefinition[];
   ephemeralMessages: ContextMessage[];
+  /** When set, overrides ephemeralMessages.length for provider conversion filtering. */
+  ephemeralMessageCount?: number;
   turnContextFingerprint: string;
   diagnostics?: string[];
 }

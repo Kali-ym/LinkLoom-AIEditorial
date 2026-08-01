@@ -1084,6 +1084,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
       }
     );
 
@@ -1306,6 +1307,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
       }
     );
 
@@ -1452,6 +1454,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
       }
     );
 
@@ -1596,6 +1599,7 @@ export class AgentService {
       {
         turnContextFingerprint: turnContext.fingerprint,
         sourceErrors: turnContext.sourceErrors,
+        ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
       }
     );
 
@@ -2471,6 +2475,7 @@ export class AgentService {
             {
               turnContextFingerprint: turnContext.fingerprint,
               sourceErrors: turnContext.sourceErrors,
+              ephemeralMessageCount: turnContext.sources.length + turnContext.sourceErrors.length,
             }
           )
         }
@@ -3309,8 +3314,9 @@ export class AgentService {
     return {
       ...request,
       responseInputFingerprint: turnContextFingerprint,
+      persistedResponseInputFingerprint: persistedFingerprint,
+      ephemeralMessageCount: turnContextObservation?.ephemeralMessageCount,
       sourceErrors: turnContextObservation?.sourceErrors,
-      conversionDiagnostics: turnContextObservation?.conversionDiagnostics,
       ...(responseInputFingerprintMismatch
         ? {
             previousContextId: undefined,

@@ -405,6 +405,45 @@ describe('Provider Governance', () => {
     ).toContain('response_input_fingerprint_mismatch');
   });
 
+  it('adaptCallOptionsForCandidate records response_input_fingerprint_mismatch from persisted fingerprint', async () => {
+    const { adaptCallOptionsForCandidate } = await import(
+      '../src/services/agents/providerGovernance.js'
+    );
+
+    const primary = {
+      provider: createProvider('primary', vi.fn()),
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+    };
+    const fallback = {
+      provider: createProvider('fallback-same', vi.fn()),
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+    };
+
+    const adapted = adaptCallOptionsForCandidate(
+      {
+        responseCache: {
+          enableStore: true,
+          cacheKey: 'session-key',
+          providerId: 'OPENAI',
+          model: 'gpt-5',
+          responseInputFingerprint: 'turn-b',
+          persistedResponseInputFingerprint: 'turn-a',
+          previousResponseId: 'resp_1',
+        },
+      },
+      fallback,
+      primary,
+    );
+
+    expect(adapted?.responseCache?.cacheDisableReason).toContain(
+      'response_input_fingerprint_mismatch',
+    );
+    expect(adapted?.responseCache?.cacheKey).toBeUndefined();
+    expect(adapted?.responseCache?.enableStore).toBe(false);
+  });
+
   it('keeps prompt cache when fallback candidate matches the cache contract identity', async () => {
     const { adaptCallOptionsForCandidate } = await import(
       '../src/services/agents/providerGovernance.js'
