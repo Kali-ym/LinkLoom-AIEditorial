@@ -13,6 +13,7 @@ import {
 } from '../context/AgentContextBuilder.js';
 import type { TokenCounter } from '../context/TokenCounter.js';
 import type { ClassifiedMessageBuilder } from '../context/ClassifiedMessageBuilder.js';
+import type { TurnContext } from '../context/PiContextTypes.js';
 import type { ContextUsageSnapshot, ClassifiedModelInput } from '../context/ContextTokenTypes.js';
 import {
   isPermissionPauseError,
@@ -149,6 +150,7 @@ export interface ReActRuntimeContextHooks {
   sessionId: string;
   policy?: ContextPolicy;
   summarizer?: ContextSummarizer;
+  turnContext?: TurnContext;
   onContextCompacted?: (record: ContextCompactionRecord) => void | Promise<void>;
   onArtifactSaved?: (artifact: AgentArtifactRef, content?: unknown) => void | Promise<void>;
 }

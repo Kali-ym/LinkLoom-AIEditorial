@@ -8,3 +8,4 @@ export * from './PiContextTypes.js';
 export * from './SessionContextBuilder.js';
 export * from './ContextTransformer.js';
 export * from './LlmMessageConverter.js';
+export * from './TurnContextAssembler.js';

@@ -86,7 +86,10 @@ import {
   TokenEstimator,
   ClassifiedMessageBuilder,
   resolveContextProfile,
-  type ModelContextProfile
+  TurnContextAssembler,
+  type ModelContextProfile,
+  type TurnContext,
+  type TurnContextResolverInput
 } from './context/index.js';
 import { AgentContextBuilder } from './context/AgentContextBuilder.js';
 import { createLLMSummarizer } from './engine/LLMSummarizer.js';
@@ -865,13 +868,23 @@ export class AgentService {
     const providerTools = useNativeFC ? combinedTools : [];
 
     // 3. Construct System Message via PromptPipeline
-    const ctxInputs = await this.resolveContextProviderInputs(
+    const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
+    const turnContext = await this.assembleTurnContext({
+      turnId,
       agentDef,
-      input,
-      options,
+      userInput: input,
+      sessionId: options.sessionId,
+      metadata: options.metadata,
       settings,
-      date
-    );
+      date,
+      webSearchPolicy
+    });
+    const variables: Record<string, string> = {
+      agentId: agentDef.id,
+      agentName: agentDef.name
+    };
+    if (options.sessionId) variables.sessionId = options.sessionId;
+    if (date) variables.date = date;
     const promptCtx = buildPromptPipelineContext({
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
@@ -881,12 +894,7 @@ export class AgentService {
       skills: [],
       mcpTools,
       skillInstructions: combinedSkillInstructions,
-      date,
-      knowledgeContext: ctxInputs.knowledgeContext,
-      memoryContext: ctxInputs.memoryContext,
-      todoState: ctxInputs.todoState,
-      variables: ctxInputs.variables,
-      webSearchPolicy
+      variables,
     });
     const assembled = assembleSystemMessages(promptCtx);
     const systemInstruction = assembled.systemMessage.content;
@@ -904,7 +912,7 @@ export class AgentService {
       options,
       agentDef,
       providerConfig: resolvedProvider.providerConfig,
-      variables: ctxInputs.variables
+      variables
     });
     const cacheContract = await this.buildPromptCacheContractForRun(
       options,
@@ -986,7 +994,8 @@ export class AgentService {
               runId: runSpec.runId,
               sessionId: runSpec.sessionId,
               policy: runSpec.contextPolicy,
-              summarizer
+              summarizer,
+              turnContext
             }
           : undefined,
         toolContextExtras: resolveRuntimeToolExtras(
@@ -1063,13 +1072,23 @@ export class AgentService {
     const providerTools = useNativeFC ? combinedTools : [];
 
     // Construct System Message via PromptPipeline
-    const ctxInputs = await this.resolveContextProviderInputs(
+    const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
+    const turnContext = await this.assembleTurnContext({
+      turnId,
       agentDef,
-      input,
-      options,
+      userInput: input,
+      sessionId: options.sessionId,
+      metadata: options.metadata,
       settings,
-      date
-    );
+      date,
+      webSearchPolicy
+    });
+    const variables: Record<string, string> = {
+      agentId: agentDef.id,
+      agentName: agentDef.name
+    };
+    if (options.sessionId) variables.sessionId = options.sessionId;
+    if (date) variables.date = date;
     const promptCtx = buildPromptPipelineContext({
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
@@ -1079,12 +1098,7 @@ export class AgentService {
       skills: [],
       mcpTools,
       skillInstructions: combinedSkillInstructions,
-      date,
-      knowledgeContext: ctxInputs.knowledgeContext,
-      memoryContext: ctxInputs.memoryContext,
-      todoState: ctxInputs.todoState,
-      variables: ctxInputs.variables,
-      webSearchPolicy
+      variables,
     });
     const assembled = assembleSystemMessages(promptCtx);
 
@@ -1094,7 +1108,7 @@ export class AgentService {
       options,
       agentDef,
       providerConfig: resolvedProvider.providerConfig,
-      variables: ctxInputs.variables
+      variables
     });
     const cacheContract = await this.buildPromptCacheContractForRun(
       options,
@@ -1179,7 +1193,8 @@ export class AgentService {
               runId: runSpec.runId,
               sessionId: runSpec.sessionId,
               policy: runSpec.contextPolicy,
-              summarizer
+              summarizer,
+              turnContext
             }
           : undefined,
         toolContextExtras: resolveRuntimeToolExtras(
@@ -2569,35 +2584,33 @@ export class AgentService {
     return this.skillService.buildSkillsPrompt(skillIds);
   }
 
-  /**
-   * 集中预检索 KnowledgeContextProvider / MemoryContextProvider / TodoHintProvider 所需的输入。
-   * 在 buildPromptPipelineContext 之前异步完成,结果以字符串/对象形式注入 ctx,Provider 只做同步渲染。
-   * 触发条件:Knowledge/Memory 仅在 agent 绑定 categoryIds 时;Todo 在有 sessionId 且 session 组内存在非空 todos 时。
-   */
-  private async resolveContextProviderInputs(
-    agentDef: AgentDefinition,
-    input: string,
-    options: AgentRunOptions,
-    settings: SystemSettings | null | undefined,
-    date?: string
-  ): Promise<{
-    knowledgeContext?: string;
-    memoryContext?: string;
-    todoState?: AgentWorkspaceState;
-    variables: Record<string, string>;
-  }> {
-    const variables: Record<string, string> = {
-      agentId: agentDef.id,
-      agentName: agentDef.name
-    };
-    if (options.sessionId) variables.sessionId = options.sessionId;
-    if (date) variables.date = date;
+  private createTurnContextAssembler(): TurnContextAssembler {
+    return new TurnContextAssembler({
+      knowledge: async (input) => {
+        const content = await this.resolveKnowledgeContext(
+          input.agentDef,
+          input.userInput,
+          input.settings
+        );
+        return { content };
+      },
+      memory: async (input) => {
+        const content = await this.resolveMemoryContext(input.agentDef, input.userInput, {
+          sessionId: input.sessionId,
+          metadata: input.metadata
+        });
+        return { content };
+      },
+      workspace: async (input) => ({
+        content: formatWorkspaceState(await this.resolveTodoState(input.sessionId))
+      })
+    });
+  }
 
-    const knowledgeContext = await this.resolveKnowledgeContext(agentDef, input, settings);
-    const memoryContext = await this.resolveMemoryContext(agentDef, input, options);
-    const todoState = await this.resolveTodoState(options.sessionId);
-
-    return { knowledgeContext, memoryContext, todoState, variables };
+  private async assembleTurnContext(
+    input: TurnContextResolverInput & { turnId: string }
+  ): Promise<TurnContext> {
+    return this.createTurnContextAssembler().assemble(input);
   }
 
   /** 预检索知识库:复用 KnowledgeRetrievalService + RagContextBuilder,不走 synthesis agent。 */
@@ -2624,7 +2637,7 @@ export class AgentService {
       LogService.warn(
         `[AgentService] resolveKnowledgeContext failed: ${error instanceof Error ? error.message : String(error)}`
       );
-      return undefined;
+      throw error;
     }
   }
 
@@ -2632,7 +2645,7 @@ export class AgentService {
   private async resolveMemoryContext(
     agentDef: AgentDefinition,
     input: string,
-    options: AgentRunOptions
+    options: { sessionId?: string; metadata?: Record<string, unknown> }
   ): Promise<string | undefined> {
     const categoryIds = agentDef.memoryCategoryIds;
     if (!categoryIds || categoryIds.length === 0) return undefined;
@@ -2648,7 +2661,7 @@ export class AgentService {
       LogService.warn(
         `[AgentService] resolveMemoryContext failed: ${error instanceof Error ? error.message : String(error)}`
       );
-      return undefined;
+      throw error;
     }
   }
 
@@ -2668,7 +2681,7 @@ export class AgentService {
       LogService.warn(
         `[AgentService] resolveTodoState failed: ${error instanceof Error ? error.message : String(error)}`
       );
-      return undefined;
+      throw error;
     }
   }
 
@@ -3294,6 +3307,15 @@ function formatMemoryContext(results: Array<{ content?: string; text?: string }>
     blocks.push(`[记忆 ${index + 1}]\n${text}`);
   });
   return blocks.join('\n\n---\n\n');
+}
+
+function formatWorkspaceState(state?: AgentWorkspaceState): string | undefined {
+  const todos = state?.todos;
+  if (!todos || todos.length === 0) return undefined;
+  return [
+    '当前任务进度:',
+    ...todos.map((todo) => `- ${todo.completed ? '[x]' : '[ ]'} ${todo.content}`)
+  ].join('\n');
 }
 
 /** 读取 chatConfig.memory.enabled(默认 true);优先 options.metadata 覆盖,其次 agentDef.metadata.agentConsole。 */
