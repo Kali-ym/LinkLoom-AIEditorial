@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { buildContextPolicyFromChatConfig } from '../src/services/agents/AgentService.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  buildContextPolicyFromChatConfig,
+  buildRuntimeContextHooks,
+} from '../src/services/agents/AgentService.js';
 import type { ModelContextProfile } from '../src/services/agents/context/ModelContextProfile.js';
+import { createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
 
 const profile: ModelContextProfile = {
   providerId: 'openai',
@@ -59,5 +63,45 @@ describe('buildContextPolicyFromChatConfig', () => {
       profile
     );
     expect(policy.maxMessages).toBe(30);
+  });
+});
+
+describe('buildRuntimeContextHooks', () => {
+  const turnContext = createTurnContext({
+    turnId: 'turn-1',
+    sources: [{ source: 'date', content: '当前处理日期为: 2026-08-01', trust: 'runtime_metadata' }],
+    sourceErrors: [],
+  });
+
+  it('always passes turnContext to runtime even when contextPolicy is undefined', () => {
+    const summarizer = vi.fn();
+    const hooks = buildRuntimeContextHooks({
+      runSpec: { runId: 'run-1', sessionId: 'session-1' },
+      summarizer,
+      turnContext,
+    });
+
+    expect(hooks).toEqual({
+      runId: 'run-1',
+      sessionId: 'session-1',
+      summarizer,
+      turnContext,
+    });
+    expect(hooks.policy).toBeUndefined();
+  });
+
+  it('includes policy when contextPolicy is configured', () => {
+    const policy = buildContextPolicyFromChatConfig(
+      { enableContextCompression: true, enableMaxContextWindow: false } as Record<string, unknown>,
+      profile,
+    );
+
+    const hooks = buildRuntimeContextHooks({
+      runSpec: { runId: 'run-2', sessionId: 'session-2', contextPolicy: policy },
+      turnContext,
+    });
+
+    expect(hooks.policy).toBe(policy);
+    expect(hooks.turnContext).toBe(turnContext);
   });
 });

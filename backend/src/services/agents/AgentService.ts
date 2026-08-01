@@ -67,7 +67,7 @@ import {
   normalizeToolCall,
   shouldStopOnRepeatedToolError
 } from './runtime/toolProtocol.js';
-import type { ReActRuntimeOptions } from './runtime/ReActRuntime.js';
+import type { ReActRuntimeContextHooks, ReActRuntimeOptions } from './runtime/ReActRuntime.js';
 import type { ToolExecutionContext } from '../ToolExecutionContext.js';
 import type {
   AgentEvent,
@@ -586,6 +586,20 @@ function createToolLimitObservation(params: {
   };
 }
 
+export function buildRuntimeContextHooks(input: {
+  runSpec: Pick<AgentRunSpec, 'runId' | 'sessionId' | 'contextPolicy'>;
+  summarizer?: ContextSummarizer;
+  turnContext?: TurnContext;
+}): ReActRuntimeContextHooks {
+  return {
+    runId: input.runSpec.runId,
+    sessionId: input.runSpec.sessionId,
+    ...(input.runSpec.contextPolicy ? { policy: input.runSpec.contextPolicy } : {}),
+    ...(input.summarizer ? { summarizer: input.summarizer } : {}),
+    ...(input.turnContext ? { turnContext: input.turnContext } : {}),
+  };
+}
+
 export function buildContextPolicyFromChatConfig(
   chatConfig: Record<string, unknown>,
   profile: ModelContextProfile
@@ -989,15 +1003,7 @@ export class AgentService {
         messages,
         responseCache,
         silent: options.silent,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer,
-              turnContext
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer, turnContext }),
         toolContextExtras: resolveRuntimeToolExtras(
           runSpec,
           agentDef,
@@ -1188,15 +1194,7 @@ export class AgentService {
         messages: messages.map((message) => ({ ...message })),
         responseCache,
         silent: options.silent,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer,
-              turnContext
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer, turnContext }),
         toolContextExtras: resolveRuntimeToolExtras(
           runSpec,
           agentDef,
@@ -1328,14 +1326,7 @@ export class AgentService {
         messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
         responseCache,
         silent: params.silent,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer }),
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
           resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
@@ -1458,14 +1449,7 @@ export class AgentService {
         toolRegistry: this.toolRegistry,
         messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
         responseCache,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer }),
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
           resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
@@ -1982,14 +1966,7 @@ export class AgentService {
         messages: recoveredMessages,
         responseCache,
         silent: true,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer }),
         toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
       },
       metadata: {
@@ -2274,14 +2251,7 @@ export class AgentService {
         messages,
         responseCache,
         silent: true,
-        context: runSpec.contextPolicy
-          ? {
-              runId: runSpec.runId,
-              sessionId: runSpec.sessionId,
-              policy: runSpec.contextPolicy,
-              summarizer
-            }
-          : undefined,
+        context: buildRuntimeContextHooks({ runSpec, summarizer }),
         // Run-context tools (create_todos, writeFile, …) need the active agentRun;
         // without it they fail with "requires an active agent run context".
         toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
