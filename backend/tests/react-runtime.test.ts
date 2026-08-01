@@ -226,10 +226,25 @@ describe('ReActRuntime', () => {
         })
       ])
     );
+    expect(calls[0].prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('<linkloom_context')
+        })
+      ])
+    );
     expect(calls[1].prompt).toHaveLength((calls[0].prompt as AIMessage[]).length + 2);
     expect(runtimeMessages.every((message) => !String(message.content).includes('knowledge'))).toBe(
       true
     );
+    expect(runtimeMessages).not.toContainEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('<linkloom_context')
+      })
+    );
+    expect(runtimeMessages.some((message) => message.role === 'assistant')).toBe(true);
+    expect(runtimeMessages.some((message) => message.role === 'tool')).toBe(true);
   });
 
   it('returns final content without tool calls', async () => {

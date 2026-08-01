@@ -12,13 +12,11 @@ import {
   stableStringify
 } from '../engine/canonicalMessageSerializer.js';
 
-export const AGENT_CONTEXT_BUILDER_VERSION = 'agent-context-v1' as const;
+export const AGENT_CONTEXT_BUILDER_VERSION = 'agent-context-v2' as const;
 
 export interface AgentContextLayers {
   stablePrefixMessages: AIMessage[];
-  dynamicPreUserMessages: AIMessage[];
-  conversationMessages: AIMessage[];
-  dynamicTailMessages: AIMessage[];
+  trajectoryMessages: AIMessage[];
 }
 
 export interface AgentContextSnapshot {
@@ -32,10 +30,8 @@ export interface AgentContextSnapshot {
 }
 
 export interface AgentContextInitialInput {
-  systemMessage: AIMessage;
-  preUserMessages: AIMessage[];
-  conversationMessages: AIMessage[];
-  tailMessages: AIMessage[];
+  stablePrefixMessages: AIMessage[];
+  trajectoryMessages: AIMessage[];
 }
 
 export interface AgentContextCompactionInput {
@@ -57,19 +53,12 @@ export class AgentContextBuilder {
 
   buildInitial(input: AgentContextInitialInput): AgentContextSnapshot {
     const layers: AgentContextLayers = {
-      stablePrefixMessages: cloneMessages([input.systemMessage]),
-      dynamicPreUserMessages: cloneMessages(input.preUserMessages),
-      conversationMessages: cloneMessages(input.conversationMessages),
-      dynamicTailMessages: cloneMessages(input.tailMessages)
+      stablePrefixMessages: cloneMessages(input.stablePrefixMessages),
+      trajectoryMessages: cloneMessages(input.trajectoryMessages)
     };
 
     return this.createSnapshot(
-      [
-        ...layers.stablePrefixMessages,
-        ...layers.dynamicPreUserMessages,
-        ...layers.conversationMessages,
-        ...layers.dynamicTailMessages
-      ],
+      [...layers.stablePrefixMessages, ...layers.trajectoryMessages],
       layers,
       {
         compacted: false,
@@ -226,28 +215,20 @@ export class AgentContextBuilder {
 function partitionMessages(messages: AIMessage[]): AgentContextLayers {
   const firstSystemIndex = messages.findIndex((message) => message.role === 'system');
   const stableEnd = firstSystemIndex >= 0 ? firstSystemIndex + 1 : 0;
-  const firstUserIndex = messages.findIndex(
-    (message, index) => index >= stableEnd && message.role === 'user'
-  );
-
   return {
     stablePrefixMessages: cloneMessages(
       firstSystemIndex >= 0 ? messages.slice(firstSystemIndex, stableEnd) : []
     ),
-    dynamicPreUserMessages: cloneMessages(
-      messages.slice(stableEnd, firstUserIndex >= 0 ? firstUserIndex : messages.length)
-    ),
-    conversationMessages: cloneMessages(firstUserIndex >= 0 ? messages.slice(firstUserIndex) : []),
-    dynamicTailMessages: []
+    trajectoryMessages: cloneMessages(
+      firstSystemIndex >= 0 ? messages.slice(stableEnd) : messages
+    )
   };
 }
 
 function cloneLayers(layers: AgentContextLayers): AgentContextLayers {
   return {
     stablePrefixMessages: cloneMessages(layers.stablePrefixMessages),
-    dynamicPreUserMessages: cloneMessages(layers.dynamicPreUserMessages),
-    conversationMessages: cloneMessages(layers.conversationMessages),
-    dynamicTailMessages: cloneMessages(layers.dynamicTailMessages)
+    trajectoryMessages: cloneMessages(layers.trajectoryMessages)
   };
 }
 

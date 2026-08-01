@@ -2683,10 +2683,8 @@ export class AgentService {
     const conversation = [...mergedHistory, turnMessage];
 
     return this.contextBuilder.buildInitial({
-      systemMessage: input.assembled.systemMessage,
-      preUserMessages: [],
-      conversationMessages: conversation,
-      tailMessages: input.assembled.variantMessages
+      stablePrefixMessages: [input.assembled.systemMessage],
+      trajectoryMessages: [...conversation, ...input.assembled.variantMessages]
     }).messages;
   }
 

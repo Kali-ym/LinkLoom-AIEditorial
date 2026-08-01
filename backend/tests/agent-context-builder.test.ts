@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   AGENT_CONTEXT_BUILDER_VERSION,
   AgentContextBuilder
@@ -8,13 +8,15 @@ import type { AgentCheckpoint } from '../src/services/agents/engine/AgentSession
 import type { AIMessage } from '../src/types/index.js';
 
 describe('AgentContextBuilder', () => {
-  it('assembles stable, dynamic, conversation, and tail layers in order', () => {
+  it('assembles stable prefix and trajectory messages in order', () => {
     const builder = new AgentContextBuilder();
     const snapshot = builder.buildInitial({
-      systemMessage: { role: 'system', content: 'stable' },
-      preUserMessages: [{ role: 'system', content: 'retrieved context' }],
-      conversationMessages: [{ role: 'user', content: 'question' }],
-      tailMessages: [{ role: 'system', content: 'current todos' }]
+      stablePrefixMessages: [{ role: 'system', content: 'stable' }],
+      trajectoryMessages: [
+        { role: 'system', content: 'retrieved context' },
+        { role: 'user', content: 'question' },
+        { role: 'system', content: 'current todos' }
+      ]
     });
 
     expect(snapshot.messages.map((message) => message.content)).toEqual([
@@ -25,11 +27,43 @@ describe('AgentContextBuilder', () => {
     ]);
     expect(snapshot.layers).toMatchObject({
       stablePrefixMessages: [{ content: 'stable' }],
-      dynamicPreUserMessages: [{ content: 'retrieved context' }],
-      conversationMessages: [{ content: 'question' }],
-      dynamicTailMessages: [{ content: 'current todos' }]
+      trajectoryMessages: [
+        { content: 'retrieved context' },
+        { content: 'question' },
+        { content: 'current todos' }
+      ]
     });
     expect(snapshot.metadata.builderVersion).toBe(AGENT_CONTEXT_BUILDER_VERSION);
+    expect(snapshot.messages).not.toContainEqual(
+      expect.objectContaining({ content: expect.stringContaining('<linkloom_context') })
+    );
+  });
+
+  it('buildInitial accepts only stable prefix and trajectory without dynamic wrappers', () => {
+    const snapshot = new AgentContextBuilder().buildInitial({
+      stablePrefixMessages: [{ role: 'system', content: 'stable' }],
+      trajectoryMessages: [{ role: 'user', content: 'question' }]
+    });
+
+    expect(snapshot.messages).toEqual([
+      { role: 'system', content: 'stable' },
+      { role: 'user', content: 'question' }
+    ]);
+    expect(snapshot.messages).not.toContainEqual(
+      expect.objectContaining({ content: expect.stringContaining('<linkloom_context') })
+    );
+  });
+
+  it('rejects legacy dynamic-layer input at compile time', () => {
+    type LegacyInput = {
+      systemMessage: AIMessage;
+      preUserMessages: AIMessage[];
+      conversationMessages: AIMessage[];
+      tailMessages: AIMessage[];
+    };
+    type V2Input = Parameters<AgentContextBuilder['buildInitial']>[0];
+
+    expectTypeOf<LegacyInput>().not.toMatchTypeOf<V2Input>();
   });
 
   it('does not alias the input messages when building a snapshot', () => {
@@ -40,10 +74,8 @@ describe('AgentContextBuilder', () => {
       tool_calls: [{ id: 'call-1', name: 'tool', arguments: { value: 1 } }]
     };
     const snapshot = builder.buildInitial({
-      systemMessage,
-      preUserMessages: [],
-      conversationMessages: [{ role: 'user', content: 'question' }],
-      tailMessages: []
+      stablePrefixMessages: [systemMessage],
+      trajectoryMessages: [{ role: 'user', content: 'question' }]
     });
 
     snapshot.messages[0]!.content = 'changed';
@@ -116,6 +148,28 @@ describe('AgentContextBuilder', () => {
           builderVersion: AGENT_CONTEXT_BUILDER_VERSION,
           fingerprint: 'invalid-fingerprint',
           compacted: true
+        }
+      }
+    } as AgentCheckpoint;
+
+    expect(builder.buildFromCheckpoint(checkpoint, messages)).toBeNull();
+  });
+
+  it('rejects a checkpoint whose builderVersion is not agent-context-v2', () => {
+    const builder = new AgentContextBuilder();
+    const messages: AIMessage[] = [{ role: 'user', content: 'resume' }];
+    const checkpoint = {
+      checkpointId: 'checkpoint-legacy',
+      runId: 'run-legacy',
+      sessionId: 'session-legacy',
+      status: 'running',
+      messages: [],
+      createdAt: new Date().toISOString(),
+      metadata: {
+        context: {
+          builderVersion: 'agent-context-v1',
+          fingerprint: 'legacy-fingerprint',
+          compacted: false
         }
       }
     } as AgentCheckpoint;

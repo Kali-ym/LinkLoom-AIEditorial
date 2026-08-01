@@ -1049,11 +1049,6 @@ export class ReActAgentEngine implements AgentEngine {
 
     const payload = chunk as Record<string, any>;
     if (payload.type === 'round_start') {
-      await middleware.beforeModelCall({
-        messages: spec.input.messages ?? [],
-        providerId: spec.agentDef?.providerId || spec.temporaryAgentDef?.providerId,
-        model: spec.agentDef?.model || spec.temporaryAgentDef?.model
-      });
       return;
     }
 

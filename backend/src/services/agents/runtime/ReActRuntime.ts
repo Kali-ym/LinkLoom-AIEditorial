@@ -14,7 +14,8 @@ import {
 import type { TokenCounter } from '../context/TokenCounter.js';
 import type { ClassifiedMessageBuilder } from '../context/ClassifiedMessageBuilder.js';
 import type { ContextTransformer } from '../context/ContextTransformer.js';
-import type { SessionContext, TurnContext } from '../context/PiContextTypes.js';
+import type { SessionContext, TurnContext, LlmRequestContext } from '../context/PiContextTypes.js';
+import { PI_CONTEXT_PROTOCOL_VERSION } from '../context/PiContextTypes.js';
 import type { ContextUsageSnapshot, ClassifiedModelInput } from '../context/ContextTokenTypes.js';
 import {
   isPermissionPauseError,
@@ -168,11 +169,15 @@ export interface ReActRuntimeMiddlewareHooks {
     messages: AIMessage[];
     providerId?: string;
     model?: string;
+    systemInstruction?: string;
+    turnContextFingerprint?: string;
   }) => void | Promise<void>;
   afterModelCall?: (input: {
     messages: AIMessage[];
     providerId?: string;
     model?: string;
+    systemInstruction?: string;
+    turnContextFingerprint?: string;
     result: unknown;
   }) => void | Promise<void>;
   beforeToolCall?: (input: {
@@ -850,19 +855,26 @@ export class ReActRuntime {
         LogService.info(`[Agent ${agentDef.name}] Round ${roundIndex} starting...`);
       }
 
-      const { messages: modelInput } = await this.buildModelMessages(messages, roundIndex);
+      const request = await this.buildModelMessages(messages, roundIndex);
       if (this.isCancelled()) return this.toCancelledResult(trace, lastToolResult);
       await this.options.middleware?.beforeModelCall?.({
-        messages: modelInput,
+        messages: request.messages,
         providerId: agentDef.providerId,
-        model: agentDef.model
+        model: agentDef.model,
+        systemInstruction: request.systemInstruction,
+        turnContextFingerprint: request.requestContext?.turnContextFingerprint
       });
       let response: AIResponse;
       try {
-        response = await provider.generateContent(modelInput, providerTools, undefined, {
-          signal: this.options.signal,
-          responseCache: this.resolveProviderResponseCache(roundIndex)
-        });
+        response = await provider.generateContent(
+          request.messages,
+          request.providerTools ?? providerTools,
+          request.systemInstruction,
+          {
+            signal: this.options.signal,
+            responseCache: this.resolveProviderResponseCache(roundIndex)
+          }
+        );
         this.captureProviderResponseId(response);
       } catch (error) {
         if (this.isCancellationError(error)) return this.toCancelledResult(trace, lastToolResult);
@@ -876,9 +888,11 @@ export class ReActRuntime {
       }
       if (this.isCancelled()) return this.toCancelledResult(trace, lastToolResult);
       await this.options.middleware?.afterModelCall?.({
-        messages: modelInput,
+        messages: request.messages,
         providerId: agentDef.providerId,
         model: agentDef.model,
+        systemInstruction: request.systemInstruction,
+        turnContextFingerprint: request.requestContext?.turnContextFingerprint,
         result: response
       });
       const normalizedToolCalls = normalizeToolCalls(response.tool_calls, 'provider');
@@ -1633,21 +1647,28 @@ export class ReActRuntime {
       const roundModelStartedAt = Date.now();
       yield { type: 'round_start', round };
 
-      const { messages: modelInput } = await this.buildModelMessages(messages, round);
+      const request = await this.buildModelMessages(messages, round);
       if (this.isCancelled()) {
         yield { type: 'final_trace', stopReason: 'cancelled' };
         return;
       }
       await this.options.middleware?.beforeModelCall?.({
-        messages: modelInput,
+        messages: request.messages,
         providerId: agentDef.providerId,
-        model: agentDef.model
+        model: agentDef.model,
+        systemInstruction: request.systemInstruction,
+        turnContextFingerprint: request.requestContext?.turnContextFingerprint
       });
 
-      const stream = provider.streamContent(modelInput, providerTools, undefined, {
-        signal: this.options.signal,
-        responseCache: this.resolveProviderResponseCache(round)
-      });
+      const stream = provider.streamContent(
+        request.messages,
+        request.providerTools ?? providerTools,
+        request.systemInstruction,
+        {
+          signal: this.options.signal,
+          responseCache: this.resolveProviderResponseCache(round)
+        }
+      );
       let roundContent = '';
       let roundReasoning = '';
       let roundUsage: AIResponse['usage'] | undefined;
@@ -1721,9 +1742,11 @@ export class ReActRuntime {
       }
 
       await this.options.middleware?.afterModelCall?.({
-        messages: modelInput,
+        messages: request.messages,
         providerId: agentDef.providerId,
         model: agentDef.model,
+        systemInstruction: request.systemInstruction,
+        turnContextFingerprint: request.requestContext?.turnContextFingerprint,
         result: {
           content: roundContent,
           tool_calls: compactStreamToolCalls(toolCallState),
@@ -2804,6 +2827,9 @@ export class ReActRuntime {
     roundIndex: number
   ): Promise<{
     messages: AIMessage[];
+    systemInstruction?: string;
+    providerTools?: ToolDefinition[];
+    requestContext?: LlmRequestContext;
     classified?: ClassifiedModelInput;
     snapshot?: ContextUsageSnapshot;
   }> {
@@ -2822,9 +2848,46 @@ export class ReActRuntime {
       }
     }
 
+    const sessionContext = this.options.context?.sessionContext;
+    const turnContext = this.options.context?.turnContext;
+    const contextTransformer = this.options.context?.contextTransformer;
+
+    if (sessionContext?.protocolVersion === PI_CONTEXT_PROTOCOL_VERSION) {
+      if (!turnContext || !contextTransformer) {
+        throw new Error('context_runtime_not_initialized');
+      }
+
+      const requestContext = contextTransformer.transform({
+        session: {
+          ...sessionContext,
+          trajectory: structuredClone(messages)
+        },
+        turn: turnContext
+      });
+      const snapshot = await this.measureContextUsage(
+        requestContext.messages,
+        roundIndex,
+        result.compacted,
+        requestContext.systemInstruction
+      );
+
+      return {
+        messages: requestContext.messages,
+        systemInstruction: requestContext.systemInstruction,
+        providerTools: requestContext.providerTools,
+        requestContext,
+        snapshot
+      };
+    }
+
     const modelMessages = result.compacted ? messages : result.messages;
     const snapshot = await this.measureContextUsage(modelMessages, roundIndex, result.compacted);
-    return { messages: modelMessages, classified: undefined, snapshot };
+    return {
+      messages: modelMessages,
+      providerTools: this.options.providerTools ?? this.options.tools,
+      classified: undefined,
+      snapshot
+    };
   }
 
   private toCompactionRecord(
@@ -2860,11 +2923,16 @@ export class ReActRuntime {
   private async measureContextUsage(
     messages: AIMessage[],
     roundIndex: number,
-    compacted: boolean
+    compacted: boolean,
+    systemInstruction?: string
   ): Promise<ContextUsageSnapshot | undefined> {
     if (!this.options.tokenCounter || !this.options.classifiedMessageBuilder) return undefined;
+    const messagesForCounting =
+      systemInstruction?.trim() && !messages.some((message) => message.role === 'system')
+        ? [{ role: 'system' as const, content: systemInstruction }, ...messages]
+        : messages;
     const classified = this.options.classifiedMessageBuilder.build(
-      messages,
+      messagesForCounting,
       this.options.tools ?? [],
       this.collectMcpToolIds()
     );
