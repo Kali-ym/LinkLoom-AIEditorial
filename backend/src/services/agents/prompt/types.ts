@@ -107,7 +107,7 @@ export interface PromptBuildContext {
   skillInstructions?: string;
   /** 可选:PromptRegistry 实例,供 BaseAgentProvider 等加载 base 模板(测试可注入) */
   registry?: import('./registry/PromptRegistry.js').PromptRegistry;
-  /** Console 联网搜索策略;由 AgentService 解析,ModelHintProvider 等消费 */
+  /** Console 联网搜索策略;由 AgentService 解析并传入 TurnContextAssembler */
   webSearchPolicy?: WebSearchPolicy;
 }
 

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { KnowledgeContextProvider } from '../src/services/agents/prompt/providers/KnowledgeContextProvider.js';
-import { MemoryContextProvider } from '../src/services/agents/prompt/providers/MemoryContextProvider.js';
-import { TodoHintProvider } from '../src/services/agents/prompt/providers/TodoHintProvider.js';
-import { replaceMessageVariables } from '../src/services/agents/prompt/replaceMessageVariables.js';
+import { TurnContextAssembler } from '../src/services/agents/context/TurnContextAssembler.js';
+import { hashString } from '../src/services/agents/engine/canonicalMessageSerializer.js';
+import {
+  assembleSystemMessages,
+  buildPromptPipelineContext
+} from '../src/services/agents/prompt/index.js';
+import { ModelHintProvider } from '../src/services/agents/prompt/providers/ModelHintProvider.js';
+import { ToolSystemProvider } from '../src/services/agents/prompt/providers/ToolSystemProvider.js';
 import type { PromptBuildContext } from '../src/services/agents/prompt/types.js';
 
 function makeCtx(overrides: Partial<PromptBuildContext> = {}): PromptBuildContext {
@@ -11,7 +15,7 @@ function makeCtx(overrides: Partial<PromptBuildContext> = {}): PromptBuildContex
       id: 'a',
       name: 'A',
       description: '',
-      systemPrompt: '',
+      systemPrompt: 'You are X',
       providerId: 'OPENAI',
       model: 'gpt-4o',
       temperature: 0,
@@ -30,121 +34,168 @@ function makeCtx(overrides: Partial<PromptBuildContext> = {}): PromptBuildContex
   };
 }
 
-describe('KnowledgeContextProvider', () => {
-  it('wraps knowledgeContext in <retrieved_knowledge> tag', () => {
-    const p = new KnowledgeContextProvider();
-    const r = p.build(makeCtx({ knowledgeContext: '[证据 1] [K1]\n内容A' }));
-    expect(r?.content).toBe('<retrieved_knowledge>[证据 1] [K1]\n内容A</retrieved_knowledge>');
-  });
-  it('returns null when no knowledgeContext', () => {
-    expect(new KnowledgeContextProvider().build(makeCtx({}))).toBeNull();
-  });
-  it('returns null for whitespace-only knowledgeContext', () => {
-    expect(new KnowledgeContextProvider().build(makeCtx({ knowledgeContext: '   ' }))).toBeNull();
-  });
-  it('does NOT xml-escape internal content (preserve nested tags)', () => {
-    const p = new KnowledgeContextProvider();
-    const r = p.build(makeCtx({ knowledgeContext: '<inner>raw</inner>' }));
-    expect(r?.content).toBe('<retrieved_knowledge><inner>raw</inner></retrieved_knowledge>');
-  });
-  it('has id knowledge_context, phase tail_guidance, priority 20', () => {
-    const p = new KnowledgeContextProvider();
-    expect(p.id).toBe('knowledge_context');
-    expect(p.phase).toBe('tail_guidance');
-    expect(p.priority).toBe(20);
-  });
-});
+function contributionFrom(
+  ctx: PromptBuildContext,
+  providerId: string
+) {
+  return assembleSystemMessages(ctx).contributions?.find(
+    (contribution) => contribution.providerId === providerId
+  );
+}
 
-describe('MemoryContextProvider', () => {
-  it('wraps memoryContext in <memory> tag', () => {
-    const p = new MemoryContextProvider();
-    const r = p.build(makeCtx({ memoryContext: '[记忆 1]\n历史记录A' }));
-    expect(r?.content).toBe('<memory>[记忆 1]\n历史记录A</memory>');
-  });
-  it('returns null when no memoryContext', () => {
-    expect(new MemoryContextProvider().build(makeCtx({}))).toBeNull();
-  });
-  it('returns null for whitespace-only memoryContext', () => {
-    expect(new MemoryContextProvider().build(makeCtx({ memoryContext: '  ' }))).toBeNull();
-  });
-  it('does NOT xml-escape internal content', () => {
-    const p = new MemoryContextProvider();
-    const r = p.build(makeCtx({ memoryContext: '含 <tag> 的记忆' }));
-    expect(r?.content).toBe('<memory>含 <tag> 的记忆</memory>');
-  });
-  it('has id memory_context, phase tail_guidance, priority 30', () => {
-    const p = new MemoryContextProvider();
-    expect(p.id).toBe('memory_context');
-    expect(p.phase).toBe('tail_guidance');
-    expect(p.priority).toBe(30);
-  });
-});
+describe('ToolSystemProvider variant boundary', () => {
+  it('classifies non-native tool descriptions as variant_accumulate/variant', () => {
+    const ctx = makeCtx({
+      providerId: 'OLLAMA',
+      model: 'llama2',
+      tools: [{ id: 't1', name: 'search', description: '搜索', parameters: {} } as never]
+    });
+    const toolContribution = contributionFrom(ctx, 'tool_system');
 
-describe('TodoHintProvider', () => {
-  it('renders todos with completed/incomplete marks inside <todos>', () => {
-    const p = new TodoHintProvider();
-    const r = p.build(
+    expect(toolContribution?.phase).toBe('variant_accumulate');
+    expect(toolContribution?.cacheClass).toBe('variant');
+    expect(toolContribution?.content).toContain('<tools');
+  });
+
+  it('derives variantKey from canonical sorted tool definitions', () => {
+    const provider = new ToolSystemProvider();
+    const first = provider.build(
       makeCtx({
-        todoState: {
-          todos: [
-            { id: 't1', content: '已完成项', completed: true },
-            { id: 't2', content: '未完成项', completed: false }
-          ]
+        providerId: 'OLLAMA',
+        model: 'llama2',
+        tools: [
+          { id: 't2', name: 'z_tool', description: 'Z', parameters: { type: 'object' } } as never,
+          { id: 't1', name: 'a_tool', description: 'A', parameters: { type: 'object' } } as never
+        ]
+      })
+    );
+    const second = provider.build(
+      makeCtx({
+        providerId: 'OLLAMA',
+        model: 'llama2',
+        tools: [
+          { id: 't1', name: 'a_tool', description: 'A', parameters: { type: 'object' } } as never,
+          { id: 't2', name: 'z_tool', description: 'Z', parameters: { type: 'object' } } as never
+        ]
+      })
+    );
+
+    expect(first?.variantKey).toBeTruthy();
+    expect(first?.variantKey).toBe(second?.variantKey);
+  });
+});
+
+describe('ModelHintProvider variant boundary', () => {
+  it('classifies agent/model configuration hints as variant_accumulate/variant', () => {
+    const ctx = makeCtx({
+      providerId: 'GEMINI',
+      structuredPrompt: { modelHints: { GEMINI: '自定义模型提示' } }
+    });
+    const modelHintContribution = contributionFrom(ctx, 'model_hint');
+
+    expect(modelHintContribution?.phase).toBe('variant_accumulate');
+    expect(modelHintContribution?.cacheClass).toBe('variant');
+    expect(modelHintContribution?.content).toContain('自定义模型提示');
+  });
+
+  it('does not render per-turn web search policy in prompt contributions', () => {
+    const provider = new ModelHintProvider();
+    const result = provider.build(
+      makeCtx({
+        providerId: 'GEMINI',
+        webSearchPolicy: {
+          effectiveMode: 'provider',
+          injectToolIds: ['crawl_single_page'],
+          stripToolIds: ['web_search'],
+          enableProviderBuiltinSearch: true,
+          degradedFromProvider: false
         }
       })
     );
-    expect(r?.content).toContain('<todos>');
-    expect(r?.content).toContain('当前任务进度');
-    expect(r?.content).toContain('- [x] 已完成项');
-    expect(r?.content).toContain('- [ ] 未完成项');
-    expect(r?.content).toContain('</todos>');
-  });
-  it('returns null when no todoState', () => {
-    expect(new TodoHintProvider().build(makeCtx({}))).toBeNull();
-  });
-  it('returns null when todoState has no todos', () => {
-    expect(new TodoHintProvider().build(makeCtx({ todoState: {} }))).toBeNull();
-  });
-  it('returns null when todos array is empty', () => {
-    expect(new TodoHintProvider().build(makeCtx({ todoState: { todos: [] } }))).toBeNull();
-  });
-  it('has id todo_hint, phase tail_guidance, priority 50', () => {
-    const p = new TodoHintProvider();
-    expect(p.id).toBe('todo_hint');
-    expect(p.phase).toBe('tail_guidance');
-    expect(p.priority).toBe(50);
+
+    expect(result).toBeNull();
   });
 });
 
-describe('replaceMessageVariables', () => {
-  it('replaces {{var}} occurrences', () => {
-    expect(replaceMessageVariables('你好 {{agentName}}', { agentName: 'Copilot' })).toBe(
-      '你好 Copilot'
-    );
+describe('web search policy placement', () => {
+  it('keeps dynamic web search policy out of the stable system hash', () => {
+    const baseInput = {
+      agentDef: {
+        id: 'a',
+        name: 'A',
+        description: '',
+        systemPrompt: 'You are X',
+        providerId: 'GEMINI',
+        model: 'gemini-2.0-flash',
+        temperature: 0,
+        toolIds: [],
+        skillIds: [],
+        mcpServerIds: []
+      } as never,
+      providerId: 'GEMINI',
+      providerConfig: { type: 'GEMINI' } as never,
+      model: 'gemini-2.0-flash',
+      tools: [],
+      skills: [],
+      mcpTools: [],
+      skillMetadata: []
+    };
+
+    const offCtx = buildPromptPipelineContext({
+      ...baseInput,
+      webSearchPolicy: {
+        effectiveMode: 'off',
+        injectToolIds: [],
+        stripToolIds: ['web_search'],
+        enableProviderBuiltinSearch: false,
+        degradedFromProvider: false
+      }
+    });
+    const appCtx = buildPromptPipelineContext({
+      ...baseInput,
+      webSearchPolicy: {
+        effectiveMode: 'app',
+        injectToolIds: ['web_search'],
+        stripToolIds: [],
+        enableProviderBuiltinSearch: false,
+        degradedFromProvider: false
+      }
+    });
+
+    const offStable = hashString(assembleSystemMessages(offCtx).systemMessage.content);
+    const appStable = hashString(assembleSystemMessages(appCtx).systemMessage.content);
+
+    expect(offStable).toBe(appStable);
+    expect(assembleSystemMessages(appCtx).systemMessage.content).not.toContain('内置搜索');
+    expect(assembleSystemMessages(appCtx).systemMessage.content).not.toContain('实时外部信息');
   });
-  it('replaces {{ var }} (with spaces)', () => {
-    expect(replaceMessageVariables('日期 {{ date }}', { date: '2026-06-26' })).toBe(
-      '日期 2026-06-26'
-    );
-  });
-  it('replaces multiple variables', () => {
-    expect(
-      replaceMessageVariables('{{agentId}}-{{sessionId}}', {
-        agentId: 'a1',
-        sessionId: 's2'
+
+  it('represents dynamic web search policy in TurnContext runtime metadata', async () => {
+    const assembler = new TurnContextAssembler({
+      knowledge: async () => ({}),
+      memory: async () => ({}),
+      workspace: async () => ({})
+    });
+
+    const context = await assembler.assemble({
+      turnId: 'turn-search',
+      agentDef: makeCtx().agentDef,
+      userInput: 'search',
+      webSearchPolicy: {
+        effectiveMode: 'app',
+        injectToolIds: ['web_search'],
+        stripToolIds: [],
+        enableProviderBuiltinSearch: false,
+        degradedFromProvider: false
+      }
+    });
+
+    expect(context.sources).toContainEqual(
+      expect.objectContaining({
+        source: 'runtime',
+        trust: 'runtime_metadata',
+        content: expect.stringContaining('"effectiveMode":"app"')
       })
-    ).toBe('a1-s2');
-  });
-  it('leaves missing variables untouched', () => {
-    expect(replaceMessageVariables('你好 {{unknown}}', { agentName: 'A' })).toBe('你好 {{unknown}}');
-  });
-  it('handles empty content', () => {
-    expect(replaceMessageVariables('', { a: 'b' })).toBe('');
-  });
-  it('handles empty variables', () => {
-    expect(replaceMessageVariables('无占位符', {})).toBe('无占位符');
-  });
-  it('skips non-string variable values', () => {
-    expect(replaceMessageVariables('{{a}}', { a: 123 as unknown as string })).toBe('{{a}}');
+    );
   });
 });

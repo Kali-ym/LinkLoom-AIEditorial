@@ -258,4 +258,95 @@ describe('prompt cache route affinity helpers', () => {
     expect(Array.isArray(split.conversation)).toBe(true);
     expect((split.conversation as Array<{ role: string }>)[0]?.role).toBe('user');
   });
+
+  it('keeps per-turn web search policy out of the stable system hash', async () => {
+    const { buildPromptCacheContract } = await import(
+      '../src/services/agents/engine/promptCacheContract.js'
+    );
+    const { resolvePromptCacheCapability } = await import(
+      '../src/services/agents/engine/promptCacheCapabilities.js'
+    );
+    const {
+      assembleSystemMessages,
+      buildPromptPipelineContext
+    } = await import('../src/services/agents/prompt/index.js');
+
+    const baseInput = {
+      agentDef: {
+        id: 'a',
+        name: 'A',
+        description: '',
+        systemPrompt: 'You are X',
+        providerId: 'GEMINI',
+        model: 'gemini-2.0-flash',
+        temperature: 0,
+        toolIds: [],
+        skillIds: [],
+        mcpServerIds: []
+      } as never,
+      providerId: 'GEMINI',
+      providerConfig: { type: 'GEMINI' } as never,
+      model: 'gemini-2.0-flash',
+      tools: [],
+      skills: [],
+      mcpTools: [],
+      skillMetadata: []
+    };
+
+    const offAssembled = assembleSystemMessages(
+      buildPromptPipelineContext({
+        ...baseInput,
+        webSearchPolicy: {
+          effectiveMode: 'off',
+          injectToolIds: [],
+          stripToolIds: ['web_search'],
+          enableProviderBuiltinSearch: false,
+          degradedFromProvider: false
+        }
+      })
+    );
+    const appAssembled = assembleSystemMessages(
+      buildPromptPipelineContext({
+        ...baseInput,
+        webSearchPolicy: {
+          effectiveMode: 'app',
+          injectToolIds: ['web_search'],
+          stripToolIds: [],
+          enableProviderBuiltinSearch: false,
+          degradedFromProvider: false
+        }
+      })
+    );
+
+    const capability = resolvePromptCacheCapability('GEMINI');
+    const offContract = buildPromptCacheContract({
+      providerId: 'GEMINI',
+      model: 'gemini-2.0-flash',
+      stablePrefix: offAssembled.systemMessage.content,
+      variantParts: offAssembled.contributions
+        ?.filter((contribution) => contribution.cacheClass === 'variant')
+        .map((contribution) => ({
+          providerId: contribution.providerId,
+          variantKey: contribution.variantKey,
+          content: contribution.content
+        })),
+      capability
+    });
+    const appContract = buildPromptCacheContract({
+      providerId: 'GEMINI',
+      model: 'gemini-2.0-flash',
+      stablePrefix: appAssembled.systemMessage.content,
+      variantParts: appAssembled.contributions
+        ?.filter((contribution) => contribution.cacheClass === 'variant')
+        .map((contribution) => ({
+          providerId: contribution.providerId,
+          variantKey: contribution.variantKey,
+          content: contribution.content
+        })),
+      capability
+    });
+
+    expect(offContract.stablePrefixHash).toBe(appContract.stablePrefixHash);
+    expect(offContract.variantHash).toBe(appContract.variantHash);
+  });
 });

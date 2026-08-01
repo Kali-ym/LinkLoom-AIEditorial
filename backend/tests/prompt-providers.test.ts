@@ -308,7 +308,7 @@ describe('ModelHintProvider', () => {
     );
     expect(r).toBeNull();
   });
-  it('injects app-mode hint for web_search', () => {
+  it('does not inject app-mode search hint from webSearchPolicy', () => {
     const p = new ModelHintProvider();
     const r = p.build(
       makeCtx({
@@ -322,9 +322,9 @@ describe('ModelHintProvider', () => {
         }
       })
     );
-    expect(r?.content).toContain('实时外部信息');
+    expect(r).toBeNull();
   });
-  it('injects provider-mode hint for google_search', () => {
+  it('does not inject provider-mode search hint from webSearchPolicy', () => {
     const p = new ModelHintProvider();
     const r = p.build(
       makeCtx({
@@ -338,7 +338,7 @@ describe('ModelHintProvider', () => {
         }
       })
     );
-    expect(r?.content).toContain('内置搜索');
+    expect(r).toBeNull();
   });
   it('injects built-in Claude thinking hint when CLAUDE provider and reasoningEffort set', () => {
     const p = new ModelHintProvider();
@@ -378,7 +378,7 @@ describe('ModelHintProvider', () => {
       )
     ).toBeNull();
   });
-  it('combines custom hint + built-in hint', () => {
+  it('combines custom hint without web search policy hints', () => {
     const p = new ModelHintProvider();
     const r = p.build(
       makeCtx({
@@ -394,7 +394,7 @@ describe('ModelHintProvider', () => {
       })
     );
     expect(r?.content).toContain('自定义提示');
-    expect(r?.content).toContain('内置搜索');
+    expect(r?.content).not.toContain('内置搜索');
   });
   it('has id model_hint, phase variant_accumulate, priority 5', () => {
     const p = new ModelHintProvider();

@@ -1,5 +1,9 @@
 import type { ToolDefinition } from '../../../../types/agent.js';
-import { sortToolDefinitions } from '../../engine/canonicalMessageSerializer.js';
+import {
+  canonicalizeToolDefinitions,
+  sortToolDefinitions,
+  stableStringify
+} from '../../engine/canonicalMessageSerializer.js';
 import { isCanUseFC } from '../ModelCapabilities.js';
 import { wrapTag } from '../sanitize.js';
 import type { PromptBuildContext, PromptContribution, PromptProvider } from '../types.js';
@@ -24,10 +28,7 @@ export class ToolSystemProvider implements PromptProvider {
     return {
       content: `<tools description="The tools you can use below">\n${inner}\n</tools>`,
       cacheClass: 'variant',
-      variantKey: tools
-        .map((tool) => tool.name)
-        .sort()
-        .join(',')
+      variantKey: stableStringify(canonicalizeToolDefinitions(tools))
     };
   }
 }

@@ -97,7 +97,7 @@ describe('prompt boundary bridge: stable system vs variant messages', () => {
     expect(assembled.systemMessage.content).not.toContain('<tools');
   });
 
-  it('gemini model with provider webSearchPolicy injects model_hint in variantMessages', () => {
+  it('does not inject webSearchPolicy hints into variantMessages', () => {
     const ctx = buildPromptPipelineContext({
       agentDef: makeAgent({ providerId: 'GEMINI', model: 'gemini-2.0-flash' }),
       providerId: 'GEMINI',
@@ -119,7 +119,6 @@ describe('prompt boundary bridge: stable system vs variant messages', () => {
     const variantContent = assembled.variantMessages.map((message) => message.content).join('\n');
     expect(assembled.systemMessage.content).not.toContain('google_search');
     expect(assembled.systemMessage.content).not.toContain('<model_hint>');
-    expect(variantContent).toContain('<model_hint>');
-    expect(variantContent).toContain('内置搜索');
+    expect(variantContent).not.toContain('内置搜索');
   });
 });
