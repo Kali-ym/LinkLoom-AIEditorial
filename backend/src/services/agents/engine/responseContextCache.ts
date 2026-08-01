@@ -41,6 +41,8 @@ export type ResponseCacheRequest = {
   previousMessageId?: string;
   previousResponseId?: string;
   responseInputFingerprint?: string;
+  sourceErrors?: Array<{ source: string; code: string }>;
+  conversionDiagnostics?: string[];
   /**
    * When true, history assistant messages keep their reasoning/thinking blocks
    * when serialized back to the API. Defaults to false (omitted) so that the
@@ -125,14 +127,14 @@ export function resolveResponseCacheFromSessions(
     if (!responseId && !completionId && !messageId) continue;
 
     if (sessionModel === model && sessionProvider === providerId) {
-      const fingerprintMatches =
-        !responseInputFingerprint ||
-        !persistedFingerprint ||
+      const canReuseProviderContextIds =
+        Boolean(responseInputFingerprint) &&
+        Boolean(persistedFingerprint) &&
         persistedFingerprint === responseInputFingerprint;
       return {
-        responseId: fingerprintMatches ? responseId : undefined,
-        completionId: fingerprintMatches ? completionId : undefined,
-        messageId: fingerprintMatches ? messageId : undefined,
+        responseId: canReuseProviderContextIds ? responseId : undefined,
+        completionId: canReuseProviderContextIds ? completionId : undefined,
+        messageId: canReuseProviderContextIds ? messageId : undefined,
         model: sessionModel,
         providerId: sessionProvider,
         endpoint: readMetadataString(metadata.providerEndpoint),

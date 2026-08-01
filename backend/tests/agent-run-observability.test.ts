@@ -60,4 +60,70 @@ describe('agent run cache observability', () => {
       'GEMINI provider adapter does not expose prompt cache controls': 1
     });
   });
+
+  it('aggregates per-call fingerprints, source failures, and session miss reasons', () => {
+    const session = {
+      runId: 'run-2',
+      events: [
+        {
+          type: 'model_finished',
+          payload: {
+            usage: {
+              prompt_tokens: 120,
+              completion_tokens: 10,
+              total_tokens: 130,
+              prompt_cache: {
+                cacheStatus: 'miss',
+                cachedInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                uncachedInputTokens: 120,
+                turnContextFingerprint: 'turn-a',
+                sourceErrors: [{ source: 'knowledge', code: 'unavailable' }],
+              },
+            },
+          },
+        },
+        {
+          type: 'model_finished',
+          payload: {
+            usage: {
+              prompt_tokens: 140,
+              completion_tokens: 12,
+              total_tokens: 152,
+              prompt_cache: {
+                cacheStatus: 'miss',
+                cachedInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                uncachedInputTokens: 140,
+                turnContextFingerprint: 'turn-b',
+                conversionDiagnostics: ['context_conversion_unsupported'],
+              },
+            },
+          },
+        },
+      ],
+    } as unknown as AgentSession;
+
+    const metrics = computeAgentRunMetrics([], [session]);
+
+    expect(metrics.tokenUsage.perCallCacheObservations).toEqual([
+      {
+        turnContextFingerprint: 'turn-a',
+        cachedInputTokens: 0,
+        sourceErrors: [{ source: 'knowledge', code: 'unavailable' }],
+      },
+      {
+        turnContextFingerprint: 'turn-b',
+        cachedInputTokens: 0,
+        conversionDiagnostics: ['context_conversion_unsupported'],
+      },
+    ]);
+    expect(metrics.tokenUsage.sourceFailureCount).toBe(1);
+    expect(metrics.tokenUsage.converterDropCount).toBe(1);
+    expect(metrics.tokenUsage.sessionMissReasons).toMatchObject({
+      turn_context_changed: 1,
+      turn_context_source_failed: 1,
+      context_conversion_unsupported: 1,
+    });
+  });
 });

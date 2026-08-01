@@ -1,6 +1,10 @@
 import type { AgentEvent } from './engine/AgentEvent.js';
 import type { AgentRun } from './engine/AgentRun.js';
 import type { AgentSession } from './engine/AgentSession.js';
+import {
+  scanPromptCacheSessionDiagnostics,
+  type PromptCacheDiagnosticCall,
+} from './engine/promptCacheDiagnostics.js';
 
 export interface AgentRunMetrics {
   totalRuns: number;
@@ -42,6 +46,15 @@ export interface AgentRunMetrics {
     cacheUnsafe: number;
     cacheHitRate: number;
     cacheDisableReasons: Record<string, number>;
+    perCallCacheObservations: Array<{
+      turnContextFingerprint?: string;
+      cachedInputTokens: number;
+      sourceErrors?: Array<{ source: string; code: string }>;
+      conversionDiagnostics?: string[];
+    }>;
+    sourceFailureCount: number;
+    converterDropCount: number;
+    sessionMissReasons: Record<string, number>;
     estimatedCacheSavingsUsd: number;
     modelCallCount: number;
   };
@@ -104,10 +117,15 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
   let cacheDisabled = 0;
   let cacheUnsafe = 0;
   const cacheDisableReasons = new Map<string, number>();
+  const perCallCacheObservations: AgentRunMetrics['tokenUsage']['perCallCacheObservations'] = [];
+  const sessionMissReasons = new Map<string, number>();
+  let sourceFailureCount = 0;
+  let converterDropCount = 0;
   let estimatedCacheSavingsUsd = 0;
   let modelCallCount = 0;
 
   for (const session of sessions) {
+    const diagnosticCalls: PromptCacheDiagnosticCall[] = [];
     for (const event of session.events) {
       if (event.type === 'permission_required') permissionRequiredCount++;
       if (event.type === 'tool_call_requested') toolCallCount++;
@@ -133,6 +151,24 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
           );
         }
         estimatedCacheSavingsUsd += usage.estimatedCacheSavingsUsd;
+        perCallCacheObservations.push({
+          turnContextFingerprint: usage.turnContextFingerprint,
+          cachedInputTokens: usage.cachedInputTokens,
+          sourceErrors: usage.sourceErrors,
+          conversionDiagnostics: usage.conversionDiagnostics,
+        });
+        sourceFailureCount += usage.sourceErrors?.length ?? 0;
+        if (usage.conversionDiagnostics?.includes('context_conversion_unsupported')) {
+          converterDropCount += 1;
+        }
+        diagnosticCalls.push({
+          promptTokens: usage.promptTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens,
+          turnContextFingerprint: usage.turnContextFingerprint,
+          sourceErrors: usage.sourceErrors,
+          conversionDiagnostics: usage.conversionDiagnostics,
+        });
       }
       if (event.type === 'tool_finished') {
         const toolName = event.payload.toolName || 'unknown';
@@ -141,6 +177,10 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
         if (!event.payload.success) current.failures++;
         toolStats.set(toolName, current);
       }
+    }
+    const sessionDiagnostics = scanPromptCacheSessionDiagnostics(diagnosticCalls);
+    for (const reason of sessionDiagnostics.sessionMissReasons) {
+      sessionMissReasons.set(reason, (sessionMissReasons.get(reason) ?? 0) + 1);
     }
   }
 
@@ -191,6 +231,12 @@ export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[
       cacheDisableReasons: Object.fromEntries(
         [...cacheDisableReasons.entries()].sort((left, right) => right[1] - left[1]),
       ),
+      perCallCacheObservations,
+      sourceFailureCount,
+      converterDropCount,
+      sessionMissReasons: Object.fromEntries(
+        [...sessionMissReasons.entries()].sort((left, right) => right[1] - left[1]),
+      ),
       estimatedCacheSavingsUsd: roundCost(estimatedCacheSavingsUsd),
       modelCallCount
     },
@@ -215,6 +261,9 @@ function extractTokenUsage(usage: unknown): {
   uncachedInputTokens: number;
   cacheStatus?: 'hit' | 'write' | 'miss' | 'unsupported' | 'disabled' | 'unsafe';
   cacheDisableReason?: string;
+  turnContextFingerprint?: string;
+  sourceErrors?: Array<{ source: string; code: string }>;
+  conversionDiagnostics?: string[];
   estimatedCacheSavingsUsd: number;
 } {
   if (!usage || typeof usage !== 'object') {
@@ -259,6 +308,26 @@ function extractTokenUsage(usage: unknown): {
     typeof promptCache?.cacheDisableReason === 'string'
       ? promptCache.cacheDisableReason
       : undefined;
+  const turnContextFingerprint =
+    typeof promptCache?.turnContextFingerprint === 'string'
+      ? promptCache.turnContextFingerprint
+      : undefined;
+  const sourceErrors = Array.isArray(promptCache?.sourceErrors)
+    ? promptCache.sourceErrors.filter(
+        (entry): entry is { source: string; code: string } =>
+          Boolean(
+            entry &&
+              typeof entry === 'object' &&
+              typeof (entry as Record<string, unknown>).source === 'string' &&
+              typeof (entry as Record<string, unknown>).code === 'string',
+          ),
+      )
+    : undefined;
+  const conversionDiagnostics = Array.isArray(promptCache?.conversionDiagnostics)
+    ? promptCache.conversionDiagnostics.filter(
+        (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+      )
+    : undefined;
   const savings = Number(promptCache?.estimatedCacheSavingsUsd ?? 0) || 0;
   return {
     totalTokens: total,
@@ -269,6 +338,9 @@ function extractTokenUsage(usage: unknown): {
     uncachedInputTokens,
     cacheStatus,
     cacheDisableReason,
+    turnContextFingerprint,
+    sourceErrors,
+    conversionDiagnostics,
     estimatedCacheSavingsUsd: savings
   };
 }

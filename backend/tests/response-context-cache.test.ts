@@ -93,14 +93,17 @@ describe('responseContextCache', () => {
           providerCompletionId: 'chatcmpl_old',
           model: 'gpt-4.1',
           providerId: 'openai',
+          turnContextFingerprint: 'turn-fp',
         },
       },
     ];
 
     expect(resolveResponseCacheFromSessions(sessions, 'gpt-5.5', 'openai')).toBeUndefined();
+    const matched = resolveResponseCacheFromSessions(sessions, 'gpt-4.1', 'openai', undefined, 'turn-fp');
+    expect(matched?.completionId).toBe('chatcmpl_old');
     expect(
       resolveResponseCacheFromSessions(sessions, 'gpt-4.1', 'openai')?.completionId,
-    ).toBe('chatcmpl_old');
+    ).toBeUndefined();
   });
 
   it('resolveResponsesChainId remains available for future WebSocket v2', () => {
@@ -214,6 +217,37 @@ describe('responseContextCache', () => {
     expect(first?.responseId).toBe('resp_1');
     expect(second?.cacheKey).toBe('cache-1');
     expect(second?.responseId).toBeUndefined();
+  });
+
+  it('withholds provider ids when either fingerprint is missing', () => {
+    const sessions = [
+      {
+        runId: 'run-1',
+        sessionId: 'session-1',
+        source: 'agent',
+        status: 'succeeded',
+        messages: [],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:01:00.000Z',
+        metadata: {
+          model: 'gpt-4o',
+          providerId: 'openai',
+          providerResponseId: 'resp_1',
+          providerCacheKey: 'cache-1',
+          turnContextFingerprint: 'turn-a',
+        },
+      },
+    ] as AgentSession[];
+
+    expect(
+      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1')?.responseId,
+    ).toBeUndefined();
+    expect(
+      resolveResponseCacheFromSessions(sessions, 'gpt-4o', 'openai', 'cache-1', 'turn-a')?.responseId,
+    ).toBe('resp_1');
   });
 
   it('builds response cache request from contract cacheKey/namespace', () => {

@@ -125,6 +125,7 @@ import {
   type PromptCacheRuntimeMode
 } from './engine/promptCacheContract.js';
 import { resolvePromptCacheCapability } from './engine/promptCacheCapabilities.js';
+import type { PromptCacheObservation } from './engine/promptCacheDiagnostics.js';
 import { applyMultiAgentPromptCachePolicy } from './engine/multiAgentPromptCache.js';
 import {
   rehydratePersistedAgentMessage,
@@ -1079,7 +1080,11 @@ export class AgentService {
       agentDef,
       trajectory,
       cacheContract,
-      turnContext.fingerprint
+      turnContext.fingerprint,
+      {
+        turnContextFingerprint: turnContext.fingerprint,
+        sourceErrors: turnContext.sourceErrors,
+      }
     );
 
     const provider = this.createGovernedProvider({
@@ -1297,7 +1302,11 @@ export class AgentService {
       agentDef,
       trajectory,
       cacheContract,
-      turnContext.fingerprint
+      turnContext.fingerprint,
+      {
+        turnContextFingerprint: turnContext.fingerprint,
+        sourceErrors: turnContext.sourceErrors,
+      }
     );
 
     const provider = this.createGovernedProvider({
@@ -1412,22 +1421,6 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const cacheContract = await this.buildPromptCacheContractForMessages(
-      cacheOptions,
-      agentDef,
-      resolvedProvider.providerConfig,
-      resolvedProvider.provider,
-      resolvedProvider.model,
-      params.messages,
-      tools
-    );
-    const responseCache = await this.resolveResponseCacheForRun(
-      cacheOptions,
-      agentDef,
-      params.messages,
-      cacheContract
-    );
-
     const useNativeFC = isCanUseFC(
       resolvedProvider.providerConfig?.type ?? '',
       agentDef.model
@@ -1441,6 +1434,26 @@ export class AgentService {
       turnId
     });
     const trajectory = sessionContext.trajectory;
+    const cacheContract = await this.buildPromptCacheContractForMessages(
+      cacheOptions,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      params.messages,
+      tools
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      cacheOptions,
+      agentDef,
+      params.messages,
+      cacheContract,
+      turnContext.fingerprint,
+      {
+        turnContextFingerprint: turnContext.fingerprint,
+        sourceErrors: turnContext.sourceErrors,
+      }
+    );
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -1552,22 +1565,6 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const cacheContract = await this.buildPromptCacheContractForMessages(
-      cacheOptions,
-      agentDef,
-      resolvedProvider.providerConfig,
-      resolvedProvider.provider,
-      resolvedProvider.model,
-      params.messages,
-      tools
-    );
-    const responseCache = await this.resolveResponseCacheForRun(
-      cacheOptions,
-      agentDef,
-      params.messages,
-      cacheContract
-    );
-
     const useNativeFC = isCanUseFC(
       resolvedProvider.providerConfig?.type ?? '',
       agentDef.model
@@ -1581,6 +1578,26 @@ export class AgentService {
       turnId
     });
     const trajectory = sessionContext.trajectory;
+    const cacheContract = await this.buildPromptCacheContractForMessages(
+      cacheOptions,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.provider,
+      resolvedProvider.model,
+      params.messages,
+      tools
+    );
+    const responseCache = await this.resolveResponseCacheForRun(
+      cacheOptions,
+      agentDef,
+      params.messages,
+      cacheContract,
+      turnContext.fingerprint,
+      {
+        turnContextFingerprint: turnContext.fingerprint,
+        sourceErrors: turnContext.sourceErrors,
+      }
+    );
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -2450,7 +2467,11 @@ export class AgentService {
             agentDef,
             trajectory,
             contract,
-            turnContext.fingerprint
+            turnContext.fingerprint,
+            {
+              turnContextFingerprint: turnContext.fingerprint,
+              sourceErrors: turnContext.sourceErrors,
+            }
           )
         }
       : await this.rebuildResponseCacheForRecoveredSession(
@@ -3232,7 +3253,8 @@ export class AgentService {
     agentDef: AgentDefinition,
     messages: AIMessage[],
     contract: PromptCacheContract,
-    turnContextFingerprint?: string
+    turnContextFingerprint?: string,
+    turnContextObservation?: PromptCacheObservation
   ): Promise<ResponseCacheRequest | undefined> {
     if (this.isResponseCacheDisabled(options) || !contract.cacheEligibility) {
       return disabledResponseCacheRequest(
@@ -3269,10 +3291,11 @@ export class AgentService {
           turnContextFingerprint
         )
       : undefined;
+    const persistedFingerprint = cacheEntry?.responseInputFingerprint;
     const responseInputFingerprintMismatch =
-      turnContextFingerprint &&
-      cacheEntry?.responseInputFingerprint &&
-      cacheEntry.responseInputFingerprint !== turnContextFingerprint;
+      Boolean(turnContextFingerprint) &&
+      Boolean(persistedFingerprint) &&
+      persistedFingerprint !== turnContextFingerprint;
     const request = buildResponseCacheRequest(messages, cacheEntry, {
       enableStore: true,
       roundIndex: 1,
@@ -3280,15 +3303,23 @@ export class AgentService {
       contract
     });
     if (!request) return undefined;
+    const mismatchReason = responseInputFingerprintMismatch
+      ? 'response_input_fingerprint_mismatch'
+      : undefined;
     return {
       ...request,
       responseInputFingerprint: turnContextFingerprint,
+      sourceErrors: turnContextObservation?.sourceErrors,
+      conversionDiagnostics: turnContextObservation?.conversionDiagnostics,
       ...(responseInputFingerprintMismatch
         ? {
             previousContextId: undefined,
             previousResponseId: undefined,
             previousCompletionId: undefined,
             previousMessageId: undefined,
+            cacheDisableReason: request.cacheDisableReason
+              ? `${request.cacheDisableReason};response_input_fingerprint_mismatch`
+              : mismatchReason,
           }
         : {
             previousResponseId: cacheEntry?.responseId,

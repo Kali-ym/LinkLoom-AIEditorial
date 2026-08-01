@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPromptCacheContract } from '../src/services/agents/engine/promptCacheContract.js';
+import { buildPromptCacheContract, readPromptCacheContract } from '../src/services/agents/engine/promptCacheContract.js';
 import { resolvePromptCacheCapability } from '../src/services/agents/engine/promptCacheCapabilities.js';
 import { applyMultiAgentPromptCachePolicy } from '../src/services/agents/engine/multiAgentPromptCache.js';
 import { PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
@@ -39,6 +39,19 @@ describe('prompt cache contract', () => {
     expect(first.cacheKey).toBe(second.cacheKey);
     expect(first.cacheKey).not.toContain('knowledge');
     expect(first.cacheNamespace).not.toContain('turn');
+  });
+
+  it('rejects persisted v1 contracts without pi-context-v2 protocol', () => {
+    expect(
+      readPromptCacheContract({
+        contractVersion: 'prompt-cache-v1',
+        promptSchemaVersion: 'prompt-schema-v1',
+        cacheNamespace: 'pc:v1:session:s1:openai:gpt-5:chat:none:x:y',
+        cacheKey: 'legacy-key',
+        providerId: 'openai',
+        model: 'gpt-5',
+      }),
+    ).toBeUndefined();
   });
 
   it('resolves conservative provider capabilities', () => {

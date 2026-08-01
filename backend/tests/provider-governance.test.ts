@@ -386,6 +386,25 @@ describe('Provider Governance', () => {
     expect(adapted?.responseCache?.cacheDisableReason).toContain('fallback_provider_mismatch');
   });
 
+  it('records response_input_fingerprint_mismatch when provider context ids cannot be reused', async () => {
+    const { collectFallbackCacheMismatchReasons } = await import(
+      '../src/services/agents/providerGovernance.js'
+    );
+
+    expect(
+      collectFallbackCacheMismatchReasons(
+        {
+          providerId: 'OPENAI',
+          model: 'gpt-5',
+          responseInputFingerprint: 'turn-b',
+          previousResponseId: 'resp_1',
+        },
+        { providerId: 'OPENAI', model: 'gpt-5' },
+        'turn-a',
+      ),
+    ).toContain('response_input_fingerprint_mismatch');
+  });
+
   it('keeps prompt cache when fallback candidate matches the cache contract identity', async () => {
     const { adaptCallOptionsForCandidate } = await import(
       '../src/services/agents/providerGovernance.js'

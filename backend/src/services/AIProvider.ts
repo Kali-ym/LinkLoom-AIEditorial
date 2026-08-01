@@ -505,6 +505,8 @@ export function attachPromptCacheUsage(
     cacheContractVersion: responseCache.cacheContractVersion,
     cacheDisableReason: responseCache.cacheDisableReason,
     turnContextFingerprint: responseCache.responseInputFingerprint,
+    sourceErrors: responseCache.sourceErrors,
+    conversionDiagnostics: responseCache.conversionDiagnostics,
     requested,
     eligible: responseCache.cacheEligibility,
     hit: cachedTokens > 0 ? true : undefined,
@@ -1012,7 +1014,7 @@ function buildChatCompletionsBody(
   return body;
 }
 
-function buildResponsesApiBody(
+export function buildResponsesApiBody(
   model: string,
   prompt: string | AIMessage[],
   tools: any[],

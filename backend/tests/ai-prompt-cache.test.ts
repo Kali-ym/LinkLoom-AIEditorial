@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyAnthropicPromptCache,
   attachPromptCacheUsage,
+  buildResponsesApiBody,
   extractMessagesApiResult,
   markAnthropicToolsCacheControl,
   parseChatCompletionsStreamPayload,
@@ -240,6 +241,46 @@ describe('prompt cache route affinity helpers', () => {
     expect(resolveStreamEndpointPlans({ apiUrl: 'https://example.com', apiEndpoint: 'responses' })).toEqual([
       'responses'
     ]);
+  });
+
+  it('records fingerprint mismatch as a miss while keeping prompt cache eligible', () => {
+    const response = attachPromptCacheUsage(
+      { content: 'ok', usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 } },
+      {
+        enableStore: true,
+        cacheKey: 'cache-1',
+        cacheEligibility: true,
+        cacheContractVersion: 'prompt-cache-v2',
+        cacheDisableReason: 'response_input_fingerprint_mismatch',
+        responseInputFingerprint: 'turn-b',
+      },
+    );
+
+    expect(response.usage?.prompt_cache).toMatchObject({
+      cacheStatus: 'miss',
+      eligible: true,
+      cacheDisableReason: 'response_input_fingerprint_mismatch',
+      turnContextFingerprint: 'turn-b',
+    });
+  });
+
+  it('sets store:false for pi-context-v2 Responses API bodies', () => {
+    const body = buildResponsesApiBody(
+      'gpt-4o',
+      [{ role: 'user', content: 'hello' }],
+      [],
+      'stable identity',
+      'none',
+      {
+        enableStore: true,
+        cacheKey: 'cache-1',
+        cacheContractVersion: 'prompt-cache-v2',
+        cacheEligibility: true,
+      },
+    );
+
+    expect(body.store).toBe(false);
+    expect(body.prompt_cache_key).toBe('cache-1');
   });
 
   it('keeps linkloom_context user messages out of stable system instructions', async () => {

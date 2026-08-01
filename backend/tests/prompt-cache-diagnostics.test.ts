@@ -130,4 +130,41 @@ describe('prompt cache diagnostics', () => {
       })?.reason
     ).toBe('endpoint_changed');
   });
+
+  it('records turn_context_changed when dynamic fingerprint changes', () => {
+    const result = scanPromptCacheSessionDiagnostics([
+      {
+        promptTokens: 4000,
+        cachedInputTokens: 3000,
+        cacheWriteInputTokens: 0,
+        turnContextFingerprint: 'turn-a',
+        timestampMs: 1_000,
+      },
+      {
+        promptTokens: 4200,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        turnContextFingerprint: 'turn-b',
+        timestampMs: 2_000,
+      },
+    ]);
+
+    expect(result.sessionMissReasons).toContain('turn_context_changed');
+  });
+
+  it('records turn_context_source_failed and context_conversion_unsupported', () => {
+    const result = scanPromptCacheSessionDiagnostics([
+      {
+        promptTokens: 4000,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        sourceErrors: [{ source: 'knowledge', code: 'unavailable' }],
+        conversionDiagnostics: ['context_conversion_unsupported'],
+      },
+    ]);
+
+    expect(result.sessionMissReasons).toEqual(
+      expect.arrayContaining(['turn_context_source_failed', 'context_conversion_unsupported']),
+    );
+  });
 });
