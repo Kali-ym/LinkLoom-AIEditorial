@@ -520,14 +520,14 @@ export class ReActAgentEngine implements AgentEngine {
       const runtimeOptions = this.withRuntimeControls(
         runSpec,
         {
-          ...options.runtimeOptions!,
-          agentDef: options.runtimeOptions!.agentDef,
-          provider: options.runtimeOptions!.provider,
+          ...options.runtimeOptions,
+          agentDef: options.runtimeOptions.agentDef,
+          provider: options.runtimeOptions.provider,
           signal: control.controller.signal,
           workspace: {
-            ...options.runtimeOptions!.workspace,
-            workspace: latestSession.workspace ?? options.runtimeOptions!.workspace?.workspace,
-            policy: runSpec.workspacePolicy ?? options.runtimeOptions!.workspace?.policy
+            ...options.runtimeOptions.workspace,
+            workspace: latestSession.workspace ?? options.runtimeOptions.workspace?.workspace,
+            policy: runSpec.workspacePolicy ?? options.runtimeOptions.workspace?.policy
           },
           ...(canStreamResume
             ? {
