@@ -101,7 +101,9 @@ export interface PromptBuildContext {
   providerConfig?: AIProviderConfig;
   model: string;
   variables: Record<string, string>;
-  /** 预生成的 skill instructions（由 AgentService.buildTurnSkillInstructions 生成） */
+  /** 预生成的 skill 元数据（由 AgentService 解析 turn skill ids 后生成） */
+  skillMetadata?: import('../../../types/skill.js').SkillMetadata[];
+  /** @deprecated 使用 skillMetadata */
   skillInstructions?: string;
   /** 可选:PromptRegistry 实例,供 BaseAgentProvider 等加载 base 模板(测试可注入) */
   registry?: import('./registry/PromptRegistry.js').PromptRegistry;

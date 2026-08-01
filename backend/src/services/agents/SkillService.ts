@@ -3,7 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import yaml from 'yaml';
-import { SkillEntry, SkillFrontmatter } from '../../types/skill.js';
+import { AppError } from '../../domain/errors.js';
+import { SkillContent, SkillEntry, SkillFrontmatter, SkillMetadata } from '../../types/skill.js';
 import { LogService } from '../LogService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -119,29 +120,43 @@ export class SkillService {
     return Array.from(this.skills.values());
   }
 
-  async buildSkillsPrompt(skillIds: string[]): Promise<string> {
-    let prompt = '';
-    for (const id of skillIds) {
+  listSkillMetadata(skillIds?: string[]): SkillMetadata[] {
+    const ids = skillIds ?? Array.from(this.skills.keys()).sort((a, b) => a.localeCompare(b));
+    const metadata: SkillMetadata[] = [];
+
+    for (const id of ids) {
       const skill = this.getSkill(id);
-      if (skill) {
-        // Check if dependencies are met
-        const depsMet = this.checkDependencies(skill);
-        if (depsMet) {
-          prompt += `### Skill: ${skill.name}\n`;
-          prompt += `ID: ${skill.id}\n`;
-          prompt += `Location: ${skill.dirPath}\n`;
-          prompt += `Instructions:\n${skill.instructions}\n\n`;
-        } else {
-          LogService.warn(`Skipping skill ${skill.name} due to missing dependencies.`);
-        }
+      if (!skill) continue;
+      if (!this.checkDependencies(skill)) {
+        LogService.warn(`Skipping skill ${skill.name} due to missing dependencies.`);
+        continue;
       }
+      metadata.push({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+      });
     }
 
-    if (prompt) {
-      prompt = `## Available Skills\n\nThe following skill instructions are active for this turn. Follow them when relevant. Use read_skill / list_skill to browse or load additional skill files when the user asks about a skill or you need reference material not included below.\n\n${prompt}`;
-    }
+    return metadata;
+  }
 
-    return prompt;
+  async readSkillContent(skillId: string, relativePath = 'SKILL.md'): Promise<SkillContent> {
+    const skill = this.getSkill(skillId);
+    if (!skill) throw new AppError(404, `Skill not found: ${skillId}`);
+    const normalized = relativePath.replace(/\\/g, '/');
+    const fullPath = resolveSafePath(skill.dirPath, normalized);
+    if (!(await fs.pathExists(fullPath)) || (await fs.stat(fullPath)).isDirectory()) {
+      throw new AppError(404, `Skill file not found: ${normalized}`);
+    }
+    return {
+      skillId: skill.id,
+      name: skill.name,
+      description: skill.description,
+      path: normalized,
+      content: await fs.readFile(fullPath, 'utf8'),
+      ...(normalized === 'SKILL.md' ? { files: [...skill.files] } : {}),
+    };
   }
 
   private checkDependencies(skill: SkillEntry): boolean {
@@ -162,4 +177,13 @@ export class SkillService {
 
     return true;
   }
+}
+
+function resolveSafePath(skillDir: string, filePath: string): string {
+  const fullPath = path.resolve(skillDir, filePath);
+  const root = path.resolve(skillDir);
+  if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
+    throw new AppError(403, 'Forbidden');
+  }
+  return fullPath;
 }

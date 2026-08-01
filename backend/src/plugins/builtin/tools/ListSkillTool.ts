@@ -1,9 +1,8 @@
-import { AppError } from '../../../domain/errors.js';
 import {
   requireToolContext,
   type ToolExecutionContext,
 } from '../../../services/ToolExecutionContext.js';
-import type { SkillEntry } from '../../../types/skill.js';
+import type { SkillMetadata } from '../../../types/skill.js';
 import { BaseTool } from '../../base/BaseTool.js';
 
 type ListSkillArgs = {
@@ -26,20 +25,18 @@ function normalizeQuery(args: ListSkillArgs | string | null | undefined): string
   return '';
 }
 
-function matchesQuery(skill: SkillEntry, query: string): boolean {
+function matchesQuery(skill: SkillMetadata, query: string): boolean {
   if (!query) return true;
   const haystack = `${skill.id} ${skill.name} ${skill.description}`.toLowerCase();
   return haystack.includes(query.toLowerCase());
 }
 
-function toSearchResult(skill: SkillEntry) {
+function toSearchResult(skill: SkillMetadata) {
   return {
     id: skill.id,
     name: skill.name,
     title: skill.name,
     description: skill.description,
-    files: skill.files,
-    isBuiltin: skill.isBuiltin ?? false,
   };
 }
 
@@ -100,7 +97,7 @@ export class ListSkillTool extends BaseTool {
   ) {
     const allowed = context.exposedSkillIds;
     return context.services.skillService
-      .listSkills()
+      .listSkillMetadata()
       .filter((skill) => {
         if (allowed && !allowed.includes(skill.id)) return false;
         return matchesQuery(skill, query);

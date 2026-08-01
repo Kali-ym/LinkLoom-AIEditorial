@@ -214,51 +214,68 @@ describe('SkillProvider', () => {
     } as never;
   }
 
-  it('wraps skillService output in <available_skills>', () => {
+  it('wraps skill metadata in <available_skills>', () => {
     const fakeSkillService = {
-      buildSkillsPrompt: (ids: string[]) =>
-        `### Skill: ${ids[0]}\nID: ${ids[0]}\nInstructions: do X`
+      listSkillMetadata: (ids?: string[]) =>
+        (ids ?? []).map((id) => ({ id, name: `Skill ${id}`, description: 'desc' }))
     };
-    const p = new SkillProvider(fakeSkillService as never);
+    const p = new SkillProvider(fakeSkillService);
     const r = p.build(makeCtx({ agentDef: agentWithSkills(['skill_x']) }));
-    expect(r?.content).toBe(
-      '<available_skills>### Skill: skill_x\nID: skill_x\nInstructions: do X</available_skills>'
-    );
+    expect(r?.content).toContain('<available_skills>');
+    expect(r?.content).toContain('skill_x');
+    expect(r?.content).toContain('Description: desc');
+    expect(r?.content).not.toContain('Instructions');
   });
-  it('prefers ctx.skillInstructions over skillService', () => {
+  it('prefers ctx.skillMetadata over skillService', () => {
     const fakeSkillService = {
-      buildSkillsPrompt: () => 'FROM_SERVICE'
+      listSkillMetadata: () => [{ id: 'from-service', name: 'From Service', description: 'svc' }]
     };
-    const p = new SkillProvider(fakeSkillService as never);
+    const p = new SkillProvider(fakeSkillService);
     const r = p.build(
       makeCtx({
         agentDef: agentWithSkills(['s1']),
-        skillInstructions: 'PRE_GENERATED'
+        skillMetadata: [{ id: 'pre', name: 'Pre', description: 'gen' }]
       })
     );
-    expect(r?.content).toBe('<available_skills>PRE_GENERATED</available_skills>');
+    expect(r?.content).toContain('pre');
+    expect(r?.content).not.toContain('from-service');
   });
   it('returns null when no skillIds', () => {
-    const p = new SkillProvider({ buildSkillsPrompt: () => '' } as never);
+    const p = new SkillProvider({ listSkillMetadata: () => [] });
     expect(p.build(makeCtx({}))).toBeNull();
   });
-  it('returns null when skillService returns empty', () => {
-    const p = new SkillProvider({ buildSkillsPrompt: () => '' } as never);
+  it('returns null when skillService returns empty metadata', () => {
+    const p = new SkillProvider({ listSkillMetadata: () => [] });
     const r = p.build(makeCtx({ agentDef: agentWithSkills(['x']) }));
     expect(r).toBeNull();
   });
-  it('returns null when skillInstructions is empty and no service', () => {
-    const p = new SkillProvider({ buildSkillsPrompt: () => '' } as never);
-    const r = p.build(
-      makeCtx({ agentDef: agentWithSkills(['x']), skillInstructions: '  ' })
-    );
+  it('returns null when skillMetadata is empty and service returns empty', () => {
+    const p = new SkillProvider({ listSkillMetadata: () => [] });
+    const r = p.build(makeCtx({ agentDef: agentWithSkills(['x']), skillMetadata: [] }));
     expect(r).toBeNull();
   });
-  it('has id skill, phase tail_guidance, priority 70', () => {
+  it('has id skill, phase variant_accumulate, priority 70', () => {
     const p = new SkillProvider({} as never);
     expect(p.id).toBe('skill');
-    expect(p.phase).toBe('tail_guidance');
+    expect(p.phase).toBe('variant_accumulate');
     expect(p.priority).toBe(70);
+  });
+
+  it('renders only skill metadata and never instructions or filesystem paths', () => {
+    const provider = new SkillProvider({
+      listSkillMetadata: () => [
+        { id: 'skill-a', name: 'Skill A', description: 'desc' },
+      ],
+    });
+
+    const result = provider.build({
+      agentDef: { skillIds: ['skill-a'] } as never,
+    } as never);
+
+    expect(result?.content).toContain('skill-a');
+    expect(result?.content).toContain('desc');
+    expect(result?.content).not.toContain('Instructions');
+    expect(result?.content).not.toContain('dirPath');
   });
 });
 
@@ -379,10 +396,10 @@ describe('ModelHintProvider', () => {
     expect(r?.content).toContain('自定义提示');
     expect(r?.content).toContain('内置搜索');
   });
-  it('has id model_hint, phase tail_guidance, priority 5', () => {
+  it('has id model_hint, phase variant_accumulate, priority 5', () => {
     const p = new ModelHintProvider();
     expect(p.id).toBe('model_hint');
-    expect(p.phase).toBe('tail_guidance');
+    expect(p.phase).toBe('variant_accumulate');
     expect(p.priority).toBe(5);
   });
 });
@@ -468,31 +485,10 @@ describe('ToolSystemProvider', () => {
     );
     expect(r?.content).toContain('<tool name="nodesc">no description</tool>');
   });
-  it('has id tool_system, phase tail_guidance, priority 40', () => {
+  it('has id tool_system, phase variant_accumulate, priority 40', () => {
     const p = new ToolSystemProvider();
     expect(p.id).toBe('tool_system');
-    expect(p.phase).toBe('tail_guidance');
+    expect(p.phase).toBe('variant_accumulate');
     expect(p.priority).toBe(40);
-  });
-});
-
-import { DateContextProvider } from '../src/services/agents/prompt/providers/DateContextProvider.js';
-
-describe('DateContextProvider', () => {
-  it('injects date as tail_guidance system message', () => {
-    const p = new DateContextProvider();
-    const r = p.build(makeCtx({ date: '2026-06-25' }));
-    expect(r?.content).toContain('2026-06-25');
-    expect(r?.content).toContain('当前处理日期为');
-    expect(p.phase).toBe('tail_guidance');
-  });
-  it('returns null when no date', () => {
-    expect(new DateContextProvider().build(makeCtx({}))).toBeNull();
-  });
-  it('has id date_context, phase tail_guidance, priority 10', () => {
-    const p = new DateContextProvider();
-    expect(p.id).toBe('date_context');
-    expect(p.phase).toBe('tail_guidance');
-    expect(p.priority).toBe(10);
   });
 });

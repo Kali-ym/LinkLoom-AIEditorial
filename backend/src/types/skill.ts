@@ -1,3 +1,18 @@
+export interface SkillMetadata {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface SkillContent {
+  skillId: string;
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+  files?: string[];
+}
+
 export interface SkillFrontmatter {
   name: string;
   description: string;

@@ -1,5 +1,6 @@
 import type { AgentDefinition, SkillDefinition, ToolDefinition } from '../../../types/agent.js';
 import type { AIProviderConfig } from '../../../types/config.js';
+import type { SkillMetadata } from '../../../types/skill.js';
 import type { WebSearchPolicy } from '../search/types.js';
 import { expandStructuredPrompt } from './expandStructuredPrompt.js';
 import { normalizeSystemPrompt } from './normalizeSystemPrompt.js';
@@ -30,8 +31,10 @@ export interface BuildContextInput {
   tools: ToolDefinition[];
   skills: SkillDefinition[];
   mcpTools: ToolDefinition[];
-  /** 由 SkillService.buildTurnSkillInstructions 预先生成 */
-  skillInstructions: string;
+  /** 本轮解析后的 Skill 元数据（由 AgentService 预先生成） */
+  skillMetadata?: SkillMetadata[];
+  /** @deprecated 使用 skillMetadata；保留供过渡测试兼容 */
+  skillInstructions?: string;
   /** 可选:覆盖默认单例 registry(测试用) */
   registry?: PromptRegistry;
   /** 运行时变量(供 VariableReplaceProcessor 与 Provider 渲染使用) */
@@ -50,6 +53,7 @@ export function buildPromptPipelineContext(input: BuildContextInput): PromptBuil
     tools: input.tools,
     skills: input.skills,
     mcpTools: input.mcpTools,
+    skillMetadata: input.skillMetadata,
     providerId: input.providerId,
     providerConfig: input.providerConfig,
     model: input.model,
@@ -74,8 +78,8 @@ export function assembleSystemMessages(ctx: PromptBuildContext): AssembledMessag
     new ConstraintsProvider(),
     new OutputFormatProvider(),
     new ExamplesProvider(),
-    // SkillProvider 兜底 service：实际优先用 ctx.skillInstructions
-    new SkillProvider({ buildSkillsPrompt: () => '' }),
+    // SkillProvider 兜底 service：实际优先用 ctx.skillMetadata
+    new SkillProvider({ listSkillMetadata: () => [] }),
     new ModelHintProvider(),
     new ToolSystemProvider()
   ]);

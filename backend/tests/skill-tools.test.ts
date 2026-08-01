@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { AppError } from '../src/domain/errors.js';
 import { ListSkillTool } from '../src/plugins/builtin/tools/ListSkillTool.js';
 import { ReadSkillTool } from '../src/plugins/builtin/tools/ReadSkillTool.js';
 import type { ToolExecutionContext } from '../src/services/ToolExecutionContext.js';
@@ -41,7 +42,23 @@ function createCtx(skills: SkillEntry[] = sampleSkills): ToolExecutionContext {
     services: {
       skillService: {
         listSkills: () => skills,
+        listSkillMetadata: (ids?: string[]) =>
+          skills
+            .filter((skill) => !ids || ids.includes(skill.id))
+            .map(({ id, name, description }) => ({ id, name, description })),
         getSkill: (id: string) => skills.find((skill) => skill.id === id),
+        readSkillContent: async (id: string, relativePath = 'SKILL.md') => {
+          const skill = skills.find((item) => item.id === id);
+          if (!skill) throw new AppError(404, `Skill not found: ${id}`);
+          return {
+            skillId: skill.id,
+            name: skill.name,
+            description: skill.description,
+            path: relativePath,
+            content: relativePath === 'SKILL.md' ? skill.instructions : 'reference content',
+            files: skill.files,
+          };
+        },
       },
     } as ToolExecutionContext['services'],
   };
@@ -70,6 +87,12 @@ describe('ListSkillTool', () => {
     const result = await tool.handler({}, ctx);
     expect(result.count).toBe(1);
     expect(result.results?.[0]?.id).toBe('daily-one-x');
+  });
+
+  it('does not expose instructions through list_skill', async () => {
+    const result = await new ListSkillTool().handler({}, createCtx());
+    expect(JSON.stringify(result)).not.toContain('Use memory read workflow.');
+    expect(result.results?.[0]).not.toHaveProperty('files');
   });
 });
 

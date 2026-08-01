@@ -21,7 +21,10 @@ function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   };
 }
 
-function build(agent: AgentDefinition, opts: { skillInstructions?: string } = {}) {
+function build(
+  agent: AgentDefinition,
+  opts: { skillMetadata?: { id: string; name: string; description: string }[] } = {}
+) {
   const ctx = buildPromptPipelineContext({
     agentDef: agent,
     providerId: 'OPENAI',
@@ -30,7 +33,7 @@ function build(agent: AgentDefinition, opts: { skillInstructions?: string } = {}
     tools: [],
     skills: [],
     mcpTools: [],
-    skillInstructions: opts.skillInstructions ?? ''
+    skillMetadata: opts.skillMetadata ?? []
   });
   return assembleSystemMessages(ctx);
 }
@@ -43,15 +46,16 @@ describe('prompt boundary bridge: stable system vs variant messages', () => {
     expect(assembled.variantMessages).toEqual([]);
   });
 
-  it('string systemPrompt with skills -> variantMessages contains skill block', () => {
+  it('string systemPrompt with skills -> variantMessages contains skill metadata block', () => {
     const assembled = build(makeAgent({ skillIds: ['s1'] }), {
-      skillInstructions: '## Available Skills\n### Skill: s1'
+      skillMetadata: [{ id: 's1', name: 'Skill 1', description: 'First skill' }]
     });
+    const variantContent = assembled.variantMessages.map((message) => message.content).join('\n');
     expect(assembled.systemMessage.content).not.toContain('<available_skills>');
-    expect(assembled.variantMessages.map((message) => message.content).join('\n')).toContain(
-      '<available_skills>'
-    );
-    expect(assembled.variantMessages.map((message) => message.content).join('\n')).toContain('s1');
+    expect(variantContent).toContain('<available_skills>');
+    expect(variantContent).toContain('s1');
+    expect(variantContent).toContain('First skill');
+    expect(variantContent).not.toContain('Instructions');
     expect(assembled.systemMessage.content).toContain('You are X');
   });
 
@@ -102,7 +106,7 @@ describe('prompt boundary bridge: stable system vs variant messages', () => {
       tools: [],
       skills: [],
       mcpTools: [],
-      skillInstructions: '',
+      skillMetadata: [],
       webSearchPolicy: {
         effectiveMode: 'provider',
         injectToolIds: ['crawl_single_page'],

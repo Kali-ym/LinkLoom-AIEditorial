@@ -852,12 +852,8 @@ export class AgentService {
     );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
-    // 1. Prepare Skills
-    const combinedSkillInstructions = await this.buildTurnSkillInstructions(
-      agentDef,
-      options,
-      input
-    );
+    // 1. Prepare Skills (metadata only; full content via read_skill)
+    const turnSkillMetadata = this.buildTurnSkillMetadata(agentDef, options, input);
 
     // 2. Prepare Tools — agentDef.toolIds (+ read_upload when attachments), adjusted by web search policy.
     const tools = await this.materializeAgentLocalTools(toolIdSet);
@@ -907,7 +903,7 @@ export class AgentService {
       tools,
       skills: [],
       mcpTools,
-      skillInstructions: combinedSkillInstructions,
+      skillMetadata: turnSkillMetadata,
       variables,
     });
     const assembled = assembleSystemMessages(promptCtx);
@@ -956,7 +952,7 @@ export class AgentService {
       attachments: options.attachments,
       tools: combinedTools,
       mcpConfigs,
-      skillInstructions: combinedSkillInstructions ? [combinedSkillInstructions] : [],
+      skillInstructions: [],
       date,
       source: options.runSource,
       contextPolicy: resolvedContextPolicy,
@@ -1056,11 +1052,7 @@ export class AgentService {
     );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
-    const combinedSkillInstructions = await this.buildTurnSkillInstructions(
-      agentDef,
-      options,
-      input
-    );
+    const turnSkillMetadata = this.buildTurnSkillMetadata(agentDef, options, input);
     const tools = await this.materializeAgentLocalTools(toolIdSet);
 
     const mcpConfigs: MCPServerConfig[] = [];
@@ -1103,7 +1095,7 @@ export class AgentService {
       tools,
       skills: [],
       mcpTools,
-      skillInstructions: combinedSkillInstructions,
+      skillMetadata: turnSkillMetadata,
       variables,
     });
     const assembled = assembleSystemMessages(promptCtx);
@@ -1144,7 +1136,7 @@ export class AgentService {
       attachments: options.attachments,
       tools: combinedTools,
       mcpConfigs,
-      skillInstructions: combinedSkillInstructions ? [combinedSkillInstructions] : [],
+      skillInstructions: [],
       date,
       source: options.runSource,
       contextPolicy: resolvedContextPolicy,
@@ -2540,18 +2532,18 @@ export class AgentService {
     return mcpConfigs;
   }
 
-  private async buildTurnSkillInstructions(
+  private buildTurnSkillMetadata(
     agentDef: AgentDefinition,
     options: AgentRunOptions,
     input: string
-  ): Promise<string> {
-    if (options.noSkills) return '';
+  ) {
+    if (options.noSkills) return [];
     const skillIds = resolveTurnSkillIds({
       agentSkillIds: agentDef.skillIds || [],
       message: input,
       userTurnMetadata: options.userTurnMetadata
     });
-    return this.skillService.buildSkillsPrompt(skillIds);
+    return this.skillService.listSkillMetadata(skillIds);
   }
 
   private createTurnContextAssembler(): TurnContextAssembler {
