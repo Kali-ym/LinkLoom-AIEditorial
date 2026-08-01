@@ -79,6 +79,13 @@ export {
   LocalStoreAgentRunRegistry
 } from './AgentRunRegistry.js';
 export type { AgentRunRegistry } from './AgentRunRegistry.js';
+export type {
+  AgentRunContextMetadata,
+  AgentRunInput,
+  AgentRunOutput,
+  AgentRunSpec,
+  AgentRunStatus
+} from './AgentRunSpec.js';
 export type * from './AgentRunSpec.js';
 export * from './AgentRunStateMachine.js';
 export type * from './AgentSession.js';

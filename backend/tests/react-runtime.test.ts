@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { ToolRegistry } from '../src/registries/ToolRegistry.js';
 import { BaseTool } from '../src/plugins/base/BaseTool.js';
 import { AskUserQuestionTool } from '../src/plugins/builtin/tools/AskUserQuestionTool.js';
+import { ContextTransformer } from '../src/services/agents/context/ContextTransformer.js';
+import { createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
+import { SessionContextBuilder } from '../src/services/agents/context/SessionContextBuilder.js';
 import { ReActRuntime } from '../src/services/agents/runtime/ReActRuntime.js';
 import type { AgentDefinition, ToolDefinition } from '../src/types/agent.js';
 import type { AIMessage, AIResponse } from '../src/types/index.js';
@@ -149,6 +152,86 @@ function createRuntime(
 }
 
 describe('ReActRuntime', () => {
+  it('observes provider request from explicit session and turn context without polluting persistent messages', async () => {
+    const calls: Array<{
+      prompt: AIMessage[] | string;
+      systemInstruction?: string;
+      tools: ToolDefinition[];
+    }> = [];
+    const toolRegistry = ToolRegistry.getInstance();
+    const testTools = [new EchoReactTestTool()];
+    for (const tool of testTools) {
+      toolRegistry.registerTool(tool as BaseTool);
+    }
+
+    const sessionContext = new SessionContextBuilder().build({
+      stableSystemPrompt: 'stable system prompt',
+      trajectory: [{ role: 'user', content: 'run test' }],
+      providerTools: []
+    });
+    const turnContext = createTurnContext({
+      turnId: 'turn-1',
+      sources: [{ source: 'knowledge', content: 'knowledge base evidence' }]
+    });
+    const runtimeOptions = {
+      agentDef: createAgent({ mode: 'react', maxRounds: 3, returnTrace: true }),
+      provider: {
+        name: 'test-provider',
+        generateContent: async (
+          prompt: string | AIMessage[],
+          tools: ToolDefinition[],
+          systemInstruction?: string
+        ) => {
+          calls.push({ prompt, systemInstruction, tools });
+          if (calls.length === 1) {
+            return {
+              content: '',
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  name: 'react_test_echo',
+                  arguments: { text: 'hello' }
+                }
+              ]
+            };
+          }
+          return { content: 'done' };
+        }
+      },
+      tools: testTools,
+      mcpConfigs: [],
+      mcpService: { callTool: async () => ({}) } as any,
+      toolRegistry,
+      messages: [{ role: 'user' as const, content: 'run test' }],
+      silent: true,
+      context: {
+        runId: 'run-ctx',
+        sessionId: 'session-ctx',
+        sessionContext,
+        turnContext,
+        contextTransformer: new ContextTransformer()
+      }
+    };
+
+    const runtime = new ReActRuntime(runtimeOptions);
+    await runtime.run();
+
+    const runtimeMessages = runtimeOptions.messages;
+    expect(calls[0].systemInstruction).toContain('stable');
+    expect(calls[0].prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('knowledge')
+        })
+      ])
+    );
+    expect(calls[1].prompt).toHaveLength((calls[0].prompt as AIMessage[]).length + 2);
+    expect(runtimeMessages.every((message) => !String(message.content).includes('knowledge'))).toBe(
+      true
+    );
+  });
+
   it('returns final content without tool calls', async () => {
     const { runtime } = createRuntime([{ content: 'final answer' }], {
       mode: 'classic',

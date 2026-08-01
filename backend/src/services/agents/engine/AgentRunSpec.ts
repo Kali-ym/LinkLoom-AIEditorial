@@ -70,6 +70,15 @@ export interface AgentBudgetPolicy {
   providerGovernance?: ProviderGovernanceConfig;
 }
 
+export interface AgentRunContextMetadata {
+  contextProtocolVersion: 'pi-context-v2';
+  turnId?: string;
+  turnContextFingerprint?: string;
+  stablePrefixHash?: string;
+  variantHash?: string;
+  toolsetHash?: string;
+}
+
 export interface AgentRunOutput {
   content: string;
   data?: unknown;
@@ -106,5 +115,5 @@ export interface AgentRunSpec {
   observationPolicy?: ObservationPolicy;
   workspacePolicy?: WorkspacePolicy;
   budgetPolicy?: AgentBudgetPolicy;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & Partial<AgentRunContextMetadata>;
 }
