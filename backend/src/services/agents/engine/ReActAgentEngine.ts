@@ -51,9 +51,7 @@ import {
   buildCheckpointContextMetadata,
   filterPersistentCheckpointMessages,
   mergePersistedTrajectoryMetadata,
-  isValidV2CheckpointContext,
-  readPersistedPiContextMetadata,
-  resolveLatestValidV2Checkpoint
+  resolveResumeCheckpointForV2Session
 } from './AgentSession.js';
 import { InMemoryAgentSessionStore, type AgentSessionStore } from './AgentSessionStore.js';
 import type { ContextCompactionRecord } from './ContextManager.js';
@@ -1115,13 +1113,14 @@ export class ReActAgentEngine implements AgentEngine {
             }
           }
         : {
+            ...runtimeOptions.middleware,
             afterToolCall: async (input) => {
+              await runtimeOptions.middleware?.afterToolCall?.(input);
               await this.persistRuntimeTrajectory(
                 spec,
                 this.appendToolResultMessage(runtimeOptions.messages, input)
               );
-            },
-            ...runtimeOptions.middleware
+            }
           },
       permission: {
         runId: spec.runId,
@@ -2272,22 +2271,7 @@ export class ReActAgentEngine implements AgentEngine {
   }
 
   private resolveCheckpoint(session: AgentSession, checkpointId?: string) {
-    if (checkpointId) {
-      const checkpoint = session.checkpoints.find((item) => item.checkpointId === checkpointId);
-      assertResumeCheckpointContext(checkpoint);
-      return checkpoint;
-    }
-
-    const hasV2SessionContext = Boolean(readPersistedPiContextMetadata(session.metadata));
-    if (!hasV2SessionContext) {
-      return session.checkpoints.at(-1);
-    }
-
-    const latest = session.checkpoints.at(-1);
-    if (latest && !isValidV2CheckpointContext(latest.metadata)) {
-      assertResumeCheckpointContext(latest);
-    }
-    return resolveLatestValidV2Checkpoint(session.checkpoints);
+    return resolveResumeCheckpointForV2Session(session, checkpointId);
   }
 
   private appendToolResultMessage(

@@ -2077,4 +2077,123 @@ describe('AgentService pi-context-v2 control plane', () => {
       })
     ).rejects.toMatchObject({ code: 'context_version_unsupported' });
   });
+
+  it('resumes from the latest valid v2 checkpoint when the newest checkpoint has an invalid builder', async () => {
+    const { service } = createPiContextService();
+    const session = {
+      runId: 'run-valid-checkpoint-fallback',
+      sessionId: 'session-valid-checkpoint-fallback',
+      source: 'agent' as const,
+      status: 'paused' as const,
+      messages: [{ role: 'user' as const, content: 'stale session trajectory' }],
+      events: [],
+      checkpoints: [
+        {
+          checkpointId: 'checkpoint-valid',
+          runId: 'run-valid-checkpoint-fallback',
+          sessionId: 'session-valid-checkpoint-fallback',
+          status: 'paused' as const,
+          messages: [{ role: 'user' as const, content: 'from valid checkpoint' }],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              builderVersion: 'agent-context-v2',
+              turnId: 'turn-valid'
+            }
+          }
+        },
+        {
+          checkpointId: 'checkpoint-invalid-builder',
+          runId: 'run-valid-checkpoint-fallback',
+          sessionId: 'session-valid-checkpoint-fallback',
+          status: 'paused' as const,
+          messages: [{ role: 'user' as const, content: 'from invalid checkpoint' }],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              builderVersion: 'agent-context-v1',
+              turnId: 'turn-invalid'
+            }
+          }
+        }
+      ],
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agentId: 'pi-context-agent',
+        noTools: true,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-valid'
+        }
+      }
+    };
+    vi.spyOn(service as any, 'assembleTurnContext').mockResolvedValue(
+      createTurnContext({ turnId: 'turn-valid', sources: [] })
+    );
+
+    const resumeContext = await (service as any).buildResumeRuntimeContext(session);
+
+    expect(resumeContext.runtimeOptions.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'from valid checkpoint' })
+      ])
+    );
+    expect(resumeContext.runtimeOptions.messages).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'from invalid checkpoint' })
+      ])
+    );
+  });
+
+  it('rejects resume when checkpoint fingerprint does not match trajectory', async () => {
+    const { service } = createPiContextService();
+    const session = {
+      runId: 'run-checkpoint-mismatch',
+      sessionId: 'session-checkpoint-mismatch',
+      source: 'agent' as const,
+      status: 'paused' as const,
+      messages: [{ role: 'user' as const, content: 'stale session trajectory' }],
+      events: [],
+      checkpoints: [
+        {
+          checkpointId: 'checkpoint-mismatch',
+          runId: 'run-checkpoint-mismatch',
+          sessionId: 'session-checkpoint-mismatch',
+          status: 'paused' as const,
+          messages: [{ role: 'user' as const, content: 'resume with mismatch' }],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              builderVersion: 'agent-context-v2',
+              fingerprint: 'invalid-fingerprint',
+              compacted: true,
+              turnId: 'turn-mismatch'
+            }
+          }
+        }
+      ],
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agentId: 'pi-context-agent',
+        noTools: true,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-mismatch'
+        }
+      }
+    };
+
+    await expect((service as any).buildResumeRuntimeContext(session)).rejects.toMatchObject({
+      code: 'context_checkpoint_mismatch'
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import type { AIMessage, AIResponse } from '../../../types/index.js';
-import type { AgentArtifactRef } from './AgentSession.js';
+import { createContextBudgetExceededError, type AgentArtifactRef } from './AgentSession.js';
 import type { ContextBuildResult, ContextPolicy } from './ContextPolicy.js';
 import { TokenEstimator } from '../context/TokenEstimator.js';
 
@@ -116,8 +116,6 @@ export class DefaultContextManager implements AgentOffloader {
     if (!compacted.compacted || !input.summarizer || input.signal?.aborted) return compacted;
 
     const summaryIndex = compacted.messages.findIndex(isContextSummaryMessage);
-    if (summaryIndex < 0) return compacted;
-
     const olderCount = Number(compacted.metadata?.summarizedMessages || 0);
     const system = messages.find(
       (message) => message.role === 'system' && !isContextSummaryMessage(message)
@@ -126,6 +124,8 @@ export class DefaultContextManager implements AgentOffloader {
       .filter((message) => message !== system && !isContextSummaryMessage(message))
       .slice(0, olderCount);
     if (olderMessages.length === 0) return compacted;
+
+    const heuristicAvailable = hasUsableHeuristicSummary(compacted.summary);
 
     let summarized: string | AIResponse;
     try {
@@ -137,6 +137,9 @@ export class DefaultContextManager implements AgentOffloader {
         signal: input.signal
       });
     } catch {
+      if (!heuristicAvailable) {
+        throw createContextBudgetExceededError();
+      }
       return {
         ...compacted,
         metadata: {
@@ -149,11 +152,19 @@ export class DefaultContextManager implements AgentOffloader {
     if (input.signal?.aborted) return compacted;
 
     const summary = extractSummaryContent(summarized).trim();
-    if (!summary) return compacted;
+    if (!summary) {
+      if (!heuristicAvailable) {
+        throw createContextBudgetExceededError();
+      }
+      return compacted;
+    }
 
-    const messagesWithSummary = compacted.messages.map((message, index) =>
-      index === summaryIndex ? summaryMessage(summary) : message
-    );
+    const messagesWithSummary =
+      summaryIndex >= 0
+        ? compacted.messages.map((message, index) =>
+            index === summaryIndex ? summaryMessage(summary) : message
+          )
+        : insertSummaryMessage(compacted.messages, summary);
 
     return {
       ...compacted,
@@ -409,6 +420,16 @@ function summaryMessage(summary: string): AIMessage {
   };
 }
 
+function insertSummaryMessage(messages: AIMessage[], summary: string): AIMessage[] {
+  const system = messages.find(
+    (message) => message.role === 'system' && !isContextSummaryMessage(message)
+  );
+  const rest = messages.filter(
+    (message) => message !== system && !isContextSummaryMessage(message)
+  );
+  return [...(system ? [{ ...system }] : []), summaryMessage(summary), ...rest];
+}
+
 function isContextSummaryMessage(message: AIMessage): boolean {
   return message.role === 'system' && message.name === CONTEXT_SUMMARY_NAME;
 }
@@ -461,6 +482,10 @@ function truncateBytes(value: string, maxBytes: number): string {
 
 function extractSummaryContent(value: string | AIResponse): string {
   return typeof value === 'string' ? value : value.content || '';
+}
+
+function hasUsableHeuristicSummary(summary: string | undefined): boolean {
+  return Boolean(summary?.trim());
 }
 
 function createArtifactId(runId: string, toolName: string, toolCallId?: string): string {

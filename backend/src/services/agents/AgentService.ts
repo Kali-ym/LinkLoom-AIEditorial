@@ -30,6 +30,10 @@ import type {
   AgentRunSpec
 } from './engine/AgentRunSpec.js';
 import type { AgentSession } from './engine/AgentSession.js';
+import {
+  createContextCheckpointMismatchError,
+  resolveResumeCheckpointForV2Session
+} from './engine/AgentSession.js';
 import { LocalStoreAgentSessionStore } from './engine/AgentSessionStore.js';
 import {
   InMemoryAgentRunEventChannel,
@@ -2326,7 +2330,7 @@ export class AgentService {
     session: AgentSession,
     storedContext: StoredRunContextMetadata
   ): Promise<ResumeRuntimeContext | undefined> {
-    const checkpoint = session.checkpoints.at(-1);
+    const checkpoint = resolveResumeCheckpointForV2Session(session);
     const agentId = session.metadata?.agentId;
     if (typeof agentId !== 'string' || !agentId.trim()) return undefined;
 
@@ -2362,13 +2366,9 @@ export class AgentService {
     if (checkpoint?.messages?.length) {
       const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(checkpoint, trajectory);
       if (!checkpointSnapshot) {
-        LogService.warn(
-          `[AgentService] Ignoring invalid v2 context checkpoint ${checkpoint.checkpointId}; using session trajectory.`
-        );
-        trajectory = this.toRuntimeMessages(session.messages);
-      } else {
-        trajectory = checkpointSnapshot.messages;
+        throw createContextCheckpointMismatchError(checkpoint.checkpointId);
       }
+      trajectory = checkpointSnapshot.messages;
     }
 
     const variables: Record<string, string> = {

@@ -10,11 +10,13 @@ import { InMemoryAgentEventBus } from '../src/services/agents/engine/EventBus.js
 import {
   assertResumeCheckpointContext,
   buildCheckpointContextMetadata,
+  createContextBudgetExceededError,
   isValidV2CheckpointContext,
   preserveRunContextMetadata,
   readPersistedPiContextMetadata,
   resolveLatestValidV2Checkpoint
 } from '../src/services/agents/engine/AgentSession.js';
+import { DefaultContextManager } from '../src/services/agents/engine/ContextManager.js';
 import {
   createContextVersionUnsupportedError,
   readStoredRunContextMetadata
@@ -772,6 +774,116 @@ describe('v2 checkpoint metadata persistence', () => {
     saveSession.mockRestore();
   });
 
+  it('fails with context_budget_exceeded when both summarizers fail without mutating messages', async () => {
+    const eventBus = new InMemoryAgentEventBus();
+    const sessionStore = new InMemoryAgentSessionStore();
+    const engine = new ReActAgentEngine(eventBus, sessionStore, new InMemoryAgentRunRegistry());
+    const summarizeSpy = vi
+      .spyOn(DefaultContextManager.prototype, 'summarizeHistory')
+      .mockReturnValue('');
+    try {
+      const spec = {
+      ...createV2Spec('summarizer-failure'),
+      contextPolicy: {
+        compactionStrategy: 'summarize' as const,
+        maxMessages: 3,
+        summarizeOlderThanMessages: 3,
+        maxInputTokens: 16
+      }
+    } satisfies AgentRunSpec;
+    const originalMessages = [
+      { role: 'user', content: 'first fact artifact_run_summarizer_fail' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second fact' },
+      { role: 'assistant', content: 'second answer' },
+      { role: 'user', content: 'latest question' }
+    ] as AIMessage[];
+    const messagesBefore = JSON.stringify(originalMessages);
+    let providerCalls = 0;
+
+    await engine.prepareRun(spec);
+    await expect(
+      engine.run(spec, {
+        runtimeOptions: {
+          agentDef: {
+            id: 'checkpoint-agent',
+            name: 'Checkpoint Agent',
+            description: '',
+            systemPrompt: '',
+            providerId: 'test',
+            model: 'test',
+            temperature: 0,
+            toolIds: [],
+            skillIds: [],
+            mcpServerIds: [],
+            runtime: { mode: 'classic', maxRounds: 1, returnTrace: true }
+          } as any,
+          provider: {
+            name: 'test-provider',
+            async generateContent() {
+              providerCalls += 1;
+              return { content: 'should not run' };
+            }
+          } as any,
+          tools: [],
+          mcpConfigs: [],
+          mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
+          toolRegistry: ToolRegistry.getInstance(),
+          context: {
+            runId: spec.runId,
+            sessionId: spec.sessionId,
+            policy: spec.contextPolicy,
+            summarizer: async () => {
+              throw new Error('llm summarizer failed');
+            }
+          },
+          messages: originalMessages,
+          silent: true
+        }
+      })
+    ).rejects.toMatchObject({ code: 'context_budget_exceeded' });
+
+    expect(providerCalls).toBe(0);
+    expect(JSON.stringify(originalMessages)).toBe(messagesBefore);
+    } finally {
+      summarizeSpy.mockRestore();
+    }
+  });
+
+  it('chains runtime middleware afterToolCall with trajectory persistence', async () => {
+    const sessionStore = new InMemoryAgentSessionStore();
+    const engine = new ReActAgentEngine(
+      new InMemoryAgentEventBus(),
+      sessionStore,
+      new InMemoryAgentRunRegistry()
+    );
+    const spec = createV2Spec('middleware-chain');
+    await engine.prepareRun(spec);
+    const saveSession = vi.spyOn(sessionStore, 'saveSession');
+    const runtimeMiddlewareAfterToolCall = vi.fn().mockResolvedValue(undefined);
+
+    const controlled = (engine as any).withRuntimeControls(
+      spec,
+      {
+        messages: [{ role: 'user', content: 'hello' }],
+        middleware: {
+          afterToolCall: runtimeMiddlewareAfterToolCall
+        }
+      },
+      undefined,
+      undefined
+    );
+
+    await controlled.middleware.afterToolCall({
+      toolName: 'simple_trajectory_tool',
+      result: { ok: true }
+    });
+
+    expect(runtimeMiddlewareAfterToolCall).toHaveBeenCalledTimes(1);
+    expect(saveSession).toHaveBeenCalled();
+    saveSession.mockRestore();
+  });
+
   it('falls back to heuristic summary metadata when the primary summarizer throws', async () => {
     const eventBus = new InMemoryAgentEventBus();
     const sessionStore = new InMemoryAgentSessionStore();
@@ -888,5 +1000,10 @@ describe('v2 checkpoint metadata persistence', () => {
     expect(readPersistedPiContextMetadata({ contextProtocolVersion: 'agent-context-v1' })).toBe(
       undefined
     );
+  });
+
+  it('creates explicit context budget exceeded errors', () => {
+    const error = createContextBudgetExceededError();
+    expect(error.code).toBe('context_budget_exceeded');
   });
 });

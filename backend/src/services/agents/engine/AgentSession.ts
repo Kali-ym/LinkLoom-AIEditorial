@@ -166,6 +166,47 @@ export function resolveLatestValidV2Checkpoint(
   return undefined;
 }
 
+export function resolveResumeCheckpointForV2Session(
+  session: AgentSession,
+  checkpointId?: string
+): AgentCheckpoint | undefined {
+  if (checkpointId) {
+    const checkpoint = session.checkpoints.find((item) => item.checkpointId === checkpointId);
+    assertResumeCheckpointContext(checkpoint);
+    return checkpoint;
+  }
+
+  const hasV2SessionContext = Boolean(readPersistedPiContextMetadata(session.metadata));
+  if (!hasV2SessionContext) {
+    return session.checkpoints.at(-1);
+  }
+
+  const latest = session.checkpoints.at(-1);
+  if (latest && !isValidV2CheckpointContext(latest.metadata)) {
+    assertResumeCheckpointContext(latest);
+  }
+  return resolveLatestValidV2Checkpoint(session.checkpoints);
+}
+
+export function createContextBudgetExceededError(
+  reason = 'Context compaction could not produce a valid summary within the token budget.'
+): Error & { code: 'context_budget_exceeded' } {
+  const error = new Error(reason) as Error & { code: 'context_budget_exceeded' };
+  error.code = 'context_budget_exceeded';
+  return error;
+}
+
+export function createContextCheckpointMismatchError(
+  checkpointId?: string
+): Error & { code: 'context_checkpoint_mismatch' } {
+  const label = checkpointId?.trim() ? checkpointId : 'unknown';
+  const error = new Error(
+    `Context checkpoint fingerprint mismatch: ${label}`
+  ) as Error & { code: 'context_checkpoint_mismatch' };
+  error.code = 'context_checkpoint_mismatch';
+  return error;
+}
+
 export function assertResumeCheckpointContext(
   checkpoint: AgentCheckpoint | undefined
 ): void {
