@@ -25,6 +25,7 @@ import type { ObservationPolicy } from './engine/ObservationPolicy.js';
 import type {
   AgentBudgetPolicy,
   AgentMessage,
+  AgentRunContextMetadata,
   AgentRunSource,
   AgentRunSpec
 } from './engine/AgentRunSpec.js';
@@ -85,9 +86,14 @@ import {
   TokenCounter,
   TokenEstimator,
   ClassifiedMessageBuilder,
+  ContextTransformer,
   resolveContextProfile,
+  SessionContextBuilder,
   TurnContextAssembler,
+  createTurnContext,
+  PI_CONTEXT_PROTOCOL_VERSION,
   type ModelContextProfile,
+  type SessionContext,
   type TurnContext,
   type TurnContextResolverInput
 } from './context/index.js';
@@ -586,17 +592,87 @@ function createToolLimitObservation(params: {
   };
 }
 
+export interface StoredRunContextMetadata extends AgentRunContextMetadata {
+  retrieval?: {
+    knowledgeScope?: unknown;
+    memoryCategoryIds?: string[];
+    memoryEnabled?: boolean;
+  };
+}
+
 export function buildRuntimeContextHooks(input: {
   runSpec: Pick<AgentRunSpec, 'runId' | 'sessionId' | 'contextPolicy'>;
   summarizer?: ContextSummarizer;
+  sessionContext?: SessionContext;
   turnContext?: TurnContext;
+  contextTransformer?: ContextTransformer;
 }): ReActRuntimeContextHooks {
+  const usePiContextV2 =
+    input.sessionContext?.protocolVersion === PI_CONTEXT_PROTOCOL_VERSION;
+  const contextTransformer = usePiContextV2
+    ? (input.contextTransformer ?? new ContextTransformer())
+    : undefined;
+
   return {
     runId: input.runSpec.runId,
     sessionId: input.runSpec.sessionId,
     ...(input.runSpec.contextPolicy ? { policy: input.runSpec.contextPolicy } : {}),
     ...(input.summarizer ? { summarizer: input.summarizer } : {}),
+    ...(input.sessionContext ? { sessionContext: input.sessionContext } : {}),
     ...(input.turnContext ? { turnContext: input.turnContext } : {}),
+    ...(contextTransformer ? { contextTransformer } : {})
+  };
+}
+
+export function readStoredRunContextMetadata(
+  metadata?: Record<string, unknown>
+): StoredRunContextMetadata | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const nested = metadata.context;
+  const nestedRecord =
+    nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? (nested as Record<string, unknown>)
+      : undefined;
+  const version =
+    nestedRecord?.contextProtocolVersion ?? metadata.contextProtocolVersion;
+  if (version !== PI_CONTEXT_PROTOCOL_VERSION) {
+    return typeof version === 'string'
+      ? ({ contextProtocolVersion: version } as StoredRunContextMetadata)
+      : undefined;
+  }
+
+  return {
+    contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+    turnId: readStringMetadata(nestedRecord?.turnId ?? metadata.turnId),
+    turnContextFingerprint: readStringMetadata(
+      nestedRecord?.turnContextFingerprint ?? metadata.turnContextFingerprint
+    ),
+    stablePrefixHash: readStringMetadata(
+      nestedRecord?.stablePrefixHash ?? metadata.stablePrefixHash
+    ),
+    variantHash: readStringMetadata(nestedRecord?.variantHash ?? metadata.variantHash),
+    toolsetHash: readStringMetadata(nestedRecord?.toolsetHash ?? metadata.toolsetHash),
+    retrieval: readRetrievalPolicySnapshot(nestedRecord?.retrieval ?? metadata.retrieval)
+  };
+}
+
+function readStringMetadata(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readRetrievalPolicySnapshot(
+  value: unknown
+): StoredRunContextMetadata['retrieval'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const memoryCategoryIds = Array.isArray(record.memoryCategoryIds)
+    ? record.memoryCategoryIds.filter((item): item is string => typeof item === 'string')
+    : undefined;
+  return {
+    knowledgeScope: record.knowledgeScope,
+    memoryCategoryIds,
+    memoryEnabled:
+      typeof record.memoryEnabled === 'boolean' ? record.memoryEnabled : undefined
   };
 }
 
@@ -879,16 +955,6 @@ export class AgentService {
 
     // 3. Construct System Message via PromptPipeline
     const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
-    const turnContext = await this.assembleTurnContext({
-      turnId,
-      agentDef,
-      userInput: input,
-      sessionId: options.sessionId,
-      metadata: options.metadata,
-      settings,
-      date,
-      webSearchPolicy
-    });
     const variables: Record<string, string> = {
       agentId: agentDef.id,
       agentName: agentDef.name
@@ -915,8 +981,8 @@ export class AgentService {
       );
     }
 
-    // 4. Execution Loop (Maintain message history to avoid repeated tool calls)
-    const messages = await this.buildRunMessages({
+    // 4. Build persistent trajectory only; dynamic turn context is runtime-only.
+    const trajectory = await this.buildRunMessages({
       input,
       assembled,
       options,
@@ -933,22 +999,22 @@ export class AgentService {
       assembled,
       combinedTools
     );
-    const responseCache = await this.resolveResponseCacheForRun(
-      options,
-      agentDef,
-      messages,
-      cacheContract
-    );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
     const resolvedContextPolicy =
       options.contextPolicy ??
       this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
 
+    const baseContextMetadata = this.buildStoredRunContextMetadata({
+      turnId,
+      agentDef,
+      options
+    });
+
     const runSpec = this.createAgentRunSpec({
       agentDef,
       input,
-      messages,
+      messages: trajectory,
       attachments: options.attachments,
       tools: combinedTools,
       mcpConfigs,
@@ -969,6 +1035,9 @@ export class AgentService {
         noSkills: !!options.noSkills,
         agentId: agentDef.id,
         promptCacheContract: cacheContract,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        turnId,
+        context: baseContextMetadata,
         ...(workspacePolicy ? { workspacePolicy } : {}),
         ...(options.metadata ?? {})
       }
@@ -976,10 +1045,39 @@ export class AgentService {
     await this.agentEngine.prepareRun(runSpec);
     await options.onRunCreated?.(runSpec);
 
+    const { turnContext, sessionContext, contextMetadata } =
+      await this.finalizePreparedRunContext({
+        runSpec,
+        agentDef,
+        assembled,
+        trajectory,
+        providerTools,
+        userInput: input,
+        options,
+        settings,
+        date,
+        webSearchPolicy,
+        turnId
+      });
+    const responseCache = await this.resolveResponseCacheForRun(
+      options,
+      agentDef,
+      trajectory,
+      cacheContract,
+      turnContext.fingerprint
+    );
+
     const provider = this.createGovernedProvider({
       ...resolvedProvider,
       agentDef,
-      runSpec,
+      runSpec: {
+        ...runSpec,
+        metadata: {
+          ...runSpec.metadata,
+          ...contextMetadata,
+          context: contextMetadata
+        }
+      },
       budgetPolicy: runSpec.budgetPolicy,
       settings
     });
@@ -987,7 +1085,14 @@ export class AgentService {
     const summarizer = options.summarizer ?? createLLMSummarizer({ provider });
 
     return this.runtimeManager.run({
-      runSpec,
+      runSpec: {
+        ...runSpec,
+        metadata: {
+          ...runSpec.metadata,
+          ...contextMetadata,
+          context: contextMetadata
+        }
+      },
       provider,
       runtimeOptions: {
         agentDef,
@@ -996,10 +1101,15 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages,
+        messages: trajectory,
         responseCache,
         silent: options.silent,
-        context: buildRuntimeContextHooks({ runSpec, summarizer, turnContext }),
+        context: buildRuntimeContextHooks({
+          runSpec,
+          summarizer,
+          sessionContext,
+          turnContext
+        }),
         toolContextExtras: resolveRuntimeToolExtras(
           runSpec,
           agentDef,
@@ -1071,16 +1181,6 @@ export class AgentService {
 
     // Construct System Message via PromptPipeline
     const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
-    const turnContext = await this.assembleTurnContext({
-      turnId,
-      agentDef,
-      userInput: input,
-      sessionId: options.sessionId,
-      metadata: options.metadata,
-      settings,
-      date,
-      webSearchPolicy
-    });
     const variables: Record<string, string> = {
       agentId: agentDef.id,
       agentName: agentDef.name
@@ -1100,7 +1200,7 @@ export class AgentService {
     });
     const assembled = assembleSystemMessages(promptCtx);
 
-    const messages = await this.buildRunMessages({
+    const trajectory = await this.buildRunMessages({
       input,
       assembled,
       options,
@@ -1117,22 +1217,22 @@ export class AgentService {
       assembled,
       combinedTools
     );
-    const responseCache = await this.resolveResponseCacheForRun(
-      options,
-      agentDef,
-      messages,
-      cacheContract
-    );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
     const resolvedContextPolicy =
       options.contextPolicy ??
       this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
 
+    const baseContextMetadata = this.buildStoredRunContextMetadata({
+      turnId,
+      agentDef,
+      options
+    });
+
     const runSpec = this.createAgentRunSpec({
       agentDef,
       input,
-      messages,
+      messages: trajectory,
       attachments: options.attachments,
       tools: combinedTools,
       mcpConfigs,
@@ -1153,6 +1253,9 @@ export class AgentService {
         noSkills: !!options.noSkills,
         agentId: agentDef.id,
         promptCacheContract: cacheContract,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        turnId,
+        context: baseContextMetadata,
         ...(workspacePolicy ? { workspacePolicy } : {}),
         ...(options.metadata ?? {})
       }
@@ -1160,10 +1263,39 @@ export class AgentService {
     await this.agentEngine.prepareRun(runSpec);
     await options.onRunCreated?.(runSpec);
 
+    const { turnContext, sessionContext, contextMetadata } =
+      await this.finalizePreparedRunContext({
+        runSpec,
+        agentDef,
+        assembled,
+        trajectory,
+        providerTools,
+        userInput: input,
+        options,
+        settings,
+        date,
+        webSearchPolicy,
+        turnId
+      });
+    const responseCache = await this.resolveResponseCacheForRun(
+      options,
+      agentDef,
+      trajectory,
+      cacheContract,
+      turnContext.fingerprint
+    );
+
     const provider = this.createGovernedProvider({
       ...resolvedProvider,
       agentDef,
-      runSpec,
+      runSpec: {
+        ...runSpec,
+        metadata: {
+          ...runSpec.metadata,
+          ...contextMetadata,
+          context: contextMetadata
+        }
+      },
       budgetPolicy: runSpec.budgetPolicy,
       settings
     });
@@ -1174,7 +1306,14 @@ export class AgentService {
     const summarizer = options.summarizer ?? createLLMSummarizer({ provider });
 
     yield* this.runtimeManager.stream({
-      runSpec,
+      runSpec: {
+        ...runSpec,
+        metadata: {
+          ...runSpec.metadata,
+          ...contextMetadata,
+          context: contextMetadata
+        }
+      },
       provider,
       runtimeOptions: {
         agentDef,
@@ -1183,10 +1322,15 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: messages.map((message) => ({ ...message })),
+        messages: trajectory.map((message) => ({ ...message })),
         responseCache,
         silent: options.silent,
-        context: buildRuntimeContextHooks({ runSpec, summarizer, turnContext }),
+        context: buildRuntimeContextHooks({
+          runSpec,
+          summarizer,
+          sessionContext,
+          turnContext
+        }),
         toolContextExtras: resolveRuntimeToolExtras(
           runSpec,
           agentDef,
@@ -1269,10 +1413,24 @@ export class AgentService {
       cacheContract
     );
 
+    const useNativeFC = isCanUseFC(
+      resolvedProvider.providerConfig?.type ?? '',
+      agentDef.model
+    );
+    const providerTools = useNativeFC ? tools : [];
+    const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
+    const { turnContext, sessionContext } = this.buildTemporaryRunContext({
+      agentDef,
+      messages: params.messages,
+      providerTools,
+      turnId
+    });
+    const trajectory = sessionContext.trajectory;
+
     const runSpec = this.createAgentRunSpec({
       agentDef,
       input: runtimeMessagePlainText(params.messages.find((m) => m.role === 'user')?.content ?? ''),
-      messages: params.messages,
+      messages: trajectory,
       tools,
       mcpConfigs,
       skillInstructions: [],
@@ -1315,10 +1473,15 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
+        messages: this.contextBuilder.snapshotFromMessages(trajectory).messages,
         responseCache,
         silent: params.silent,
-        context: buildRuntimeContextHooks({ runSpec, summarizer }),
+        context: buildRuntimeContextHooks({
+          runSpec,
+          summarizer,
+          sessionContext,
+          turnContext
+        }),
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
           resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
@@ -1390,10 +1553,24 @@ export class AgentService {
       cacheContract
     );
 
+    const useNativeFC = isCanUseFC(
+      resolvedProvider.providerConfig?.type ?? '',
+      agentDef.model
+    );
+    const providerTools = useNativeFC ? tools : [];
+    const turnId = this.runManager.createRuntimeId(agentDef.id, 'run');
+    const { turnContext, sessionContext } = this.buildTemporaryRunContext({
+      agentDef,
+      messages: params.messages,
+      providerTools,
+      turnId
+    });
+    const trajectory = sessionContext.trajectory;
+
     const runSpec = this.createAgentRunSpec({
       agentDef,
       input: runtimeMessagePlainText(params.messages.find((m) => m.role === 'user')?.content ?? ''),
-      messages: params.messages,
+      messages: trajectory,
       tools,
       mcpConfigs,
       skillInstructions: [],
@@ -1439,9 +1616,14 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
+        messages: this.contextBuilder.snapshotFromMessages(trajectory).messages,
         responseCache,
-        context: buildRuntimeContextHooks({ runSpec, summarizer }),
+        context: buildRuntimeContextHooks({
+          runSpec,
+          summarizer,
+          sessionContext,
+          turnContext
+        }),
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
           resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
@@ -1895,72 +2077,15 @@ export class AgentService {
       throw new Error(`Agent id not found for queued job: ${job.runId}`);
     }
 
-    const agentDefRaw = await this.store.getAgent(agentId);
-    if (!agentDefRaw) {
-      throw new Error(`Agent ${agentId} not found for queued job: ${job.runId}`);
+    const resumeContext = await this.buildResumeRuntimeContext(session);
+    if (!resumeContext) {
+      throw new Error(`Unable to rebuild runtime context for queued job: ${job.runId}`);
     }
-    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
-
-    const settings = await this.store.get('system_settings');
-    const noTools = session.metadata?.noTools === true || job.payload?.noTools === true;
-    const queueWorkspacePolicy = this.readWorkspacePolicyFromMetadata(
-      session.metadata?.workspacePolicy
-    );
-    const resolvedProvider = await this.resolveProviderForAgent(
-      agentDef,
-      true,
-      settings,
-      undefined,
-      session.sessionId
-    );
-    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
-    const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
-    const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
-    const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
-    const budgetPolicy = this.resolveResumeBudgetPolicy(agentDef, session);
-    const runSpec: AgentRunSpec = {
-      ...this.runSpecFromSessionForGovernance(session, agentDef, budgetPolicy),
-      tools: combinedTools,
-      mcpConfigs,
-      skillInstructions: []
-    };
-    // useNativeFC gate(同 runAgent/streamAgent):!FC 时不向 provider 传 tools。
-    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
-    const providerTools = useNativeFC ? combinedTools : [];
-    const provider = this.createGovernedProvider({
-      ...resolvedProvider,
-      agentDef,
-      runSpec,
-      budgetPolicy: runSpec.budgetPolicy,
-      settings
-    });
-    const summarizer = createLLMSummarizer({ provider });
-    const recoveredMessages = this.toRuntimeMessages(session.messages);
-    const { responseCache } = await this.rebuildResponseCacheForRecoveredSession(
-      session,
-      agentDef,
-      resolvedProvider.providerConfig,
-      resolvedProvider.model,
-      recoveredMessages
-    );
 
     await this.runtimeManager.runClaimed({
-      runSpec,
-      provider,
-      runtimeOptions: {
-        agentDef,
-        tools: combinedTools,
-        providerTools,
-        mcpConfigs,
-        mcpService: this.mcpService,
-        toolRegistry: this.toolRegistry,
-        messages: recoveredMessages,
-        responseCache,
-        silent: true,
-        context: buildRuntimeContextHooks({ runSpec, summarizer }),
-        toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
-      },
+      runSpec: resumeContext.runSpec,
+      provider: resumeContext.provider,
+      runtimeOptions: resumeContext.runtimeOptions,
       metadata: {
         agentId,
         recoveredFromQueue: true,
@@ -2176,14 +2301,29 @@ export class AgentService {
   private async buildResumeRuntimeContext(
     session: AgentSession
   ): Promise<ResumeRuntimeContext | undefined> {
+    const storedContext = readStoredRunContextMetadata(session.metadata);
+    if (!storedContext?.contextProtocolVersion) {
+      return this.buildLegacyResumeRuntimeContext(session);
+    }
+    if (storedContext.contextProtocolVersion !== PI_CONTEXT_PROTOCOL_VERSION) {
+      const error = new Error(
+        `Unsupported context protocol version: ${storedContext.contextProtocolVersion}`
+      ) as Error & { code?: string };
+      error.code = 'context_version_unsupported';
+      throw error;
+    }
+    return this.buildV2ResumeRuntimeContext(session, storedContext);
+  }
+
+  private async buildLegacyResumeRuntimeContext(
+    session: AgentSession
+  ): Promise<ResumeRuntimeContext | undefined> {
     const checkpoint = session.checkpoints.at(-1);
     const agentId = session.metadata?.agentId;
     if (typeof agentId !== 'string' || !agentId.trim()) return undefined;
 
     const agentDefRaw = await this.store.getAgent(agentId);
     if (!agentDefRaw) return undefined;
-    // Keep the same provider/model as the initial stream run (console topic selection
-    // is stored on session.metadata.agentConsole, not on the persisted agent record).
     let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
 
     const noTools = session.metadata?.noTools === true;
@@ -2244,8 +2384,167 @@ export class AgentService {
         responseCache,
         silent: true,
         context: buildRuntimeContextHooks({ runSpec, summarizer }),
-        // Run-context tools (create_todos, writeFile, …) need the active agentRun;
-        // without it they fail with "requires an active agent run context".
+        toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
+      }
+    };
+  }
+
+  private async buildV2ResumeRuntimeContext(
+    session: AgentSession,
+    storedContext: StoredRunContextMetadata
+  ): Promise<ResumeRuntimeContext | undefined> {
+    const checkpoint = session.checkpoints.at(-1);
+    const agentId = session.metadata?.agentId;
+    if (typeof agentId !== 'string' || !agentId.trim()) return undefined;
+
+    const agentDefRaw = await this.store.getAgent(agentId);
+    if (!agentDefRaw) return undefined;
+    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
+
+    const noTools = session.metadata?.noTools === true;
+    const settings = await this.store.get('system_settings');
+    const { policy: webSearchPolicy, toolIdSet } = this.resolveWebSearchRunContext(
+      agentDef,
+      { noTools, userTurnMetadata: undefined },
+      settings
+    );
+    const resolvedProvider = await this.resolveProviderForAgent(
+      agentDef,
+      true,
+      settings,
+      { builtinSearch: webSearchPolicy.enableProviderBuiltinSearch ? 'full' : 'off' },
+      session.sessionId
+    );
+    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
+    const tools = await this.materializeAgentLocalTools(toolIdSet);
+    const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
+    const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
+    const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
+    const providerTools = useNativeFC ? combinedTools : [];
+
+    const trajectory = this.toRuntimeMessages(session.messages);
+    if (checkpoint?.messages?.length) {
+      const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(
+        checkpoint,
+        this.toRuntimeMessages(checkpoint.messages)
+      );
+      if (!checkpointSnapshot) {
+        LogService.warn(
+          `[AgentService] Ignoring invalid v2 context checkpoint ${checkpoint.checkpointId}; using session trajectory.`
+        );
+      }
+    }
+
+    const variables: Record<string, string> = {
+      agentId: agentDef.id,
+      agentName: agentDef.name
+    };
+    if (session.sessionId) variables.sessionId = session.sessionId;
+    const promptCtx = buildPromptPipelineContext({
+      agentDef,
+      providerId: resolvedProvider.providerConfig?.type ?? '',
+      providerConfig: resolvedProvider.providerConfig,
+      model: resolvedProvider.model ?? agentDef.model,
+      tools,
+      skills: [],
+      mcpTools,
+      skillMetadata: this.buildTurnSkillMetadata(
+        agentDef,
+        { noSkills: session.metadata?.noSkills === true, metadata: session.metadata },
+        this.readLastUserInputFromTrajectory(trajectory)
+      ),
+      variables
+    });
+    const assembled = assembleSystemMessages(promptCtx);
+    const turnId = storedContext.turnId ?? this.runManager.createRuntimeId(agentDef.id, 'run');
+    const resumeOptions: AgentRunOptions = {
+      sessionId: session.sessionId,
+      metadata: session.metadata
+    };
+    const turnContext = await this.assembleTurnContext({
+      turnId,
+      agentDef,
+      userInput: this.readLastUserInputFromTrajectory(trajectory),
+      sessionId: session.sessionId,
+      metadata: session.metadata,
+      settings,
+      webSearchPolicy
+    });
+    const sessionContext = this.buildSessionContextForRun({
+      assembled,
+      trajectory,
+      providerTools
+    });
+    const contextMetadata: StoredRunContextMetadata = {
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      turnId,
+      turnContextFingerprint: turnContext.fingerprint,
+      stablePrefixHash: sessionContext.stablePrefixHash,
+      variantHash: sessionContext.variantHash,
+      toolsetHash: sessionContext.toolsetHash,
+      retrieval:
+        storedContext.retrieval ?? this.buildRetrievalPolicySnapshot(agentDef, resumeOptions)
+    };
+
+    const budgetPolicy = this.resolveResumeBudgetPolicy(agentDef, session);
+    const runSpec = {
+      ...this.runSpecFromSessionForGovernance(session, agentDef, budgetPolicy),
+      tools: combinedTools,
+      mcpConfigs,
+      metadata: {
+        ...session.metadata,
+        ...contextMetadata,
+        context: contextMetadata
+      }
+    };
+    const provider = this.createGovernedProvider({
+      ...resolvedProvider,
+      agentDef,
+      runSpec,
+      budgetPolicy,
+      settings,
+      initialLedger: this.extractProviderGovernanceLedger(session)
+    });
+    const summarizer = createLLMSummarizer({ provider });
+    const contract = readPromptCacheContract(session.metadata?.promptCacheContract);
+    const { responseCache } = contract
+      ? {
+          responseCache: await this.resolveResponseCacheForRun(
+            resumeOptions,
+            agentDef,
+            trajectory,
+            contract,
+            turnContext.fingerprint
+          )
+        }
+      : await this.rebuildResponseCacheForRecoveredSession(
+          session,
+          agentDef,
+          resolvedProvider.providerConfig,
+          resolvedProvider.model,
+          trajectory
+        );
+
+    return {
+      runSpec,
+      provider,
+      runtimeOptions: {
+        agentDef,
+        tools: combinedTools,
+        providerTools,
+        mcpConfigs,
+        mcpService: this.mcpService,
+        toolRegistry: this.toolRegistry,
+        messages: trajectory,
+        responseCache,
+        silent: true,
+        context: buildRuntimeContextHooks({
+          runSpec,
+          summarizer,
+          sessionContext,
+          turnContext
+        }),
         toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
       }
     };
@@ -2575,6 +2874,139 @@ export class AgentService {
     return this.createTurnContextAssembler().assemble(input);
   }
 
+  private buildStoredRunContextMetadata(input: {
+    turnId: string;
+    agentDef: AgentDefinition;
+    options: AgentRunOptions;
+  }): StoredRunContextMetadata {
+    return {
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      turnId: input.turnId,
+      retrieval: this.buildRetrievalPolicySnapshot(input.agentDef, input.options)
+    };
+  }
+
+  private buildRetrievalPolicySnapshot(
+    agentDef: AgentDefinition,
+    options: AgentRunOptions
+  ): StoredRunContextMetadata['retrieval'] {
+    return {
+      knowledgeScope: agentDef.knowledgeScope ?? legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds),
+      memoryCategoryIds: agentDef.memoryCategoryIds,
+      memoryEnabled: readAgentChatConfigMemoryEnabled(agentDef, options.metadata)
+    };
+  }
+
+  private buildSessionContextForRun(input: {
+    assembled: AssembledMessages;
+    trajectory: AIMessage[];
+    providerTools: ToolDefinition[];
+  }): SessionContext {
+    return new SessionContextBuilder().build({
+      stableSystemPrompt: input.assembled.systemMessage.content,
+      variantMessages: input.assembled.variantMessages,
+      trajectory: input.trajectory,
+      providerTools: input.providerTools
+    });
+  }
+
+  private async finalizePreparedRunContext(input: {
+    runSpec: AgentRunSpec;
+    agentDef: AgentDefinition;
+    assembled: AssembledMessages;
+    trajectory: AIMessage[];
+    providerTools: ToolDefinition[];
+    userInput: string;
+    options: AgentRunOptions;
+    settings?: SystemSettings | null;
+    date?: string;
+    webSearchPolicy?: WebSearchPolicy;
+    turnId: string;
+  }): Promise<{
+    turnContext: TurnContext;
+    sessionContext: SessionContext;
+    contextMetadata: StoredRunContextMetadata;
+  }> {
+    const turnContext = await this.assembleTurnContext({
+      turnId: input.turnId,
+      agentDef: input.agentDef,
+      userInput: input.userInput,
+      sessionId: input.options.sessionId,
+      metadata: input.options.metadata,
+      settings: input.settings,
+      date: input.date,
+      webSearchPolicy: input.webSearchPolicy
+    });
+    const sessionContext = this.buildSessionContextForRun({
+      assembled: input.assembled,
+      trajectory: input.trajectory,
+      providerTools: input.providerTools
+    });
+    const contextMetadata: StoredRunContextMetadata = {
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      turnId: input.turnId,
+      turnContextFingerprint: turnContext.fingerprint,
+      stablePrefixHash: sessionContext.stablePrefixHash,
+      variantHash: sessionContext.variantHash,
+      toolsetHash: sessionContext.toolsetHash,
+      retrieval: this.buildRetrievalPolicySnapshot(input.agentDef, input.options)
+    };
+    await this.patchSessionContextMetadata(input.runSpec, contextMetadata);
+    return { turnContext, sessionContext, contextMetadata };
+  }
+
+  private async patchSessionContextMetadata(
+    runSpec: AgentRunSpec,
+    contextMetadata: StoredRunContextMetadata
+  ): Promise<void> {
+    const session = await this.agentEngine.getSessionByRunId(runSpec.runId);
+    if (!session) return;
+    session.metadata = {
+      ...session.metadata,
+      contextProtocolVersion: contextMetadata.contextProtocolVersion,
+      turnId: contextMetadata.turnId,
+      turnContextFingerprint: contextMetadata.turnContextFingerprint,
+      stablePrefixHash: contextMetadata.stablePrefixHash,
+      variantHash: contextMetadata.variantHash,
+      toolsetHash: contextMetadata.toolsetHash,
+      context: contextMetadata
+    };
+    await this.agentEngine.saveRunSession(session);
+  }
+
+  private readLastUserInputFromTrajectory(messages: AIMessage[]): string {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role === 'user') {
+        return runtimeMessagePlainText(message.content);
+      }
+    }
+    return '';
+  }
+
+  private buildTemporaryRunContext(input: {
+    agentDef: AgentDefinition;
+    messages: AIMessage[];
+    providerTools: ToolDefinition[];
+    turnId: string;
+  }): { turnContext: TurnContext; sessionContext: SessionContext } {
+    const systemMessages = input.messages.filter((message) => message.role === 'system');
+    const trajectory = input.messages.filter((message) => message.role !== 'system');
+    const sessionContext = new SessionContextBuilder().build({
+      stableSystemPrompt: normalizeRuntimeMessageContent(
+        systemMessages[0]?.content ?? input.agentDef.systemPrompt ?? 'You are a helpful assistant.'
+      ),
+      variantMessages: systemMessages.slice(1),
+      trajectory,
+      providerTools: input.providerTools
+    });
+    const turnContext = createTurnContext({
+      turnId: input.turnId,
+      sources: []
+    });
+    return { turnContext, sessionContext };
+  }
+
   /** 预检索知识库:复用 KnowledgeRetrievalService + RagContextBuilder,不走 synthesis agent。 */
   private async resolveKnowledgeContext(
     agentDef: AgentDefinition,
@@ -2682,10 +3114,7 @@ export class AgentService {
     const mergedHistory = pickRicherRuntimeHistory(sessionHistory, clientHistory);
     const conversation = [...mergedHistory, turnMessage];
 
-    return this.contextBuilder.buildInitial({
-      stablePrefixMessages: [input.assembled.systemMessage],
-      trajectoryMessages: [...conversation, ...input.assembled.variantMessages]
-    }).messages;
+    return conversation;
   }
 
   private async buildSessionHistory(
@@ -2857,7 +3286,8 @@ export class AgentService {
     options: AgentRunOptions,
     agentDef: AgentDefinition,
     messages: AIMessage[],
-    contract: PromptCacheContract
+    contract: PromptCacheContract,
+    turnContextFingerprint?: string
   ): Promise<ResponseCacheRequest | undefined> {
     if (this.isResponseCacheDisabled(options) || !contract.cacheEligibility) {
       return disabledResponseCacheRequest(
@@ -2888,6 +3318,7 @@ export class AgentService {
     const cacheEntry = sessionId
       ? resolveResponseCacheFromSessions(sessions, contract.model, contract.providerId, contract.cacheKey)
       : undefined;
+    void turnContextFingerprint;
     return buildResponseCacheRequest(messages, cacheEntry, {
       enableStore: true,
       roundIndex: 1,

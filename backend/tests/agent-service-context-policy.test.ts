@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildContextPolicyFromChatConfig,
   buildRuntimeContextHooks,
+  readStoredRunContextMetadata
 } from '../src/services/agents/AgentService.js';
 import type { ModelContextProfile } from '../src/services/agents/context/ModelContextProfile.js';
-import { createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
+import { ContextTransformer } from '../src/services/agents/context/ContextTransformer.js';
+import { SessionContextBuilder } from '../src/services/agents/context/SessionContextBuilder.js';
+import { createTurnContext, PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
 
 const profile: ModelContextProfile = {
   providerId: 'openai',
@@ -72,6 +75,11 @@ describe('buildRuntimeContextHooks', () => {
     sources: [{ source: 'date', content: '当前处理日期为: 2026-08-01', trust: 'runtime_metadata' }],
     sourceErrors: [],
   });
+  const sessionContext = new SessionContextBuilder().build({
+    stableSystemPrompt: 'stable system',
+    trajectory: [{ role: 'user', content: 'hello' }],
+    providerTools: []
+  });
 
   it('always passes turnContext to runtime even when contextPolicy is undefined', () => {
     const summarizer = vi.fn();
@@ -88,6 +96,7 @@ describe('buildRuntimeContextHooks', () => {
       turnContext,
     });
     expect(hooks.policy).toBeUndefined();
+    expect(hooks.contextTransformer).toBeUndefined();
   });
 
   it('includes policy when contextPolicy is configured', () => {
@@ -103,5 +112,39 @@ describe('buildRuntimeContextHooks', () => {
 
     expect(hooks.policy).toBe(policy);
     expect(hooks.turnContext).toBe(turnContext);
+  });
+
+  it('wires session context and transformer for pi-context-v2 runs', () => {
+    const transformer = new ContextTransformer();
+    const hooks = buildRuntimeContextHooks({
+      runSpec: { runId: 'run-3', sessionId: 'session-3' },
+      sessionContext,
+      turnContext,
+      contextTransformer: transformer
+    });
+
+    expect(hooks.sessionContext).toBe(sessionContext);
+    expect(hooks.turnContext).toBe(turnContext);
+    expect(hooks.contextTransformer).toBe(transformer);
+  });
+});
+
+describe('readStoredRunContextMetadata', () => {
+  it('reads nested session metadata context without dynamic message payloads', () => {
+    expect(
+      readStoredRunContextMetadata({
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-42',
+          turnContextFingerprint: 'fp-42',
+          retrieval: { memoryEnabled: true }
+        }
+      })
+    ).toMatchObject({
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+      turnId: 'turn-42',
+      turnContextFingerprint: 'fp-42',
+      retrieval: { memoryEnabled: true }
+    });
   });
 });

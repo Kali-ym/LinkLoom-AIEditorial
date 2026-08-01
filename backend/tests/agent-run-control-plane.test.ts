@@ -15,6 +15,8 @@ import { AgentRunQueueManager } from '../src/services/agents/managers/AgentRunQu
 import type { ToolExecutionContext } from '../src/services/ToolExecutionContext.js';
 import type { AgentRunSpec } from '../src/services/agents/engine/AgentRunSpec.js';
 import type { AIMessage } from '../src/types/index.js';
+import type { AgentDefinition } from '../src/types/agent.js';
+import { PI_CONTEXT_PROTOCOL_VERSION, createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
 
 class ResumePermissionTool extends BaseTool {
   readonly id = 'resume_write_tool';
@@ -1783,5 +1785,181 @@ describe('ReActAgentEngine run control plane', () => {
         trigger: 'run_started'
       }
     });
+  });
+});
+
+describe('AgentService pi-context-v2 control plane', () => {
+  function createPiContextAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
+    return {
+      id: 'pi-context-agent',
+      name: 'Pi Context Agent',
+      description: '',
+      systemPrompt: 'You are a pi context test agent.',
+      providerId: 'test',
+      model: 'test-model',
+      temperature: 0,
+      toolIds: [],
+      skillIds: [],
+      mcpServerIds: [],
+      runtime: { mode: 'react', maxRounds: 1, returnTrace: true },
+      ...overrides
+    };
+  }
+
+  function createPiContextService(agent: AgentDefinition = createPiContextAgent()) {
+    const provider = {
+      name: 'test-provider',
+      seenPrompts: [] as Array<string | AIMessage[]>,
+      seenSystemInstructions: [] as Array<string | undefined>,
+      async generateContent(
+        prompt: string | AIMessage[],
+        _tools: unknown[],
+        systemInstruction?: string
+      ) {
+        this.seenPrompts.push(prompt);
+        this.seenSystemInstructions.push(systemInstruction);
+        return { content: 'pi context ok' };
+      }
+    };
+    const service = new AgentService(
+      {
+        getAgent: async () => agent,
+        get: async () => ({ AI_PROVIDERS: [], CLOSED_PLUGINS: [] }),
+        put: async () => undefined,
+        getMCPConfig: async () => undefined
+      } as any,
+      provider as any,
+      { listSkillMetadata: () => [] } as any,
+      { getTools: async () => [], callTool: async () => ({}) } as any
+    );
+    return { service, provider };
+  }
+
+  it('marks new runs as pi-context-v2 and keeps retrieved knowledge out of persisted messages', async () => {
+    const { service } = createPiContextService();
+    let capturedSpec: AgentRunSpec | undefined;
+    const runtimeRun = vi
+      .spyOn((service as any).runtimeManager, 'run')
+      .mockResolvedValue({ content: 'pi context ok', stopReason: 'final' });
+    vi.spyOn(service as any, 'assembleTurnContext').mockResolvedValue(
+      createTurnContext({
+        turnId: 'turn-persisted',
+        sources: [
+          {
+            source: 'knowledge',
+            content: '<retrieved_knowledge>secret evidence</retrieved_knowledge>'
+          }
+        ]
+      })
+    );
+
+    await service.runAgent('pi-context-agent', 'find evidence', undefined, {
+      silent: true,
+      onRunCreated: (spec) => {
+        capturedSpec = spec;
+      }
+    });
+
+    const runSpec = runtimeRun.mock.calls[0]?.[0]?.runSpec as AgentRunSpec;
+    const runtimeOptions = runtimeRun.mock.calls[0]?.[0]?.runtimeOptions;
+
+    expect(capturedSpec?.metadata?.contextProtocolVersion).toBe(PI_CONTEXT_PROTOCOL_VERSION);
+    expect(runSpec.metadata?.contextProtocolVersion).toBe(PI_CONTEXT_PROTOCOL_VERSION);
+    expect(runSpec.input.messages).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining('<retrieved_knowledge>')
+        })
+      ])
+    );
+    expect(runtimeOptions?.context?.sessionContext?.protocolVersion).toBe(PI_CONTEXT_PROTOCOL_VERSION);
+    expect(runtimeOptions?.context?.turnContext?.sources[0]?.content).toContain(
+      '<retrieved_knowledge>'
+    );
+    expect(runtimeOptions?.context?.contextTransformer).toBeDefined();
+  });
+
+  it('rebuilds resumed permission runtime with session and turn context hooks', async () => {
+    const { service } = createPiContextService();
+    const session = {
+      runId: 'run-pi-resume',
+      sessionId: 'session-pi-resume',
+      source: 'agent' as const,
+      status: 'paused' as const,
+      messages: [{ role: 'user' as const, content: 'resume with evidence' }],
+      events: [],
+      checkpoints: [
+        {
+          checkpointId: 'checkpoint-pi-resume',
+          runId: 'run-pi-resume',
+          sessionId: 'session-pi-resume',
+          status: 'paused' as const,
+          messages: [{ role: 'user' as const, content: 'resume with evidence' }],
+          createdAt: new Date().toISOString()
+        }
+      ],
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agentId: 'pi-context-agent',
+        noTools: true,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        turnId: 'turn-resume',
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-resume',
+          retrieval: { memoryEnabled: true }
+        }
+      }
+    };
+    vi.spyOn(service as any, 'assembleTurnContext').mockResolvedValue(
+      createTurnContext({
+        turnId: 'turn-resume',
+        sources: [
+          {
+            source: 'knowledge',
+            content: '<retrieved_knowledge>resumed evidence</retrieved_knowledge>'
+          }
+        ]
+      })
+    );
+
+    const resumeContext = await (service as any).buildResumeRuntimeContext(session);
+
+    expect(resumeContext.runtimeOptions.context?.sessionContext?.protocolVersion).toBe(
+      PI_CONTEXT_PROTOCOL_VERSION
+    );
+    expect(resumeContext.runtimeOptions.context?.turnContext?.turnId).toBe('turn-resume');
+    expect(resumeContext.runtimeOptions.context?.contextTransformer).toBeDefined();
+    expect(resumeContext.runtimeOptions.messages).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining('<retrieved_knowledge>')
+        })
+      ])
+    );
+  });
+
+  it('rejects unsupported stored context protocol versions on resume', async () => {
+    const { service } = createPiContextService();
+    await expect(
+      (service as any).buildResumeRuntimeContext({
+        runId: 'run-legacy-protocol',
+        sessionId: 'session-legacy-protocol',
+        source: 'agent',
+        status: 'paused',
+        messages: [{ role: 'user', content: 'resume' }],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metadata: {
+          agentId: 'pi-context-agent',
+          context: { contextProtocolVersion: 'legacy-context-v1' }
+        }
+      })
+    ).rejects.toMatchObject({ code: 'context_version_unsupported' });
   });
 });

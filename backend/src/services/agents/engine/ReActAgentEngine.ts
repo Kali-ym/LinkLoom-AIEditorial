@@ -2160,7 +2160,8 @@ export class ReActAgentEngine implements AgentEngine {
       metadata: {
         permissionId: request.permissionId,
         toolName: request.subject.toolName,
-        workspaceId: runtimeOptions.workspace?.workspace?.workspaceId
+        workspaceId: runtimeOptions.workspace?.workspace?.workspaceId,
+        context: readCheckpointContextMetadata(spec.metadata)
       }
     });
     if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
@@ -2208,7 +2209,8 @@ export class ReActAgentEngine implements AgentEngine {
         requestId: request.requestId,
         toolName: request.toolName,
         toolCallId: request.toolCallId,
-        workspaceId: runtimeOptions.workspace?.workspace?.workspaceId
+        workspaceId: runtimeOptions.workspace?.workspace?.workspaceId,
+        context: readCheckpointContextMetadata(spec.metadata)
       }
     });
     if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
@@ -2388,4 +2390,24 @@ function isEphemeralStreamEvent(event: AgentEvent): boolean {
   if (event.type !== 'custom') return false;
   const name = (event.payload as { name?: unknown } | undefined)?.name;
   return name === 'tool_calls_delta';
+}
+
+function readCheckpointContextMetadata(
+  metadata?: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const nested = metadata.context;
+  const nestedRecord =
+    nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? (nested as Record<string, unknown>)
+      : undefined;
+  const version = nestedRecord?.contextProtocolVersion ?? metadata.contextProtocolVersion;
+  if (version !== 'pi-context-v2') return undefined;
+  return {
+    contextProtocolVersion: version,
+    turnId: nestedRecord?.turnId ?? metadata.turnId,
+    turnContextFingerprint:
+      nestedRecord?.turnContextFingerprint ?? metadata.turnContextFingerprint,
+    retrieval: nestedRecord?.retrieval ?? metadata.retrieval
+  };
 }

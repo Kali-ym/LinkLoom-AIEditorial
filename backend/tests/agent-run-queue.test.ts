@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AgentRunQueueRepository } from '../src/services/repositories/AgentRunQueueRepository.js';
 import { AgentRunQueueManager } from '../src/services/agents/managers/AgentRunQueueManager.js';
+import { AgentService } from '../src/services/agents/AgentService.js';
+import { PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
 import type { AgentRunSpec } from '../src/services/agents/engine/AgentRunSpec.js';
 
 /**
@@ -453,5 +455,115 @@ describe('AgentRunQueueManager (durable backend)', () => {
     const second = await secondPromise;
     expect(secondAcquired).toBe(true);
     await second.release();
+  });
+});
+
+describe('AgentService durable queue context recovery', () => {
+  it('rebuilds pi-context-v2 runtime context before executing a claimed queue job', async () => {
+    const service = new AgentService(
+      {
+        getAgent: async () => ({
+          id: 'queue-agent',
+          name: 'Queue Agent',
+          description: '',
+          systemPrompt: '',
+          providerId: 'test',
+          model: 'test',
+          temperature: 0,
+          toolIds: [],
+          skillIds: [],
+          mcpServerIds: []
+        }),
+        get: async () => ({ AI_PROVIDERS: [], CLOSED_PLUGINS: [] }),
+        put: async () => undefined,
+        getMCPConfig: async () => undefined
+      } as any,
+      { name: 'test-provider', generateContent: async () => ({ content: 'ok' }) } as any,
+      { listSkillMetadata: () => [] } as any,
+      { getTools: async () => [], callTool: async () => ({}) } as any
+    );
+    const session = {
+      runId: 'run_queue_ctx',
+      sessionId: 'session_queue_ctx',
+      source: 'agent' as const,
+      status: 'queued' as const,
+      messages: [{ role: 'user' as const, content: 'queued question' }],
+      events: [],
+      checkpoints: [],
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agentId: 'queue-agent',
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-queue'
+        }
+      }
+    };
+    (service as any).agentEngine = {
+      getSessionByRunId: vi.fn().mockResolvedValue(session)
+    };
+    const resumeContext = {
+      runSpec: makeSpec('queue_ctx'),
+      provider: {
+        name: 'test-provider',
+        generateContent: async () => ({ content: 'queued ok' })
+      },
+      runtimeOptions: {
+        agentDef: {
+          id: 'queue-agent',
+          name: 'Queue Agent',
+          description: '',
+          systemPrompt: '',
+          providerId: 'test',
+          model: 'test',
+          temperature: 0,
+          toolIds: [],
+          skillIds: [],
+          mcpServerIds: []
+        },
+        tools: [],
+        mcpConfigs: [],
+        mcpService: { getTools: async () => [], callTool: async () => ({}) },
+        toolRegistry: { getTool: () => undefined },
+        messages: [{ role: 'user', content: 'queued question' }],
+        context: {
+          sessionContext: { protocolVersion: PI_CONTEXT_PROTOCOL_VERSION },
+          turnContext: { turnId: 'turn-queue' },
+          contextTransformer: { transform: vi.fn() }
+        }
+      }
+    };
+    const buildResumeRuntimeContext = vi
+      .spyOn(service as any, 'buildResumeRuntimeContext')
+      .mockResolvedValue(resumeContext);
+    const runClaimed = vi
+      .spyOn((service as any).runtimeManager, 'runClaimed')
+      .mockResolvedValue({ content: 'queued ok', stopReason: 'final' });
+
+    await (service as any).runDurableQueueJob({
+      runId: 'run_queue_ctx',
+      sessionId: 'session_queue_ctx',
+      attempts: 1,
+      maxAttempts: 3,
+      payload: { agentId: 'queue-agent' }
+    });
+
+    expect(buildResumeRuntimeContext).toHaveBeenCalledWith(session);
+    expect(runClaimed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeOptions: expect.objectContaining({
+          context: expect.objectContaining({
+            sessionContext: expect.objectContaining({
+              protocolVersion: PI_CONTEXT_PROTOCOL_VERSION
+            }),
+            turnContext: expect.objectContaining({ turnId: 'turn-queue' }),
+            contextTransformer: expect.anything()
+          })
+        })
+      })
+    );
   });
 });
