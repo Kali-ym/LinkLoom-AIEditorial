@@ -676,6 +676,17 @@ function readRetrievalPolicySnapshot(
   };
 }
 
+export function createContextVersionUnsupportedError(
+  version?: string
+): Error & { code: 'context_version_unsupported' } {
+  const label = version?.trim() ? version : 'missing';
+  const error = new Error(`Unsupported context protocol version: ${label}`) as Error & {
+    code: 'context_version_unsupported';
+  };
+  error.code = 'context_version_unsupported';
+  return error;
+}
+
 export function buildContextPolicyFromChatConfig(
   chatConfig: Record<string, unknown>,
   profile: ModelContextProfile
@@ -2302,91 +2313,13 @@ export class AgentService {
     session: AgentSession
   ): Promise<ResumeRuntimeContext | undefined> {
     const storedContext = readStoredRunContextMetadata(session.metadata);
-    if (!storedContext?.contextProtocolVersion) {
-      return this.buildLegacyResumeRuntimeContext(session);
-    }
-    if (storedContext.contextProtocolVersion !== PI_CONTEXT_PROTOCOL_VERSION) {
-      const error = new Error(
-        `Unsupported context protocol version: ${storedContext.contextProtocolVersion}`
-      ) as Error & { code?: string };
-      error.code = 'context_version_unsupported';
-      throw error;
+    if (
+      !storedContext?.contextProtocolVersion ||
+      storedContext.contextProtocolVersion !== PI_CONTEXT_PROTOCOL_VERSION
+    ) {
+      throw createContextVersionUnsupportedError(storedContext?.contextProtocolVersion);
     }
     return this.buildV2ResumeRuntimeContext(session, storedContext);
-  }
-
-  private async buildLegacyResumeRuntimeContext(
-    session: AgentSession
-  ): Promise<ResumeRuntimeContext | undefined> {
-    const checkpoint = session.checkpoints.at(-1);
-    const agentId = session.metadata?.agentId;
-    if (typeof agentId !== 'string' || !agentId.trim()) return undefined;
-
-    const agentDefRaw = await this.store.getAgent(agentId);
-    if (!agentDefRaw) return undefined;
-    let agentDef = mergeAgentConsoleRuntimeMetadata(agentDefRaw, session.metadata);
-
-    const noTools = session.metadata?.noTools === true;
-    const settings = await this.store.get('system_settings');
-    const resolvedProvider = await this.resolveProviderForAgent(
-      agentDef,
-      true,
-      settings,
-      undefined,
-      session.sessionId
-    );
-    agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
-    const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
-    const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
-    const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    let messages = this.toRuntimeMessages(
-      checkpoint?.messages?.length ? checkpoint.messages : session.messages
-    );
-    if (checkpoint?.messages?.length) {
-      const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(checkpoint, messages);
-      if (!checkpointSnapshot) {
-        LogService.warn(
-          `[AgentService] Ignoring invalid context checkpoint ${checkpoint.checkpointId}; rebuilding runtime history.`
-        );
-        messages = this.toRuntimeMessages(session.messages);
-      }
-    }
-    const budgetPolicy = this.resolveResumeBudgetPolicy(agentDef, session);
-    const runSpec = this.runSpecFromSessionForGovernance(session, agentDef, budgetPolicy);
-    const provider = this.createGovernedProvider({
-      ...resolvedProvider,
-      agentDef,
-      runSpec,
-      budgetPolicy,
-      settings,
-      initialLedger: this.extractProviderGovernanceLedger(session)
-    });
-
-    const summarizer = createLLMSummarizer({ provider });
-    const { responseCache } = await this.rebuildResponseCacheForRecoveredSession(
-      session,
-      agentDef,
-      resolvedProvider.providerConfig,
-      resolvedProvider.model,
-      messages
-    );
-
-    return {
-      runSpec,
-      provider,
-      runtimeOptions: {
-        agentDef,
-        tools: [...tools, ...mcpTools],
-        mcpConfigs,
-        mcpService: this.mcpService,
-        toolRegistry: this.toolRegistry,
-        messages,
-        responseCache,
-        silent: true,
-        context: buildRuntimeContextHooks({ runSpec, summarizer }),
-        toolContextExtras: mergeAgentRunToolExtras(runSpec, resolveAgentKnowledgeScope(agentDef))
-      }
-    };
   }
 
   private async buildV2ResumeRuntimeContext(
@@ -2423,16 +2356,18 @@ export class AgentService {
     const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? combinedTools : [];
 
-    const trajectory = this.toRuntimeMessages(session.messages);
+    let trajectory = this.toRuntimeMessages(
+      checkpoint?.messages?.length ? checkpoint.messages : session.messages
+    );
     if (checkpoint?.messages?.length) {
-      const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(
-        checkpoint,
-        this.toRuntimeMessages(checkpoint.messages)
-      );
+      const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(checkpoint, trajectory);
       if (!checkpointSnapshot) {
         LogService.warn(
           `[AgentService] Ignoring invalid v2 context checkpoint ${checkpoint.checkpointId}; using session trajectory.`
         );
+        trajectory = this.toRuntimeMessages(session.messages);
+      } else {
+        trajectory = checkpointSnapshot.messages;
       }
     }
 

@@ -17,6 +17,7 @@ import type { AgentRunSpec } from '../src/services/agents/engine/AgentRunSpec.js
 import type { AIMessage } from '../src/types/index.js';
 import type { AgentDefinition } from '../src/types/agent.js';
 import { PI_CONTEXT_PROTOCOL_VERSION, createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
+import { ReActRuntime } from '../src/services/agents/runtime/ReActRuntime.js';
 
 class ResumePermissionTool extends BaseTool {
   readonly id = 'resume_write_tool';
@@ -1672,6 +1673,11 @@ describe('ReActAgentEngine run control plane', () => {
       metadata: {
         agentId: 'agent-ledger',
         noTools: true,
+        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-ledger-resume'
+        },
         budgetPolicy: {
           maxModelCalls: 3,
           maxInputTokens: 100,
@@ -1886,7 +1892,7 @@ describe('AgentService pi-context-v2 control plane', () => {
       sessionId: 'session-pi-resume',
       source: 'agent' as const,
       status: 'paused' as const,
-      messages: [{ role: 'user' as const, content: 'resume with evidence' }],
+      messages: [{ role: 'user' as const, content: 'stale session trajectory' }],
       events: [],
       checkpoints: [
         {
@@ -1894,8 +1900,17 @@ describe('AgentService pi-context-v2 control plane', () => {
           runId: 'run-pi-resume',
           sessionId: 'session-pi-resume',
           status: 'paused' as const,
-          messages: [{ role: 'user' as const, content: 'resume with evidence' }],
-          createdAt: new Date().toISOString()
+          messages: [
+            { role: 'user' as const, content: 'resume with evidence' },
+            { role: 'assistant' as const, content: 'mid-run assistant reply' }
+          ],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              turnId: 'turn-resume'
+            }
+          }
         }
       ],
       artifacts: [],
@@ -1932,6 +1947,11 @@ describe('AgentService pi-context-v2 control plane', () => {
     );
     expect(resumeContext.runtimeOptions.context?.turnContext?.turnId).toBe('turn-resume');
     expect(resumeContext.runtimeOptions.context?.contextTransformer).toBeDefined();
+    expect(resumeContext.runtimeOptions.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'assistant', content: 'mid-run assistant reply' })
+      ])
+    );
     expect(resumeContext.runtimeOptions.messages).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1939,6 +1959,73 @@ describe('AgentService pi-context-v2 control plane', () => {
         })
       ])
     );
+  });
+
+  it('delivers linkloom_context on the first provider call when resuming v2 runtime context', async () => {
+    const { service, provider } = createPiContextService();
+    const session = {
+      runId: 'run-pi-provider-resume',
+      sessionId: 'session-pi-provider-resume',
+      source: 'agent' as const,
+      status: 'paused' as const,
+      messages: [{ role: 'user' as const, content: 'stale session trajectory' }],
+      events: [],
+      checkpoints: [
+        {
+          checkpointId: 'checkpoint-pi-provider-resume',
+          runId: 'run-pi-provider-resume',
+          sessionId: 'session-pi-provider-resume',
+          status: 'paused' as const,
+          messages: [{ role: 'user' as const, content: 'resume with provider context' }],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              turnId: 'turn-provider-resume'
+            }
+          }
+        }
+      ],
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agentId: 'pi-context-agent',
+        noTools: true,
+        context: {
+          contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+          turnId: 'turn-provider-resume'
+        }
+      }
+    };
+    vi.spyOn(service as any, 'assembleTurnContext').mockResolvedValue(
+      createTurnContext({
+        turnId: 'turn-provider-resume',
+        sources: [
+          {
+            source: 'knowledge',
+            content: 'provider-visible resumed knowledge'
+          }
+        ]
+      })
+    );
+
+    const resumeContext = await (service as any).buildResumeRuntimeContext(session);
+    const runtime = new ReActRuntime({
+      ...resumeContext.runtimeOptions,
+      provider
+    });
+    await runtime.run();
+
+    expect(provider.seenPrompts).toHaveLength(1);
+    expect(provider.seenPrompts[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining('<linkloom_context')
+        })
+      ])
+    );
+    expect(provider.seenSystemInstructions[0]).toContain('pi context test agent');
   });
 
   it('rejects unsupported stored context protocol versions on resume', async () => {
@@ -1958,6 +2045,27 @@ describe('AgentService pi-context-v2 control plane', () => {
         metadata: {
           agentId: 'pi-context-agent',
           context: { contextProtocolVersion: 'legacy-context-v1' }
+        }
+      })
+    ).rejects.toMatchObject({ code: 'context_version_unsupported' });
+  });
+
+  it('rejects resume when stored session context metadata is missing', async () => {
+    const { service } = createPiContextService();
+    await expect(
+      (service as any).buildResumeRuntimeContext({
+        runId: 'run-missing-context',
+        sessionId: 'session-missing-context',
+        source: 'agent',
+        status: 'paused',
+        messages: [{ role: 'user', content: 'resume' }],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metadata: {
+          agentId: 'pi-context-agent'
         }
       })
     ).rejects.toMatchObject({ code: 'context_version_unsupported' });

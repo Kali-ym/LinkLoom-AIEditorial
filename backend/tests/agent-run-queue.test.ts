@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentRunQueueRepository } from '../src/services/repositories/AgentRunQueueRepository.js';
 import { AgentRunQueueManager } from '../src/services/agents/managers/AgentRunQueueManager.js';
 import { AgentService } from '../src/services/agents/AgentService.js';
-import { PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
+import { PI_CONTEXT_PROTOCOL_VERSION, createTurnContext } from '../src/services/agents/context/PiContextTypes.js';
+import { ReActRuntime } from '../src/services/agents/runtime/ReActRuntime.js';
 import type { AgentRunSpec } from '../src/services/agents/engine/AgentRunSpec.js';
+import type { AIMessage } from '../src/types/index.js';
 
 /**
  * In-memory fake of {@link PgConnection} covering the agent_run_queue SQL. Models the
@@ -459,14 +461,22 @@ describe('AgentRunQueueManager (durable backend)', () => {
 });
 
 describe('AgentService durable queue context recovery', () => {
-  it('rebuilds pi-context-v2 runtime context before executing a claimed queue job', async () => {
+  it('rebuilds pi-context-v2 runtime context and delivers linkloom_context on first provider call', async () => {
+    const provider = {
+      name: 'test-provider',
+      seenPrompts: [] as Array<string | AIMessage[]>,
+      async generateContent(prompt: string | AIMessage[]) {
+        this.seenPrompts.push(prompt);
+        return { content: 'queued ok' };
+      }
+    };
     const service = new AgentService(
       {
         getAgent: async () => ({
           id: 'queue-agent',
           name: 'Queue Agent',
           description: '',
-          systemPrompt: '',
+          systemPrompt: 'Queue system prompt',
           providerId: 'test',
           model: 'test',
           temperature: 0,
@@ -478,7 +488,7 @@ describe('AgentService durable queue context recovery', () => {
         put: async () => undefined,
         getMCPConfig: async () => undefined
       } as any,
-      { name: 'test-provider', generateContent: async () => ({ content: 'ok' }) } as any,
+      provider as any,
       { listSkillMetadata: () => [] } as any,
       { getTools: async () => [], callTool: async () => ({}) } as any
     );
@@ -487,15 +497,30 @@ describe('AgentService durable queue context recovery', () => {
       sessionId: 'session_queue_ctx',
       source: 'agent' as const,
       status: 'queued' as const,
-      messages: [{ role: 'user' as const, content: 'queued question' }],
+      messages: [{ role: 'user' as const, content: 'stale queued trajectory' }],
       events: [],
-      checkpoints: [],
+      checkpoints: [
+        {
+          checkpointId: 'checkpoint-queue-ctx',
+          runId: 'run_queue_ctx',
+          sessionId: 'session_queue_ctx',
+          status: 'queued' as const,
+          messages: [{ role: 'user' as const, content: 'queued question' }],
+          createdAt: new Date().toISOString(),
+          metadata: {
+            context: {
+              contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+              turnId: 'turn-queue'
+            }
+          }
+        }
+      ],
       artifacts: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       metadata: {
         agentId: 'queue-agent',
-        contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+        noTools: true,
         context: {
           contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
           turnId: 'turn-queue'
@@ -505,43 +530,21 @@ describe('AgentService durable queue context recovery', () => {
     (service as any).agentEngine = {
       getSessionByRunId: vi.fn().mockResolvedValue(session)
     };
-    const resumeContext = {
-      runSpec: makeSpec('queue_ctx'),
-      provider: {
-        name: 'test-provider',
-        generateContent: async () => ({ content: 'queued ok' })
-      },
-      runtimeOptions: {
-        agentDef: {
-          id: 'queue-agent',
-          name: 'Queue Agent',
-          description: '',
-          systemPrompt: '',
-          providerId: 'test',
-          model: 'test',
-          temperature: 0,
-          toolIds: [],
-          skillIds: [],
-          mcpServerIds: []
-        },
-        tools: [],
-        mcpConfigs: [],
-        mcpService: { getTools: async () => [], callTool: async () => ({}) },
-        toolRegistry: { getTool: () => undefined },
-        messages: [{ role: 'user', content: 'queued question' }],
-        context: {
-          sessionContext: { protocolVersion: PI_CONTEXT_PROTOCOL_VERSION },
-          turnContext: { turnId: 'turn-queue' },
-          contextTransformer: { transform: vi.fn() }
-        }
-      }
-    };
-    const buildResumeRuntimeContext = vi
-      .spyOn(service as any, 'buildResumeRuntimeContext')
-      .mockResolvedValue(resumeContext);
+    vi.spyOn(service as any, 'assembleTurnContext').mockResolvedValue(
+      createTurnContext({
+        turnId: 'turn-queue',
+        sources: [{ source: 'knowledge', content: 'queued runtime knowledge' }]
+      })
+    );
     const runClaimed = vi
       .spyOn((service as any).runtimeManager, 'runClaimed')
-      .mockResolvedValue({ content: 'queued ok', stopReason: 'final' });
+      .mockImplementation(async (input: any) => {
+        const runtime = new ReActRuntime({
+          ...input.runtimeOptions,
+          provider: input.provider
+        });
+        return runtime.run();
+      });
 
     await (service as any).runDurableQueueJob({
       runId: 'run_queue_ctx',
@@ -551,19 +554,24 @@ describe('AgentService durable queue context recovery', () => {
       payload: { agentId: 'queue-agent' }
     });
 
-    expect(buildResumeRuntimeContext).toHaveBeenCalledWith(session);
-    expect(runClaimed).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runtimeOptions: expect.objectContaining({
-          context: expect.objectContaining({
-            sessionContext: expect.objectContaining({
-              protocolVersion: PI_CONTEXT_PROTOCOL_VERSION
-            }),
-            turnContext: expect.objectContaining({ turnId: 'turn-queue' }),
-            contextTransformer: expect.anything()
-          })
+    const claimedInput = runClaimed.mock.calls[0]?.[0];
+    expect(claimedInput?.runtimeOptions?.context?.sessionContext?.protocolVersion).toBe(
+      PI_CONTEXT_PROTOCOL_VERSION
+    );
+    expect(claimedInput?.runtimeOptions?.context?.turnContext?.turnId).toBe('turn-queue');
+    expect(claimedInput?.runtimeOptions?.context?.contextTransformer).toBeDefined();
+    expect(claimedInput?.runtimeOptions?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'queued question' })
+      ])
+    );
+    expect(provider.seenPrompts).toHaveLength(1);
+    expect(provider.seenPrompts[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining('<linkloom_context')
         })
-      })
+      ])
     );
   });
 });
