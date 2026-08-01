@@ -27,7 +27,7 @@ describe('prompt cache contract', () => {
     });
   });
 
-  it('creates a global namespace independent of session id', () => {
+  it('creates a session-isolated namespace by default', () => {
     const first = buildPromptCacheContract({
       providerId: 'OPENAI',
       model: 'gpt-5',
@@ -50,9 +50,81 @@ describe('prompt cache contract', () => {
     });
 
     expect(first.cacheEligibility).toBe(true);
+    expect(first.cacheScope).toBe('session');
+    expect(first.cacheKey).toBeTruthy();
+    expect(first.cacheKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.cacheNamespace).not.toBe(second.cacheNamespace);
+    expect(first.cacheKey).not.toBe(second.cacheKey);
+    expect(first.stablePrefixHash).toBe(second.stablePrefixHash);
+  });
+
+  it('allows explicit global scope that ignores session id', () => {
+    const first = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'chat',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability,
+      cacheScope: 'global',
+      sessionId: 'session-a'
+    });
+    const second = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'chat',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability,
+      cacheScope: 'global',
+      sessionId: 'session-b'
+    });
+
     expect(first.cacheScope).toBe('global');
     expect(first.cacheNamespace).toBe(second.cacheNamespace);
-    expect(first.stablePrefixHash).toBe(second.stablePrefixHash);
+    expect(first.cacheKey).toBe(second.cacheKey);
+  });
+
+  it('requires session id for session-scoped cache', () => {
+    const withoutSession = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability
+    });
+    expect(withoutSession.cacheEligibility).toBe(false);
+    expect(withoutSession.cacheDisableReason).toContain('session_id_required');
+  });
+
+  it('changes the key when endpoint or reasoning mode changes', () => {
+    const base = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'chat_completions',
+      reasoningMode: 'none',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability,
+      sessionId: 'session-a'
+    });
+    const endpointChanged = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'responses',
+      reasoningMode: 'none',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability,
+      sessionId: 'session-a'
+    });
+    const reasoningChanged = buildPromptCacheContract({
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'chat_completions',
+      reasoningMode: 'high',
+      stablePrefix: 'stable prompt',
+      capability: openAiCapability,
+      sessionId: 'session-a'
+    });
+
+    expect(base.cacheKey).not.toBe(endpointChanged.cacheKey);
+    expect(base.cacheKey).not.toBe(reasoningChanged.cacheKey);
   });
 
   it('supports shadow and disabled governance modes', () => {
@@ -61,7 +133,8 @@ describe('prompt cache contract', () => {
       model: 'gpt-5',
       stablePrefix: 'stable prompt',
       capability: openAiCapability,
-      cacheMode: 'shadow'
+      cacheMode: 'shadow',
+      sessionId: 'session-a'
     });
     const disabled = buildPromptCacheContract({
       providerId: 'OPENAI',
@@ -69,7 +142,8 @@ describe('prompt cache contract', () => {
       stablePrefix: 'stable prompt',
       capability: openAiCapability,
       cacheMode: 'disabled',
-      cacheRequested: false
+      cacheRequested: false,
+      sessionId: 'session-a'
     });
 
     expect(shadow.cacheMode).toBe('shadow');
@@ -85,14 +159,16 @@ describe('prompt cache contract', () => {
       model: 'gpt-5',
       stablePrefix: 'stable prompt',
       toolset: [{ name: 'search' }],
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
     const second = buildPromptCacheContract({
       providerId: 'OPENAI',
       model: 'gpt-5',
       stablePrefix: 'stable prompt',
       toolset: [{ name: 'write' }],
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
 
     expect(first.stablePrefixHash).toBe(second.stablePrefixHash);
@@ -106,13 +182,15 @@ describe('prompt cache contract', () => {
       providerId: 'OPENAI',
       model: 'gpt-5',
       stablePrefix: 'stable prompt v1',
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
     const second = buildPromptCacheContract({
       providerId: 'OPENAI',
       model: 'gpt-5',
       stablePrefix: 'stable prompt v2',
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
 
     expect(first.stablePrefixHash).not.toBe(second.stablePrefixHash);
@@ -124,7 +202,8 @@ describe('prompt cache contract', () => {
       providerId: 'GEMINI',
       model: 'gemini-2.5',
       stablePrefix: 'stable prompt',
-      capability: resolvePromptCacheCapability('GEMINI')
+      capability: resolvePromptCacheCapability('GEMINI'),
+      sessionId: 'session-a'
     });
 
     expect(contract.cacheEligibility).toBe(false);
@@ -160,21 +239,24 @@ describe('prompt cache contract', () => {
       model: 'gpt-5',
       stablePrefix: 'shared base',
       toolset: [{ name: 'search' }],
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
     const compatibleChild = buildPromptCacheContract({
       providerId: 'OPENAI',
       model: 'gpt-5',
       stablePrefix: 'shared base',
       toolset: [{ name: 'search' }],
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
     const differentChild = buildPromptCacheContract({
       providerId: 'OPENAI',
       model: 'gpt-5',
       stablePrefix: 'different base',
       toolset: [{ name: 'search' }],
-      capability: openAiCapability
+      capability: openAiCapability,
+      sessionId: 'session-a'
     });
 
     const isolated = applyMultiAgentPromptCachePolicy(compatibleChild, 'isolated', parent);
@@ -184,7 +266,9 @@ describe('prompt cache contract', () => {
 
     expect(isolated.cacheNamespace).toBe(compatibleChild.cacheNamespace);
     expect(derived.cacheNamespace).toContain(`${parent.cacheNamespace}:derived:`);
+    expect(derived.cacheKey).not.toBe(parent.cacheKey);
     expect(inherited.cacheNamespace).toBe(parent.cacheNamespace);
+    expect(inherited.cacheKey).toBe(parent.cacheKey);
     expect(rejected.cacheEligibility).toBe(false);
     expect(rejected.cacheDisableReason).toContain('parent_cache_contract_mismatch');
   });

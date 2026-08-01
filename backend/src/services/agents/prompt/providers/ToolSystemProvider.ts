@@ -11,8 +11,8 @@ import type { PromptBuildContext, PromptContribution, PromptProvider } from '../
 export class ToolSystemProvider implements PromptProvider {
   id = 'tool_system';
   // Non-native tool descriptions are request-dependent and must not enter
-  // the stable system prefix.
-  phase = 'before_first_user' as const;
+  // the stable system prefix; append them to the dynamic tail instead.
+  phase = 'tail_guidance' as const;
   priority = 40;
 
   build(ctx: PromptBuildContext): PromptContribution | null {

@@ -248,8 +248,9 @@ describe('ReActRuntime', () => {
 
   it('carries artifact refs through context compaction and summarization', async () => {
     const compactedRecords: Array<{ compacted: boolean; artifactIds: string[] }> = [];
-    const summarizer = vi.fn(async (input: { artifactIds?: string[] }) =>
-      `LLM summary with refs: ${(input.artifactIds || []).join(',')}`
+    const summarizer = vi.fn(
+      async (input: { artifactIds?: string[] }) =>
+        `LLM summary with refs: ${(input.artifactIds || []).join(',')}`
     );
     let modelInput: AIMessage[] = [];
     const provider = {
@@ -293,15 +294,87 @@ describe('ReActRuntime', () => {
 
     expect(result.stopReason).toBe('final');
     expect(provider.generateContent).toHaveBeenCalledTimes(1);
-    expect(summarizer).toHaveBeenCalledWith(expect.objectContaining({
-      artifactIds: ['artifact_run_ctx_tool_1']
-    }));
+    expect(summarizer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactIds: ['artifact_run_ctx_tool_1']
+      })
+    );
     expect(compactedRecords).toEqual([
       { compacted: true, artifactIds: ['artifact_run_ctx_tool_1'] }
     ]);
-    expect(modelInput.some((message) =>
-      message.role === 'system' && String(message.content).includes('artifact_run_ctx_tool_1')
-    )).toBe(true);
+    expect(
+      modelInput.some(
+        (message) =>
+          message.role === 'system' && String(message.content).includes('artifact_run_ctx_tool_1')
+      )
+    ).toBe(true);
+  });
+
+  it('keeps the compacted snapshot for subsequent ReAct rounds', async () => {
+    const modelInputs: AIMessage[][] = [];
+    const summarizer = vi.fn(
+      async (input: { messages: AIMessage[] }) =>
+        `summary:${input.messages.map((message) => String(message.content)).join('|')}`
+    );
+    const provider = {
+      name: 'test-provider',
+      generateContent: vi.fn(async (prompt: string | AIMessage[]) => {
+        modelInputs.push(Array.isArray(prompt) ? prompt.map((message) => ({ ...message })) : []);
+        if (modelInputs.length === 1) {
+          return {
+            content: '',
+            tool_calls: [
+              {
+                id: 'call-compaction',
+                name: 'react_test_echo',
+                arguments: { text: 'continue' }
+              }
+            ]
+          };
+        }
+        return { content: 'final after compaction' };
+      })
+    };
+
+    const { runtime } = createRuntime(
+      [{ content: 'unused' }],
+      { mode: 'react', maxRounds: 3, returnTrace: true },
+      {
+        provider: provider as any,
+        messages: Array.from({ length: 10 }, (_, index) => ({
+          role: 'user' as const,
+          content: `message-${index}-${'x'.repeat(500)}`
+        })),
+        context: {
+          runId: 'run-compaction',
+          sessionId: 'session-compaction',
+          policy: {
+            compactionStrategy: 'summarize',
+            maxMessages: 3,
+            summarizeOlderThanMessages: 3,
+            maxInputTokens: 1,
+            reserveOutputTokens: 0,
+            compactionBuffer: 0
+          },
+          summarizer
+        }
+      }
+    );
+
+    const result = await runtime.run();
+
+    expect(result.stopReason).toBe('final');
+    expect(modelInputs).toHaveLength(2);
+    expect(modelInputs[0]?.some((message) => String(message.content).includes('message-0-'))).toBe(
+      true
+    );
+    expect(modelInputs[1]?.some((message) => String(message.content).includes('message-0-'))).toBe(
+      false
+    );
+    expect(modelInputs[1]?.some((message) => String(message.content).startsWith('summary:'))).toBe(
+      true
+    );
+    expect(summarizer).toHaveBeenCalledTimes(2);
   });
 
   it('offloads large tool results into artifact refs for model-visible context', async () => {
@@ -439,7 +512,15 @@ describe('ReActRuntime', () => {
       agentDef: createAgent({ mode: 'react', maxRounds: 2, returnTrace: true }),
       provider,
       tools: [mcpTool],
-      mcpConfigs: [{ id: 'docs-server', name: 'Docs Server', description: '', transportType: 'stdio', enabled: true }],
+      mcpConfigs: [
+        {
+          id: 'docs-server',
+          name: 'Docs Server',
+          description: '',
+          transportType: 'stdio',
+          enabled: true
+        }
+      ],
       mcpService: mcpService as any,
       toolRegistry: ToolRegistry.getInstance(),
       messages,
@@ -638,16 +719,16 @@ describe('ReActRuntime', () => {
         (message) =>
           message.role === 'assistant' &&
           Array.isArray(message.tool_calls) &&
-          message.tool_calls.length > 0,
-      ),
+          message.tool_calls.length > 0
+      )
     ).toHaveLength(1);
     expect(messages.filter((message) => message.role === 'tool')).toHaveLength(1);
     expect(messages.find((message) => message.role === 'tool')).toMatchObject({
       role: 'tool',
-      tool_call_id: pendingToolCall.id,
+      tool_call_id: pendingToolCall.id
     });
     expect(String(messages.find((message) => message.role === 'tool')?.content)).not.toContain(
-      'Permission required',
+      'Permission required'
     );
   });
 
@@ -748,10 +829,9 @@ describe('ReActRuntime', () => {
 
     expect(result.stopReason).toBe('final');
     expect(timeline.indexOf('start:b')).toBeLessThan(timeline.indexOf('end:a'));
-    expect(result.trace?.rounds[0].observations.map((observation) => observation.toolName)).toEqual([
-      'parallel_safe_a',
-      'parallel_safe_b'
-    ]);
+    expect(result.trace?.rounds[0].observations.map((observation) => observation.toolName)).toEqual(
+      ['parallel_safe_a', 'parallel_safe_b']
+    );
     expect(result.trace?.rounds[0].observations.map((observation) => observation.data)).toEqual([
       { label: 'a' },
       { label: 'b' }
@@ -797,10 +877,9 @@ describe('ReActRuntime', () => {
 
     expect(result.stopReason).toBe('final');
     expect(timeline).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
-    expect(result.trace?.rounds[0].observations.map((observation) => observation.toolName)).toEqual([
-      'serial_default_a',
-      'serial_default_b'
-    ]);
+    expect(result.trace?.rounds[0].observations.map((observation) => observation.toolName)).toEqual(
+      ['serial_default_a', 'serial_default_b']
+    );
   });
 
   it('stops repeated invalid tool arguments before exhausting max rounds', async () => {

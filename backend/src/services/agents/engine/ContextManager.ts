@@ -4,6 +4,8 @@ import type { AgentArtifactRef } from './AgentSession.js';
 import type { ContextBuildResult, ContextPolicy } from './ContextPolicy.js';
 import { TokenEstimator } from '../context/TokenEstimator.js';
 
+const CONTEXT_SUMMARY_NAME = '__linkloom_context_summary__';
+
 export interface ContextCompactionRecord {
   compacted: boolean;
   strategy: 'none' | 'trim' | 'summarize' | 'hybrid';
@@ -13,6 +15,11 @@ export interface ContextCompactionRecord {
   artifactIds: string[];
   beforeTokens?: number;
   afterTokens?: number;
+  fingerprint?: string;
+  builderVersion?: string;
+  summarySource?: 'heuristic' | 'llm';
+  summarizedMessages?: number;
+  retainedMessages?: number;
 }
 
 export interface ToolResultContextInput {
@@ -89,9 +96,15 @@ export interface AgentOffloader {
 }
 
 export class DefaultContextManager implements AgentOffloader {
-  private readonly tokenEstimator = new TokenEstimator({ driftMultiplier: 1.15, encoding: 'o200k_base' });
+  private readonly tokenEstimator = new TokenEstimator({
+    driftMultiplier: 1.15,
+    encoding: 'o200k_base'
+  });
 
-  buildModelInput(messages: AIMessage[], policy?: ContextPolicy): ContextBuildResult & { messages: AIMessage[] } {
+  buildModelInput(
+    messages: AIMessage[],
+    policy?: ContextPolicy
+  ): ContextBuildResult & { messages: AIMessage[] } {
     return this.compactMessagesSync(messages, policy);
   }
 
@@ -102,22 +115,37 @@ export class DefaultContextManager implements AgentOffloader {
     const compacted = this.compactMessagesSync(messages, input.policy);
     if (!compacted.compacted || !input.summarizer || input.signal?.aborted) return compacted;
 
-    const summaryIndex = compacted.messages.findIndex(
-      (message) => message.role === 'system' && message.content === compacted.summary
-    );
+    const summaryIndex = compacted.messages.findIndex(isContextSummaryMessage);
     if (summaryIndex < 0) return compacted;
 
     const olderCount = Number(compacted.metadata?.summarizedMessages || 0);
-    const olderMessages = messages.filter((message) => message.role !== 'system').slice(0, olderCount);
+    const system = messages.find(
+      (message) => message.role === 'system' && !isContextSummaryMessage(message)
+    );
+    const olderMessages = messages
+      .filter((message) => message !== system && !isContextSummaryMessage(message))
+      .slice(0, olderCount);
     if (olderMessages.length === 0) return compacted;
 
-    const summarized = await input.summarizer({
-      messages: olderMessages,
-      policy: input.policy,
-      previousSummary: compacted.summary,
-      artifactIds: compacted.artifactIds,
-      signal: input.signal
-    });
+    let summarized: string | AIResponse;
+    try {
+      summarized = await input.summarizer({
+        messages: olderMessages,
+        policy: input.policy,
+        previousSummary: compacted.summary,
+        artifactIds: compacted.artifactIds,
+        signal: input.signal
+      });
+    } catch {
+      return {
+        ...compacted,
+        metadata: {
+          ...compacted.metadata,
+          summarySource: 'heuristic',
+          summaryFallback: true
+        }
+      };
+    }
     if (input.signal?.aborted) return compacted;
 
     const summary = extractSummaryContent(summarized).trim();
@@ -133,12 +161,16 @@ export class DefaultContextManager implements AgentOffloader {
       summary,
       metadata: {
         ...compacted.metadata,
-        summarySource: 'llm'
+        summarySource: 'llm',
+        afterTokens: this.tokenEstimator.countMessages(messagesWithSummary)
       }
     };
   }
 
-  private compactMessagesSync(messages: AIMessage[], policy?: ContextPolicy): AgentContextBuildResult {
+  private compactMessagesSync(
+    messages: AIMessage[],
+    policy?: ContextPolicy
+  ): AgentContextBuildResult {
     const effective = this.effectivePolicy(policy);
     const strategy = effective.compactionStrategy ?? 'hybrid';
     const maxMessages = effective.maxMessages ?? 30;
@@ -167,15 +199,21 @@ export class DefaultContextManager implements AgentOffloader {
         metadata: {
           strategy: 'trim',
           beforeMessages: messages.length,
-          afterMessages: trimmed.length
+          afterMessages: trimmed.length,
+          beforeTokens: this.tokenEstimator.countMessages(messages),
+          afterTokens: this.tokenEstimator.countMessages(trimmed)
         }
       };
     }
 
     const summarizeOlderThan = effective.summarizeOlderThanMessages ?? maxMessages;
     const recentCount = Math.min(maxMessages, summarizeOlderThan);
-    const system = messages.find((message) => message.role === 'system');
-    const nonSystem = messages.filter((message) => message !== system);
+    const system = messages.find(
+      (message) => message.role === 'system' && !isContextSummaryMessage(message)
+    );
+    const nonSystem = messages.filter(
+      (message) => message !== system && !isContextSummaryMessage(message)
+    );
     const recent = nonSystem.slice(-(system ? recentCount - 1 : recentCount));
     const older = nonSystem.slice(0, Math.max(0, nonSystem.length - recent.length));
     const summary = this.summarizeHistory(older);
@@ -196,7 +234,9 @@ export class DefaultContextManager implements AgentOffloader {
         afterMessages: nextMessages.length,
         summarizedMessages: older.length,
         retainedMessages: recent.length,
-        summarySource: 'heuristic'
+        summarySource: 'heuristic',
+        beforeTokens: this.tokenEstimator.countMessages(messages),
+        afterTokens: this.tokenEstimator.countMessages(nextMessages)
       }
     };
   }
@@ -277,7 +317,9 @@ export class DefaultContextManager implements AgentOffloader {
 
   async restoreArtifactRef(artifact: AgentArtifactRef): Promise<string | null> {
     const workspacePath =
-      typeof artifact.metadata?.workspacePath === 'string' ? artifact.metadata.workspacePath : undefined;
+      typeof artifact.metadata?.workspacePath === 'string'
+        ? artifact.metadata.workspacePath
+        : undefined;
     if (!workspacePath) return null;
     try {
       return await fs.readFile(workspacePath, 'utf8');
@@ -286,10 +328,12 @@ export class DefaultContextManager implements AgentOffloader {
     }
   }
 
-  private offloadArtifactValue(input: ArtifactContextInput & {
-    inlineData?: unknown;
-    inlineLabel: string;
-  }): ToolResultContextOutput {
+  private offloadArtifactValue(
+    input: ArtifactContextInput & {
+      inlineData?: unknown;
+      inlineLabel: string;
+    }
+  ): ToolResultContextOutput {
     const policy = this.effectivePolicy(input.policy).artifactPolicy;
     const raw = stringifyValue(input.content);
     const maxInlineBytes = policy?.maxInlineBytes ?? 12000;
@@ -346,16 +390,27 @@ export class DefaultContextManager implements AgentOffloader {
 }
 
 function keepSystemAndRecent(messages: AIMessage[], maxMessages: number): AIMessage[] {
-  const system = messages.find((message) => message.role === 'system');
-  const recent = messages.filter((message) => message !== system).slice(-(system ? maxMessages - 1 : maxMessages));
-  return system ? [{ ...system }, ...recent.map((message) => ({ ...message }))] : recent.map((message) => ({ ...message }));
+  const system = messages.find(
+    (message) => message.role === 'system' && !isContextSummaryMessage(message)
+  );
+  const recent = messages
+    .filter((message) => message !== system && !isContextSummaryMessage(message))
+    .slice(-(system ? maxMessages - 1 : maxMessages));
+  return system
+    ? [{ ...system }, ...recent.map((message) => ({ ...message }))]
+    : recent.map((message) => ({ ...message }));
 }
 
 function summaryMessage(summary: string): AIMessage {
   return {
     role: 'system',
-    content: summary
+    content: summary,
+    name: CONTEXT_SUMMARY_NAME
   };
+}
+
+function isContextSummaryMessage(message: AIMessage): boolean {
+  return message.role === 'system' && message.name === CONTEXT_SUMMARY_NAME;
 }
 
 function stringifyValue(value: unknown): string {

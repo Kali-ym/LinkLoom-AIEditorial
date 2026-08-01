@@ -171,7 +171,9 @@ describe('ReActAgentEngine run control plane', () => {
     const spec = createSpec('archive');
 
     await engine.prepareRun(spec);
-    await expect(engine.archiveRun(spec.runId)).rejects.toThrow('Only terminal runs can be archived');
+    await expect(engine.archiveRun(spec.runId)).rejects.toThrow(
+      'Only terminal runs can be archived'
+    );
     await engine.cancelRun(spec.runId, 'manual');
     await expect(engine.archiveRun(spec.runId, 'cleanup')).resolves.toEqual({ status: 'archived' });
 
@@ -190,7 +192,9 @@ describe('ReActAgentEngine run control plane', () => {
   });
 
   it('persists context compaction refs and model output artifacts on the active run', async () => {
-    const artifactRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linkloom-agent-control-artifact-'));
+    const artifactRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'linkloom-agent-control-artifact-')
+    );
     const eventBus = new InMemoryAgentEventBus();
     const sessionStore = new InMemoryAgentSessionStore();
     const registry = new InMemoryAgentRunRegistry();
@@ -255,17 +259,44 @@ describe('ReActAgentEngine run control plane', () => {
     const events = await engine.getEvents(spec.runId);
     const contextEvent = events.find((event) => event.type === 'context_compacted');
     const artifactEvent = events.find((event) => event.type === 'artifact_saved');
+    const contextCheckpoints =
+      session?.checkpoints.filter((checkpoint) => checkpoint.reason === 'context_compaction') ?? [];
     const artifactPath = session?.artifacts[0]?.metadata?.workspacePath;
 
     expect(result).toMatchObject({ content: modelOutput, stopReason: 'final' });
-    expect(seenPrompts.at(-1)?.some((message) =>
-      message.role === 'system' && String(message.content).includes('artifact_run_context_artifact_ref')
-    )).toBe(true);
+    expect(
+      seenPrompts
+        .at(-1)
+        ?.some(
+          (message) =>
+            message.role === 'system' &&
+            String(message.content).includes('artifact_run_context_artifact_ref')
+        )
+    ).toBe(true);
     expect(contextEvent).toMatchObject({
       payload: expect.objectContaining({
         artifactIds: ['artifact_run_context_artifact_ref']
       })
     });
+    expect(contextCheckpoints).toHaveLength(1);
+    expect(contextCheckpoints[0]).toMatchObject({
+      status: 'running',
+      metadata: {
+        context: {
+          compacted: true,
+          fingerprint: expect.any(String)
+        }
+      }
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'checkpoint_saved',
+        payload: expect.objectContaining({
+          reason: 'context_compaction',
+          checkpointId: contextCheckpoints[0]?.checkpointId
+        })
+      })
+    );
     expect(artifactEvent).toMatchObject({
       payload: expect.objectContaining({
         kind: 'model_output',
@@ -361,7 +392,10 @@ describe('ReActAgentEngine run control plane', () => {
     await engine.prepareRun(spec);
     const runPromise = runtimeManager.run({
       runSpec: spec,
-      provider: { name: 'test-provider', generateContent: async () => ({ content: 'late' }) } as any,
+      provider: {
+        name: 'test-provider',
+        generateContent: async () => ({ content: 'late' })
+      } as any,
       runtimeOptions: {
         agentDef: {
           id: 'queued-abort-agent',
@@ -485,7 +519,10 @@ describe('ReActAgentEngine run control plane', () => {
           mcpServerIds: [],
           runtime: { mode: 'react', maxRounds: 2, returnTrace: true }
         } as any,
-        provider: { name: 'test-provider', generateContent: async () => ({ content: 'late' }) } as any,
+        provider: {
+          name: 'test-provider',
+          generateContent: async () => ({ content: 'late' })
+        } as any,
         tools: [new AbortWaitTool()],
         mcpConfigs: [],
         mcpService: { getTools: async () => [], callTool: async () => ({}) } as any,
@@ -687,7 +724,9 @@ describe('ReActAgentEngine run control plane', () => {
     const pausedRun = await registry.get(spec.runId);
     expect(pausedRun?.status).toBe('paused');
     expect(pausedRun?.pendingHitl?.checkpointId).toBe(session?.checkpoints[0].checkpointId);
-    const checkpointSaved = (await engine.getEvents(spec.runId)).find((event) => event.type === 'checkpoint_saved');
+    const checkpointSaved = (await engine.getEvents(spec.runId)).find(
+      (event) => event.type === 'checkpoint_saved'
+    );
     expect(checkpointSaved?.payload).toMatchObject({
       checkpointId: session?.checkpoints[0].checkpointId,
       permissionId: session?.pendingPermission?.permissionId,
@@ -1121,7 +1160,10 @@ describe('ReActAgentEngine run control plane', () => {
         resolvedAt: new Date().toISOString()
       },
       runSpec: spec,
-      provider: { name: 'test-provider', generateContent: async () => ({ content: 'unused' }) } as any,
+      provider: {
+        name: 'test-provider',
+        generateContent: async () => ({ content: 'unused' })
+      } as any,
       runtimeOptions: {
         agentDef: {
           id: 'resume-agent',
@@ -1383,7 +1425,10 @@ describe('ReActAgentEngine run control plane', () => {
         resolvedAt: new Date().toISOString()
       },
       runSpec: spec,
-      provider: { name: 'test-provider', generateContent: async () => ({ content: 'unused' }) } as any,
+      provider: {
+        name: 'test-provider',
+        generateContent: async () => ({ content: 'unused' })
+      } as any,
       runtimeOptions: {
         agentDef: {
           id: 'resume-hitl-agent',
@@ -1477,13 +1522,18 @@ describe('ReActAgentEngine run control plane', () => {
         workspacePolicy: { mode: 'local' }
       }
     };
-    const resumeHitl = vi.fn().mockResolvedValue({ content: 'service hitl resumed', stopReason: 'final' });
+    const resumeHitl = vi
+      .fn()
+      .mockResolvedValue({ content: 'service hitl resumed', stopReason: 'final' });
     (service as any).agentEngine = {
       getSessionByRunId: vi.fn().mockResolvedValue(session)
     };
     vi.spyOn(service as any, 'buildResumeRuntimeContext').mockResolvedValue({
       runSpec: createSpec('service_hitl_resume'),
-      provider: { name: 'test-provider', generateContent: async () => ({ content: 'unused' }) } as any,
+      provider: {
+        name: 'test-provider',
+        generateContent: async () => ({ content: 'unused' })
+      } as any,
       runtimeOptions: {
         agentDef: {
           id: 'agent-1',

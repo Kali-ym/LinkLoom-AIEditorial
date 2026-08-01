@@ -5,8 +5,9 @@ import type {
   ProviderModelCostConfig
 } from '../../types/config.js';
 import type { AIMessage, AIResponse, AIUsage } from '../../types/index.js';
-import type { AIProvider } from '../AIProvider.js';
+import type { AIProvider, AIProviderCallOptions } from '../AIProvider.js';
 import type { AgentBudgetPolicy } from './engine/AgentRunSpec.js';
+import type { ResponseCacheRequest } from './engine/responseContextCache.js';
 
 export interface ProviderGovernanceCandidate {
   provider: AIProvider;
@@ -274,7 +275,7 @@ async function generateWithGovernance(input: {
   prompt: string | AIMessage[];
   tools: any[];
   systemInstruction?: string;
-  callOptions?: { signal?: AbortSignal };
+  callOptions?: AIProviderCallOptions;
 }): Promise<AIResponse> {
   beginLogicalModelCall(input.ledger, input.options.budgetPolicy, input.options.policy?.quotas);
   const callId = createCallId();
@@ -297,7 +298,7 @@ async function generateWithGovernance(input: {
           input.prompt,
           input.tools,
           input.systemInstruction,
-          input.callOptions
+          adaptCallOptionsForCandidate(input.callOptions, candidate, input.options.primary)
         );
         attempts.push(createAttempt(candidate, input.candidates.indexOf(candidate), attempt, 'ok', startedAt));
         input.healthStore.recordSuccess(candidateKey);
@@ -348,7 +349,7 @@ async function* streamWithGovernance(input: {
   prompt: string | AIMessage[];
   tools?: any[];
   systemInstruction?: string;
-  callOptions?: { signal?: AbortSignal };
+  callOptions?: AIProviderCallOptions;
 }): AsyncIterable<AIResponse> {
   beginLogicalModelCall(input.ledger, input.options.budgetPolicy, input.options.policy?.quotas);
   const callId = createCallId();
@@ -379,7 +380,7 @@ async function* streamWithGovernance(input: {
           input.prompt,
           input.tools,
           input.systemInstruction,
-          input.callOptions
+          adaptCallOptionsForCandidate(input.callOptions, candidate, input.options.primary)
         );
         for await (const chunk of stream) {
           yielded = true;
@@ -796,4 +797,47 @@ function isAbortError(error: unknown): boolean {
     record.code === 'ABORT_ERR' ||
     String(record.message || '').toLowerCase().includes('abort')
   );
+}
+
+/**
+ * Fallback candidates must not reuse the primary prompt-cache key when the
+ * provider/model (or implied endpoint identity) diverges from the cache contract.
+ */
+export function adaptCallOptionsForCandidate(
+  callOptions: AIProviderCallOptions | undefined,
+  candidate: ProviderGovernanceCandidate,
+  primary: ProviderGovernanceCandidate
+): AIProviderCallOptions | undefined {
+  if (!callOptions?.responseCache || candidate === primary) return callOptions;
+
+  const cache = callOptions.responseCache;
+  const reasons = collectFallbackCacheMismatchReasons(cache, candidate);
+  if (reasons.length === 0) return callOptions;
+
+  return {
+    ...callOptions,
+    responseCache: {
+      ...cache,
+      cacheKey: undefined,
+      enableStore: false,
+      cacheEligibility: false,
+      cacheDisableReason: reasons.join(';')
+    }
+  };
+}
+
+export function collectFallbackCacheMismatchReasons(
+  cache: Pick<ResponseCacheRequest, 'providerId' | 'model' | 'endpoint'>,
+  candidate: ProviderGovernanceCandidate
+): string[] {
+  const reasons: string[] = [];
+  // Require an explicit provider/model match against the cache contract. Missing
+  // identity on either side is treated as unsafe for key reuse.
+  if (!cache.providerId || !candidate.providerId || cache.providerId !== candidate.providerId) {
+    reasons.push('fallback_provider_mismatch');
+  }
+  if (!cache.model || !candidate.model || cache.model !== candidate.model) {
+    reasons.push('fallback_model_mismatch');
+  }
+  return reasons;
 }

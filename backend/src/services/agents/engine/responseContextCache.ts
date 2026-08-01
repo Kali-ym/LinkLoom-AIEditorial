@@ -1,14 +1,20 @@
 import type { AgentSession } from './AgentSession.js';
 import type { AIMessage } from '../../../types/index.js';
 import { runtimeMessagePlainText } from '../userTurnRuntime.js';
-import type { PromptCacheContract } from './promptCacheContract.js';
+import {
+  derivePromptCacheKey,
+  type PromptCacheContract
+} from './promptCacheContract.js';
 
 export type ProviderContextCacheEntry = {
   cacheKey?: string;
+  cacheNamespace?: string;
   completionId?: string;
   messageId?: string;
   model: string;
   providerId: string;
+  endpoint?: string;
+  reasoningMode?: string;
   responseId?: string;
 };
 
@@ -22,6 +28,8 @@ export type ResponseCacheRequest = {
   cacheDisableReason?: string;
   providerId?: string;
   model?: string;
+  endpoint?: string;
+  reasoningMode?: string;
   cachePolicy?: PromptCacheContract['cachePolicy'];
   cacheMode?: PromptCacheContract['cacheMode'];
   incrementalInput?: Array<Record<string, unknown>>;
@@ -101,8 +109,13 @@ export function resolveResponseCacheFromSessions(
     const messageId = readMetadataString(metadata.providerMessageId);
     const sessionModel = readMetadataString(metadata.model);
     const sessionProvider = readMetadataString(metadata.providerId);
+    const cacheNamespace = readMetadataString(metadata.providerCacheNamespace);
+    // Prefer the canonical namespace-derived key. Fall back to legacy
+    // `sessionId:model:providerId` metadata for older sessions only.
     const sessionCacheKey =
-      readMetadataString(metadata.providerCacheKey) ?? readMetadataString(session.sessionId);
+      readMetadataString(metadata.providerCacheKey) ??
+      (cacheNamespace ? derivePromptCacheKey(cacheNamespace) : undefined) ??
+      cacheKey;
     if (!sessionModel || !sessionProvider) continue;
     if (!responseId && !completionId && !messageId) continue;
 
@@ -113,7 +126,10 @@ export function resolveResponseCacheFromSessions(
         messageId,
         model: sessionModel,
         providerId: sessionProvider,
-        cacheKey: sessionCacheKey ?? cacheKey,
+        endpoint: readMetadataString(metadata.providerEndpoint),
+        reasoningMode: readMetadataString(metadata.providerReasoningMode),
+        cacheNamespace,
+        cacheKey: sessionCacheKey,
       };
     }
 
@@ -122,6 +138,10 @@ export function resolveResponseCacheFromSessions(
   return undefined;
 }
 
+/**
+ * @deprecated Prefer `derivePromptCacheKey(contract.cacheNamespace)`.
+ * Legacy helper kept for test compatibility and old metadata reads.
+ */
 export function buildPromptCacheKey(
   sessionId: string,
   model?: string,
@@ -131,6 +151,59 @@ export function buildPromptCacheKey(
   if (model?.trim()) parts.push(model.trim());
   if (providerId?.trim()) parts.push(providerId.trim());
   return parts.join(':');
+}
+
+/** Build durable metadata patch for a successful provider response. */
+export function buildProviderCacheMetadataPatch(input: {
+  responseId: string;
+  contract?: PromptCacheContract;
+  agentModel?: string;
+  agentProviderId?: string;
+}): Record<string, unknown> {
+  const kind = classifyProviderContextId(input.responseId);
+  const idPatch =
+    kind === 'completion'
+      ? { providerCompletionId: input.responseId }
+      : kind === 'message'
+        ? { providerMessageId: input.responseId }
+        : { providerResponseId: input.responseId };
+
+  const model = input.contract?.model ?? input.agentModel;
+  const providerId = input.contract?.providerId ?? input.agentProviderId;
+  const cacheNamespace = input.contract?.cacheNamespace;
+  const cacheKey =
+    input.contract?.cacheKey ??
+    (cacheNamespace ? derivePromptCacheKey(cacheNamespace) : undefined);
+
+  return {
+    ...idPatch,
+    ...(model ? { model } : {}),
+    ...(providerId ? { providerId } : {}),
+    ...(cacheNamespace ? { providerCacheNamespace: cacheNamespace } : {}),
+    ...(cacheKey ? { providerCacheKey: cacheKey } : {}),
+    ...(input.contract?.endpoint ? { providerEndpoint: input.contract.endpoint } : {}),
+    ...(input.contract?.reasoningMode
+      ? { providerReasoningMode: input.contract.reasoningMode }
+      : {})
+  };
+}
+
+/** Read a previously pinned endpoint for the same session affinity. */
+export function resolvePinnedSessionEndpoint(
+  sessions: AgentSession[],
+  model: string,
+  providerId: string
+): string | undefined {
+  const sorted = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const metadata = sorted[index]!.metadata ?? {};
+    const sessionModel = readMetadataString(metadata.model);
+    const sessionProvider = readMetadataString(metadata.providerId);
+    if (sessionModel !== model || sessionProvider !== providerId) continue;
+    const endpoint = readMetadataString(metadata.providerEndpoint);
+    if (endpoint && endpoint !== 'auto' && endpoint !== 'default') return endpoint;
+  }
+  return undefined;
 }
 
 export function buildResponseCacheRequest(
@@ -146,7 +219,12 @@ export function buildResponseCacheRequest(
   const enableStore = options?.enableStore !== false;
   if (!enableStore) return undefined;
 
-  const cacheKey = options?.cacheKey ?? cacheEntry?.cacheKey;
+  const cacheNamespace = options?.contract?.cacheNamespace ?? cacheEntry?.cacheNamespace;
+  const cacheKey =
+    options?.cacheKey ??
+    options?.contract?.cacheKey ??
+    (cacheNamespace ? derivePromptCacheKey(cacheNamespace) : undefined) ??
+    cacheEntry?.cacheKey;
   // HTTP SSE cannot use previous_response_id on many gateways (WebSocket v2 only).
   // Context continuity relies on full merged messages + prompt_cache_key.
   void messages;
@@ -161,6 +239,8 @@ export function buildResponseCacheRequest(
           cacheDisableReason: options.contract.cacheDisableReason,
           providerId: options.contract.providerId,
           model: options.contract.model,
+          endpoint: options.contract.endpoint,
+          reasoningMode: options.contract.reasoningMode,
           cachePolicy: options.contract.cachePolicy,
           cacheMode: options.contract.cacheMode,
         }

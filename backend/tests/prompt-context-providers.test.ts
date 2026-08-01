@@ -47,10 +47,10 @@ describe('KnowledgeContextProvider', () => {
     const r = p.build(makeCtx({ knowledgeContext: '<inner>raw</inner>' }));
     expect(r?.content).toBe('<retrieved_knowledge><inner>raw</inner></retrieved_knowledge>');
   });
-  it('has id knowledge_context, phase before_first_user, priority 20', () => {
+  it('has id knowledge_context, phase tail_guidance, priority 20', () => {
     const p = new KnowledgeContextProvider();
     expect(p.id).toBe('knowledge_context');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(20);
   });
 });
@@ -72,10 +72,10 @@ describe('MemoryContextProvider', () => {
     const r = p.build(makeCtx({ memoryContext: '含 <tag> 的记忆' }));
     expect(r?.content).toBe('<memory>含 <tag> 的记忆</memory>');
   });
-  it('has id memory_context, phase before_first_user, priority 30', () => {
+  it('has id memory_context, phase tail_guidance, priority 30', () => {
     const p = new MemoryContextProvider();
     expect(p.id).toBe('memory_context');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(30);
   });
 });
@@ -108,11 +108,11 @@ describe('TodoHintProvider', () => {
   it('returns null when todos array is empty', () => {
     expect(new TodoHintProvider().build(makeCtx({ todoState: { todos: [] } }))).toBeNull();
   });
-  it('has id todo_hint, phase tail_guidance, priority 10', () => {
+  it('has id todo_hint, phase tail_guidance, priority 50', () => {
     const p = new TodoHintProvider();
     expect(p.id).toBe('todo_hint');
     expect(p.phase).toBe('tail_guidance');
-    expect(p.priority).toBe(10);
+    expect(p.priority).toBe(50);
   });
 });
 

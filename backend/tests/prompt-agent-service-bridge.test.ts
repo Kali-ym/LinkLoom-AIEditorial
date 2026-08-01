@@ -45,22 +45,22 @@ describe('prompt boundary bridge: stable system vs dynamic messages', () => {
     expect(assembled.tailMessages).toEqual([]);
   });
 
-  it('string systemPrompt with skills -> preUserMessages contains dynamic skill block', () => {
+  it('string systemPrompt with skills -> tailMessages contains dynamic skill block', () => {
     const assembled = build(makeAgent({ skillIds: ['s1'] }), {
       skillInstructions: '## Available Skills\n### Skill: s1'
     });
     expect(assembled.systemMessage.content).not.toContain('<available_skills>');
-    expect(assembled.preUserMessages.map((message) => message.content).join('\n')).toContain(
+    expect(assembled.tailMessages.map((message) => message.content).join('\n')).toContain(
       '<available_skills>',
     );
-    expect(assembled.preUserMessages.map((message) => message.content).join('\n')).toContain('s1');
+    expect(assembled.tailMessages.map((message) => message.content).join('\n')).toContain('s1');
     expect(assembled.systemMessage.content).toContain('You are X');
   });
 
-  it('date injected into preUserMessages not systemMessage', () => {
+  it('date injected into tailMessages not systemMessage', () => {
     const assembled = build(makeAgent(), { date: '2026-06-25' });
     expect(assembled.systemMessage.content).not.toContain('当前处理日期为');
-    expect(assembled.preUserMessages.some((m) => m.content.includes('2026-06-25'))).toBe(true);
+    expect(assembled.tailMessages.some((m) => m.content.includes('2026-06-25'))).toBe(true);
   });
 
   it('structured prompt assembles all present fields', () => {
@@ -120,9 +120,10 @@ describe('prompt boundary bridge: stable system vs dynamic messages', () => {
       }
     });
     const assembled = assembleSystemMessages(ctx);
-    const preUserContent = assembled.preUserMessages.map((message) => message.content).join('\n');
+    const tailContent = assembled.tailMessages.map((message) => message.content).join('\n');
     expect(assembled.systemMessage.content).not.toContain('google_search');
-    expect(preUserContent).toContain('google_search');
-    expect(preUserContent).toContain('<model_hint>');
+    expect(assembled.systemMessage.content).not.toContain('<model_hint>');
+    expect(tailContent).toContain('<model_hint>');
+    expect(tailContent).toContain('内置搜索');
   });
 });

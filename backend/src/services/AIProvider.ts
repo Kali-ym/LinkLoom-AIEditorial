@@ -646,6 +646,9 @@ export function splitSystemFromPrompt(
    * were NOT folded into `systemInstruction`. They vary per turn, so callers
    * must append them to the END of the request input (not the cached prefix)
    * to keep prompt-cache prefix stability.
+   *
+   * Invariant: request layout is `stable system → conversation → dynamic tail`.
+   * Dynamic contributions must never be folded back into the stable prefix.
    */
   dynamicSystemSuffix?: string;
 } {
@@ -987,6 +990,54 @@ export function resolveStreamEndpointPlans(input: {
         return ['responses', 'chat_completions', 'messages'];
       }
       return ['chat_completions', 'responses', 'messages'];
+  }
+}
+
+/**
+ * Resolve the endpoint identity used by the prompt-cache contract so it matches
+ * the route the provider will actually hit. Prefers a previously pinned session
+ * endpoint, then an explicit config, then the first auto-plan candidate.
+ */
+export function resolveEffectiveApiEndpoint(input: {
+  configuredEndpoint?: string;
+  pinnedEndpoint?: string;
+  providerType?: string;
+  apiUrl?: string;
+  model?: string;
+  providerLabel?: string;
+  reasoningEffort?: string;
+}): string {
+  const pinned = input.pinnedEndpoint?.trim();
+  if (pinned && pinned !== 'auto' && pinned !== 'default') return pinned;
+
+  const configured = input.configuredEndpoint?.trim();
+  if (configured && configured !== 'auto') return configured;
+
+  const plans = resolveStreamEndpointPlans({
+    apiUrl: input.apiUrl || '',
+    apiEndpoint: 'auto',
+    model: input.model,
+    providerLabel: input.providerLabel,
+    reasoningEffort: input.reasoningEffort
+  });
+  return plans[0] ?? resolveDefaultApiEndpoint(input.providerType);
+}
+
+export function mapAttemptLabelToApiEndpoint(
+  label: string
+): OpenAIApiEndpointMode | undefined {
+  switch (label) {
+    case 'chat/completions':
+    case 'chat_completions':
+      return 'chat_completions';
+    case 'responses':
+      return 'responses';
+    case 'messages':
+      return 'messages';
+    case 'passthrough':
+      return 'passthrough';
+    default:
+      return undefined;
   }
 }
 
@@ -2965,6 +3016,22 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
+  /** Pin auto routing to the first successful endpoint for session affinity. */
+  protected pinApiEndpoint(endpoint: OpenAIApiEndpointMode | string): void {
+    if (this.apiEndpoint !== 'auto') return;
+    const mapped =
+      typeof endpoint === 'string' ? mapAttemptLabelToApiEndpoint(endpoint) : endpoint;
+    if (!mapped || mapped === 'auto') return;
+    this.apiEndpoint = mapped;
+    LogService.info(
+      `[${this.getProviderLabel()}] Pinned apiEndpoint=${mapped} for prompt-cache route affinity`
+    );
+  }
+
+  getResolvedApiEndpoint(): OpenAIApiEndpointMode {
+    return this.apiEndpoint;
+  }
+
   protected async invokeCompatibleOpenAIEndpoints(
     prompt: string | AIMessage[],
     tools: any[],
@@ -3039,6 +3106,7 @@ export class OpenAIProvider implements AIProvider {
           throw new Error(`${response.status} ${extractOpenAIErrorMessage(text)}`);
         }
 
+        this.pinApiEndpoint(attempt.label);
         return attachPromptCacheUsage(attempt.parse(text), options?.responseCache);
       } catch (error: unknown) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -3092,6 +3160,7 @@ export class OpenAIProvider implements AIProvider {
         } else {
           yield* this.streamChatCompletionsApiContent(prompt, tools, systemInstruction, options);
         }
+        this.pinApiEndpoint(plan);
         return;
       } catch (error: unknown) {
         lastError = error instanceof Error ? error : new Error(String(error));

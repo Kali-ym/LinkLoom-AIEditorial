@@ -10,9 +10,12 @@ import type {
 /**
  * Pipeline 引擎：按 phase + priority 编排 Provider，组装 AssembledMessages。
  * - system_accumulate：累积进 systemMessage（用 \n\n 连接），稳定前缀
- * - before_first_user：作为独立 system 消息插入首条 user 前
- * - tail_guidance：插入消息尾部，动态尾部
+ * - before_first_user：作为独立 system 消息插入首条 user 前（仅稳定/variant 内容）
+ * - tail_guidance：插入消息尾部，动态尾部（日期/知识/记忆/Skill/非原生工具说明等）
  * - message_transform：消息转换（本轮 P1/P2 暂未消费）
+ *
+ * 语义顺序 invariant：stable system → conversation → dynamic tail。
+ * 动态 contribution 不得进入 stable prefix，否则会破坏会话级 prompt cache。
  */
 export class PromptPipeline {
   constructor(private readonly providers: PromptProvider[]) {}

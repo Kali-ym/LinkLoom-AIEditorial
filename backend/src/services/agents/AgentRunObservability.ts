@@ -23,6 +23,11 @@ export interface AgentRunMetrics {
   durationBuckets: Array<{ label: string; count: number }>;
   toolFailures: Array<{ toolName: string; failures: number; total: number }>;
   tokenUsage: {
+    /**
+     * Cross-run/session sums of per-call usage. Not a live prefix-hit depth.
+     * Per-run cumulative cache counters live on providerGovernance ledger;
+     * per-call values live on each model_finished usage.prompt_cache.
+     */
     totalTokens: number;
     promptTokens: number;
     completionTokens: number;
@@ -61,6 +66,11 @@ const CONSECUTIVE_FAILURE_THRESHOLD = 3;
 const PENDING_PERMISSION_THRESHOLD = 3;
 
 export function computeAgentRunMetrics(runs: AgentRun[], sessions: AgentSession[]): AgentRunMetrics {
+  // Aggregation note:
+  // - Each model_finished event carries *per-call* prompt_cache usage.
+  // - The totals below are *cross-run / session* sums of those per-call values.
+  // - Do NOT treat summed cachedInputTokens as the current prefix hit depth;
+  //   use per-call observations (see promptCacheDiagnostics) for that.
   const sessionByRunId = new Map(sessions.map((session) => [session.runId, session]));
   const effectiveRuns = runs.map((run) => ({ ...run, status: effectiveStatus(run) }));
   const terminalRuns = effectiveRuns.filter((run) => ['succeeded', 'failed', 'cancelled'].includes(run.status));

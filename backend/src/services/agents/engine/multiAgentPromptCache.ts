@@ -1,5 +1,9 @@
 import { hashString } from './canonicalMessageSerializer.js';
-import type { PromptCacheContract, PromptCachePolicy } from './promptCacheContract.js';
+import {
+  derivePromptCacheKey,
+  type PromptCacheContract,
+  type PromptCachePolicy
+} from './promptCacheContract.js';
 
 export function applyMultiAgentPromptCachePolicy(
   child: PromptCacheContract,
@@ -17,18 +21,23 @@ export function applyMultiAgentPromptCachePolicy(
     if (!hasCompatiblePrefix(child, parent)) {
       return disableContract(next, 'parent_cache_contract_mismatch');
     }
-    return {
-      ...next,
-      cacheNamespace: parent.cacheNamespace
-    };
+    return withNamespace(next, parent.cacheNamespace);
   }
 
-  return {
-    ...next,
-    cacheNamespace: `${parent.cacheNamespace}:derived:${hashString(
+  return withNamespace(
+    next,
+    `${parent.cacheNamespace}:derived:${hashString(
       `${child.cacheNamespace}:${child.variantHash}`,
       20
     )}`
+  );
+}
+
+function withNamespace(contract: PromptCacheContract, cacheNamespace: string): PromptCacheContract {
+  return {
+    ...contract,
+    cacheNamespace,
+    cacheKey: derivePromptCacheKey(cacheNamespace)
   };
 }
 

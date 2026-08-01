@@ -9,6 +9,7 @@ import {
   extractProviderContextIds,
   normalizeRuntimeMessageContent,
   pickRicherRuntimeHistory,
+  resolvePinnedSessionEndpoint,
   resolveResponseCacheFromSessions,
   resolveResponsesChainId,
 } from '../src/services/agents/engine/responseContextCache.js';
@@ -115,5 +116,89 @@ describe('responseContextCache', () => {
         previousResponseId: 'resp_abc',
       }),
     ).toBe('resp_abc');
+  });
+
+  it('prefers namespace-derived cache key over legacy sessionId:model:providerId', () => {
+    const sessions: AgentSession[] = [
+      {
+        sessionId: 's1',
+        runId: 'run-1',
+        source: 'agent',
+        status: 'succeeded',
+        messages: [],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: '2026-06-20T08:00:00.000Z',
+        updatedAt: '2026-06-20T08:01:00.000Z',
+        metadata: {
+          providerResponseId: 'resp_abc',
+          model: 'gpt-5.5',
+          providerId: 'openai',
+          providerCacheNamespace: 'pc:v1:session:s1:openai:gpt-5.5:chat:none:x:y',
+          providerCacheKey: 'canonical-key-from-namespace',
+          providerEndpoint: 'chat_completions',
+          providerReasoningMode: 'none',
+        },
+      },
+    ];
+
+    const entry = resolveResponseCacheFromSessions(sessions, 'gpt-5.5', 'openai');
+    expect(entry?.cacheKey).toBe('canonical-key-from-namespace');
+    expect(entry?.cacheNamespace).toContain('session:s1');
+    expect(entry?.endpoint).toBe('chat_completions');
+  });
+
+  it('resolves pinned session endpoint from prior metadata', () => {
+    const sessions: AgentSession[] = [
+      {
+        sessionId: 's1',
+        runId: 'run-1',
+        source: 'agent',
+        status: 'succeeded',
+        messages: [],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: '2026-06-20T08:00:00.000Z',
+        updatedAt: '2026-06-20T08:01:00.000Z',
+        metadata: {
+          model: 'gpt-5.5',
+          providerId: 'openai',
+          providerEndpoint: 'responses',
+        },
+      },
+    ];
+
+    expect(resolvePinnedSessionEndpoint(sessions, 'gpt-5.5', 'openai')).toBe('responses');
+    expect(resolvePinnedSessionEndpoint(sessions, 'other', 'openai')).toBeUndefined();
+  });
+
+  it('builds response cache request from contract cacheKey/namespace', () => {
+    const contract = {
+      contractVersion: 'prompt-cache-v1' as const,
+      promptSchemaVersion: 'prompt-schema-v1',
+      historySerializationVersion: 'canonical-history-v1',
+      providerId: 'OPENAI',
+      model: 'gpt-5',
+      endpoint: 'chat_completions',
+      reasoningMode: 'none',
+      stablePrefixHash: 'a',
+      variantHash: 'b',
+      toolsetHash: 'c',
+      cacheNamespace: 'pc:v1:session:s1:OPENAI:gpt-5:chat_completions:none:x:y',
+      cacheKey: 'contract-derived-key',
+      cacheScope: 'session' as const,
+      cachePolicy: 'isolated' as const,
+      cacheMode: 'enforced' as const,
+      cacheEligibility: true,
+      capability: { supportsPromptCache: true, family: 'openai' as const },
+      sessionId: 's1',
+    };
+
+    const request = buildResponseCacheRequest([], undefined, { contract });
+    expect(request?.cacheKey).toBe('contract-derived-key');
+    expect(request?.cacheNamespace).toBe(contract.cacheNamespace);
+    expect(request?.endpoint).toBe('chat_completions');
   });
 });

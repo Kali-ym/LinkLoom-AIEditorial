@@ -8,7 +8,8 @@ export interface SkillServiceLike {
 
 export class SkillProvider implements PromptProvider {
   id = 'skill';
-  phase = 'before_first_user' as const;
+  // Skill catalogs are request-scoped and belong in the dynamic tail.
+  phase = 'tail_guidance' as const;
   priority = 70;
 
   constructor(private readonly skillService: SkillServiceLike) {}

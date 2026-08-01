@@ -1,7 +1,16 @@
 import { ToolRegistry } from '../../../registries/ToolRegistry.js';
-import { DefaultContextManager, type ContextCompactionRecord, type ContextSummarizer, type ToolResultContextOutput } from '../engine/ContextManager.js';
+import {
+  DefaultContextManager,
+  type ContextCompactionRecord,
+  type ContextSummarizer,
+  type ToolResultContextOutput
+} from '../engine/ContextManager.js';
 import type { ContextPolicy } from '../engine/ContextPolicy.js';
 import type { AgentArtifactRef } from '../engine/AgentSession.js';
+import {
+  AgentContextBuilder,
+  type AgentContextCompactionResult
+} from '../context/AgentContextBuilder.js';
 import type { TokenCounter } from '../context/TokenCounter.js';
 import type { ClassifiedMessageBuilder } from '../context/ClassifiedMessageBuilder.js';
 import type { ContextUsageSnapshot, ClassifiedModelInput } from '../context/ContextTokenTypes.js';
@@ -32,7 +41,11 @@ import type {
   ToolDefinition
 } from '../../../types/agent.js';
 import type { AgentBudgetPolicy } from '../engine/AgentRunSpec.js';
-import type { ObservationGuardDecision, ObservationPolicy, ObservationPolicyTracker } from '../engine/ObservationPolicy.js';
+import type {
+  ObservationGuardDecision,
+  ObservationPolicy,
+  ObservationPolicyTracker
+} from '../engine/ObservationPolicy.js';
 import { createObservationPolicyTracker } from '../engine/ObservationPolicy.js';
 import type { AIMessage, AIResponse } from '../../../types/index.js';
 import type { AIProvider } from '../../AIProvider.js';
@@ -41,14 +54,15 @@ import { LogService } from '../../LogService.js';
 import { emitPacedStreamChunks } from './streamTextChunks.js';
 import {
   accumulateRuntimeStreamChunk,
-  createRuntimeStreamAccumulation,
+  createRuntimeStreamAccumulation
 } from './streamChunkAccumulator.js';
-import {
-  legacyKnowledgeCategoryScope,
-  mergeKnowledgeScopes
-} from '../../rag/RagScope.js';
+import { legacyKnowledgeCategoryScope, mergeKnowledgeScopes } from '../../rag/RagScope.js';
 import type { MCPService } from '../MCPService.js';
-import type { PermissionDecision, PermissionPolicy, PermissionRequest } from '../engine/PermissionPolicy.js';
+import type {
+  PermissionDecision,
+  PermissionPolicy,
+  PermissionRequest
+} from '../engine/PermissionPolicy.js';
 import type { WorkspacePolicy, WorkspaceRef } from '../engine/WorkspacePolicy.js';
 import { evaluateWorkspaceSandbox } from '../engine/WorkspaceSandbox.js';
 import type { ToolExecutionContext } from '../../ToolExecutionContext.js';
@@ -193,10 +207,7 @@ export interface ReActRuntimeOptions {
   /** Live SSE chunks during permission resume (tool result + model continuation). */
   onStreamChunk?: (chunk: unknown) => void | Promise<void>;
   /** Persist the canonical tool-message content before the next model call. */
-  onToolObservation?: (
-    observation: AgentToolObservation,
-    round: number,
-  ) => void | Promise<void>;
+  onToolObservation?: (observation: AgentToolObservation, round: number) => void | Promise<void>;
   /** Token counter for pre-call context usage measurement */
   tokenCounter?: TokenCounter;
   /** Builder to classify messages into categories for token counting */
@@ -218,6 +229,10 @@ function normalizePositiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function toolCallStreamKey(
@@ -258,7 +273,9 @@ function shouldMergeStreamToolCall(
   if (previous === undefined || previous === null) return true;
 
   if (typeof previous === 'string' && typeof next === 'string') {
-    return next.startsWith(previous) || previous.startsWith(next) || !looksLikeCompleteJson(previous);
+    return (
+      next.startsWith(previous) || previous.startsWith(next) || !looksLikeCompleteJson(previous)
+    );
   }
 
   if (
@@ -302,7 +319,8 @@ function recordsAreCompatibleForStreamMerge(
 }
 
 function streamValuesAreCompatible(previous: unknown, next: unknown): boolean {
-  if (previous === undefined || previous === null || next === undefined || next === null) return true;
+  if (previous === undefined || previous === null || next === undefined || next === null)
+    return true;
   if (typeof previous === 'string' && typeof next === 'string') {
     return previous === next || previous.startsWith(next) || next.startsWith(previous);
   }
@@ -355,8 +373,9 @@ function compactStreamToolCalls(
   toolCallState: Map<string, StreamToolCallAccumulator>
 ): Array<{ requestKey: string; id?: string; name: string; arguments?: unknown }> {
   return [...toolCallState.values()]
-    .filter((toolCall): toolCall is StreamToolCallAccumulator & { name: string } =>
-      typeof toolCall.name === 'string' && toolCall.name.trim().length > 0
+    .filter(
+      (toolCall): toolCall is StreamToolCallAccumulator & { name: string } =>
+        typeof toolCall.name === 'string' && toolCall.name.trim().length > 0
     )
     .map((toolCall) => ({ ...toolCall, name: toolCall.name.trim() }));
 }
@@ -370,7 +389,8 @@ function createToolLimitObservation(params: {
   current: number;
 }): AgentToolObservation {
   const scopeLabel = params.scope === 'round' ? '本轮工具请求数' : '本次运行工具请求总数';
-  const instruction = '该工具调用已达到预算或策略上限。不要重试同一工具/参数；基于已有 observation 总结方案，信息不足时直接向用户提出澄清问题。';
+  const instruction =
+    '该工具调用已达到预算或策略上限。不要重试同一工具/参数；基于已有 observation 总结方案，信息不足时直接向用户提出澄清问题。';
   const summary = `${scopeLabel}已达到上限 ${params.limit}，已跳过工具 ${params.toolName}。请停止继续批量调用工具，基于已有 observation 总结方案；如果信息仍不足，直接向用户提出澄清问题。`;
   const reactObservation = {
     success: false,
@@ -454,7 +474,11 @@ function formatToolFailureForUser(observation: AgentToolObservation): string {
 function findLastFailedObservation(trace: AgentRunTrace): AgentToolObservation | undefined {
   for (let roundIndex = trace.rounds.length - 1; roundIndex >= 0; roundIndex -= 1) {
     const observations = trace.rounds[roundIndex].observations;
-    for (let observationIndex = observations.length - 1; observationIndex >= 0; observationIndex -= 1) {
+    for (
+      let observationIndex = observations.length - 1;
+      observationIndex >= 0;
+      observationIndex -= 1
+    ) {
       const observation = observations[observationIndex];
       if (!observation.success) return observation;
     }
@@ -531,20 +555,30 @@ function toObservationContent(result: unknown): string {
 }
 
 function isToolResultContextOutput(value: unknown): value is ToolResultContextOutput {
-  return !!value && typeof value === 'object' && 'messageContent' in value && 'observationContent' in value;
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'messageContent' in value &&
+    'observationContent' in value
+  );
 }
 
 function extractProviderGovernanceMetadata(usage: unknown): Record<string, any> | undefined {
   if (!usage || typeof usage !== 'object') return undefined;
   const governance = (usage as { governance?: unknown }).governance;
-  return governance && typeof governance === 'object' ? (governance as Record<string, any>) : undefined;
+  return governance && typeof governance === 'object'
+    ? (governance as Record<string, any>)
+    : undefined;
 }
 
 function toRoundProviderTrace(governance: Record<string, any>): AgentRunRound['provider'] {
   return {
-    providerId: typeof governance.selectedProviderId === 'string' ? governance.selectedProviderId : undefined,
+    providerId:
+      typeof governance.selectedProviderId === 'string' ? governance.selectedProviderId : undefined,
     providerName:
-      typeof governance.selectedProviderName === 'string' ? governance.selectedProviderName : undefined,
+      typeof governance.selectedProviderName === 'string'
+        ? governance.selectedProviderName
+        : undefined,
     model: typeof governance.selectedModel === 'string' ? governance.selectedModel : undefined,
     fallbackUsed: governance.fallbackUsed === true,
     retryCount: typeof governance.retryCount === 'number' ? governance.retryCount : undefined,
@@ -555,21 +589,21 @@ function toRoundProviderTrace(governance: Record<string, any>): AgentRunRound['p
 }
 
 function toRoundBudgetTrace(governance: Record<string, any>): AgentRunRound['budget'] {
-  const budget = governance.budget && typeof governance.budget === 'object'
-    ? (governance.budget as Record<string, any>)
-    : undefined;
-  const cumulative = budget?.cumulative && typeof budget.cumulative === 'object'
-    ? (budget.cumulative as Record<string, any>)
-    : undefined;
+  const budget =
+    governance.budget && typeof governance.budget === 'object'
+      ? (governance.budget as Record<string, any>)
+      : undefined;
+  const cumulative =
+    budget?.cumulative && typeof budget.cumulative === 'object'
+      ? (budget.cumulative as Record<string, any>)
+      : undefined;
   return {
     modelCalls: typeof cumulative?.modelCalls === 'number' ? cumulative.modelCalls : undefined,
     inputTokens: typeof cumulative?.promptTokens === 'number' ? cumulative.promptTokens : undefined,
     outputTokens:
       typeof cumulative?.completionTokens === 'number' ? cumulative.completionTokens : undefined,
     cachedInputTokens:
-      typeof cumulative?.cachedInputTokens === 'number'
-        ? cumulative.cachedInputTokens
-        : undefined,
+      typeof cumulative?.cachedInputTokens === 'number' ? cumulative.cachedInputTokens : undefined,
     cacheWriteInputTokens:
       typeof cumulative?.cacheWriteInputTokens === 'number'
         ? cumulative.cacheWriteInputTokens
@@ -660,16 +694,17 @@ async function executeMcpToolEnvelope(input: {
     arguments: input.arguments,
     toolDef: input.toolDef,
     workspace: input.workspace,
-    sandbox: (args) => evaluateWorkspaceSandbox({
-      source: 'mcp',
-      toolId: input.toolDef.id,
-      exposedName: input.toolDef.name,
-      originalName: input.originalName,
-      arguments: args,
-      toolDef: input.toolDef,
-      workspace: input.workspace,
-      policy: input.workspacePolicy
-    }),
+    sandbox: (args) =>
+      evaluateWorkspaceSandbox({
+        source: 'mcp',
+        toolId: input.toolDef.id,
+        exposedName: input.toolDef.name,
+        originalName: input.originalName,
+        arguments: args,
+        toolDef: input.toolDef,
+        workspace: input.workspace,
+        policy: input.workspacePolicy
+      }),
     signal: input.signal,
     execute: async (args, signal) => {
       try {
@@ -704,7 +739,9 @@ function withMcpSchemaTrace(
   };
 }
 
-function getMcpToolSchemaTrace(toolDef: ToolDefinition): MCPToolExecutionTrace['schema'] | undefined {
+function getMcpToolSchemaTrace(
+  toolDef: ToolDefinition
+): MCPToolExecutionTrace['schema'] | undefined {
   const mcpHints = toolDef.uiHints?.mcp;
   if (!isRecord(mcpHints)) return undefined;
   return isMcpToolSchemaTrace(mcpHints.schema) ? mcpHints.schema : undefined;
@@ -720,7 +757,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export class ReActRuntime {
   private readonly contextManager = new DefaultContextManager();
+  private readonly contextBuilder = new AgentContextBuilder(this.contextManager);
   private lastProviderResponseId?: string;
+  private lastCompactionFingerprint?: string;
 
   constructor(private readonly options: ReActRuntimeOptions) {}
 
@@ -750,14 +789,13 @@ export class ReActRuntime {
     return (
       record.name === 'AbortError' ||
       record.code === 'ABORT_ERR' ||
-      String(record.message || '').toLowerCase().includes('abort')
+      String(record.message || '')
+        .toLowerCase()
+        .includes('abort')
     );
   }
 
-  private toCancelledResult(
-    trace: AgentRunTrace,
-    lastToolResult?: unknown
-  ): AgentExecutionResult {
+  private toCancelledResult(trace: AgentRunTrace, lastToolResult?: unknown): AgentExecutionResult {
     trace.finishedAt = new Date().toISOString();
     return {
       content: '',
@@ -926,7 +964,8 @@ export class ReActRuntime {
             continue;
           }
 
-          const runLimitHit = typeof maxToolCalls === 'number' && acceptedToolCallCount >= maxToolCalls;
+          const runLimitHit =
+            typeof maxToolCalls === 'number' && acceptedToolCallCount >= maxToolCalls;
           const roundLimitHit =
             typeof maxToolCallsPerRound === 'number' &&
             acceptedToolCallsThisRound >= maxToolCallsPerRound;
@@ -1003,7 +1042,9 @@ export class ReActRuntime {
             }
             await this.options.permission?.onPermissionResolved?.(permission.decision);
             if (permission.decision.effect === 'deny') {
-              throw new Error(permission.decision.reason || `Permission denied for tool: ${tc.name}`);
+              throw new Error(
+                permission.decision.reason || `Permission denied for tool: ${tc.name}`
+              );
             }
 
             const toolOutcome = await this.callTool(tc);
@@ -1077,7 +1118,8 @@ export class ReActRuntime {
 
             lastToolResult = toolContext.data ?? result;
           } catch (error: any) {
-            if (this.isCancellationError(error)) return this.toCancelledResult(trace, lastToolResult);
+            if (this.isCancellationError(error))
+              return this.toCancelledResult(trace, lastToolResult);
             await this.options.middleware?.afterToolCall?.({
               toolName: tc.name,
               arguments: tc.arguments,
@@ -1192,9 +1234,10 @@ export class ReActRuntime {
     return this.toResult(finalContent, lastToolResult, trace, stopReason);
   }
 
-  async resumeFromPermission(input: ReActRuntimePermissionResumeInput): Promise<AgentExecutionResult> {
-    const { agentDef, tools, messages, silent, budgetPolicy, observationPolicy } =
-      this.options;
+  async resumeFromPermission(
+    input: ReActRuntimePermissionResumeInput
+  ): Promise<AgentExecutionResult> {
+    const { agentDef, tools, messages, silent, budgetPolicy, observationPolicy } = this.options;
     const mode = getRuntimeMode(agentDef);
     const maxRounds = getMaxRounds(agentDef, budgetPolicy);
     const trace: AgentRunTrace = {
@@ -1220,11 +1263,7 @@ export class ReActRuntime {
       [pendingToolCall]
     );
 
-    this.preparePermissionResumeMessages(
-      messages,
-      pendingToolCall,
-      input.state.assistantContent
-    );
+    this.preparePermissionResumeMessages(messages, pendingToolCall, input.state.assistantContent);
 
     if (input.decision.effect === 'ask') {
       trace.rounds.push(resumeRound);
@@ -1248,7 +1287,7 @@ export class ReActRuntime {
       await this.emitStreamChunk({
         type: 'trace_observation',
         round: resumeRound.index,
-        observation,
+        observation
       });
       messages.push({
         role: 'tool',
@@ -1329,7 +1368,7 @@ export class ReActRuntime {
           await this.emitStreamChunk({
             type: 'trace_observation',
             round: resumeRound.index,
-            observation,
+            observation
           });
           messages.push({
             role: 'tool',
@@ -1398,7 +1437,9 @@ export class ReActRuntime {
     });
   }
 
-  async resumeFromUserInput(input: ReActRuntimeUserInputResumeInput): Promise<AgentExecutionResult> {
+  async resumeFromUserInput(
+    input: ReActRuntimeUserInputResumeInput
+  ): Promise<AgentExecutionResult> {
     const { agentDef, tools, messages, silent, budgetPolicy, observationPolicy } = this.options;
     const mode = getRuntimeMode(agentDef);
     const maxRounds = getMaxRounds(agentDef, budgetPolicy);
@@ -1430,11 +1471,7 @@ export class ReActRuntime {
       [pendingToolCall]
     );
 
-    this.preparePermissionResumeMessages(
-      messages,
-      pendingToolCall,
-      input.state.assistantContent
-    );
+    this.preparePermissionResumeMessages(messages, pendingToolCall, input.state.assistantContent);
 
     const observation = this.createUserInputObservation(
       pendingToolCall,
@@ -1661,7 +1698,8 @@ export class ReActRuntime {
           return;
         }
         const errorMessage = error?.message || String(error);
-        const canGracefullyFinish = !!roundContent.trim() && compactStreamToolCalls(toolCallState).length === 0;
+        const canGracefullyFinish =
+          !!roundContent.trim() && compactStreamToolCalls(toolCallState).length === 0;
 
         if (canGracefullyFinish) {
           LogService.warn(
@@ -1722,7 +1760,8 @@ export class ReActRuntime {
           continue;
         }
 
-        const runLimitHit = typeof maxToolCalls === 'number' && acceptedToolCallCount >= maxToolCalls;
+        const runLimitHit =
+          typeof maxToolCalls === 'number' && acceptedToolCallCount >= maxToolCalls;
         const roundLimitHit =
           typeof maxToolCallsPerRound === 'number' &&
           acceptedToolCallsThisRound >= maxToolCallsPerRound;
@@ -1762,8 +1801,11 @@ export class ReActRuntime {
       messages.push({
         role: 'assistant',
         content: roundContent || null,
-        tool_calls: scheduledToolCalls.length > 0 ? scheduledToolCalls.map((item) => item.toolCall) : undefined,
-        reasoning: roundReasoning.trim() || undefined,
+        tool_calls:
+          scheduledToolCalls.length > 0
+            ? scheduledToolCalls.map((item) => item.toolCall)
+            : undefined,
+        reasoning: roundReasoning.trim() || undefined
       });
 
       if (scheduledToolCalls.length > 0) {
@@ -1839,7 +1881,9 @@ export class ReActRuntime {
             }
             await this.options.permission?.onPermissionResolved?.(permission.decision);
             if (permission.decision.effect === 'deny') {
-              throw new Error(permission.decision.reason || `Permission denied for tool: ${tc.name}`);
+              throw new Error(
+                permission.decision.reason || `Permission denied for tool: ${tc.name}`
+              );
             }
 
             const toolOutcome = await this.callTool(tc);
@@ -1877,7 +1921,10 @@ export class ReActRuntime {
               };
               yield { type: 'trace_observation', round, observation: failureResult.observation };
               if (failureResult.stopReason) {
-                yield { type: 'content', content: formatToolFailureForUser(failureResult.observation) };
+                yield {
+                  type: 'content',
+                  content: formatToolFailureForUser(failureResult.observation)
+                };
                 yield { type: 'final_trace', stopReason: failureResult.stopReason };
                 return;
               }
@@ -1984,7 +2031,10 @@ export class ReActRuntime {
             };
             yield { type: 'trace_observation', round, observation: failureResult.observation };
             if (failureResult.stopReason) {
-              yield { type: 'content', content: formatToolFailureForUser(failureResult.observation) };
+              yield {
+                type: 'content',
+                content: formatToolFailureForUser(failureResult.observation)
+              };
               yield { type: 'final_trace', stopReason: failureResult.stopReason };
               return;
             }
@@ -2020,8 +2070,7 @@ export class ReActRuntime {
         };
         yield {
           type: 'final_trace',
-          stopReason:
-            roundContent.trim() || roundReasoning.trim() ? 'final' : 'empty_response'
+          stopReason: roundContent.trim() || roundReasoning.trim() ? 'final' : 'empty_response'
         };
         break;
       }
@@ -2167,7 +2216,8 @@ export class ReActRuntime {
   ): Promise<void> {
     if (!isAskUserQuestionToolName(tc.name)) return;
     const runId = this.options.permission?.runId ?? this.options.context?.runId ?? 'unknown';
-    const sessionId = this.options.permission?.sessionId ?? this.options.context?.sessionId ?? 'unknown';
+    const sessionId =
+      this.options.permission?.sessionId ?? this.options.context?.sessionId ?? 'unknown';
     const request: UserInputPauseRequest = {
       requestId: createUserInputRequestId(runId, tc.name),
       runId,
@@ -2227,7 +2277,9 @@ export class ReActRuntime {
   ): Promise<ParallelRoundToolExecutionResult | undefined> {
     if (!this.canExecuteToolBatchInParallel(input)) return undefined;
 
-    const outcomes = await Promise.all(input.toolCalls.map((toolCall) => this.executeParallelToolCall(toolCall)));
+    const outcomes = await Promise.all(
+      input.toolCalls.map((toolCall) => this.executeParallelToolCall(toolCall))
+    );
     if (outcomes.some((outcome) => outcome.cancelled)) {
       return {
         acceptedToolCallCount: input.acceptedToolCallCount + input.toolCalls.length,
@@ -2265,7 +2317,7 @@ export class ReActRuntime {
         name: outcome.toolCall.name,
         content:
           outcome.success && toolContext
-            ? observation.canonicalMessageContent ?? observation.content
+            ? (observation.canonicalMessageContent ?? observation.content)
             : observation.content
       });
       if (outcome.success) {
@@ -2284,16 +2336,26 @@ export class ReActRuntime {
 
   private canExecuteToolBatchInParallel(input: ParallelRoundToolExecutionInput): boolean {
     if (input.toolCalls.length <= 1) return false;
-    if (this.options.permission || this.options.middleware?.beforeToolCall || this.options.middleware?.afterToolCall) {
+    if (
+      this.options.permission ||
+      this.options.middleware?.beforeToolCall ||
+      this.options.middleware?.afterToolCall
+    ) {
       return false;
     }
     if (input.observationTracker) return false;
     const nextAcceptedCount = input.acceptedToolCallCount + input.toolCalls.length;
-    if (typeof input.maxToolCalls === 'number' && nextAcceptedCount > input.maxToolCalls) return false;
-    if (typeof input.maxToolCallsPerRound === 'number' && input.toolCalls.length > input.maxToolCallsPerRound) {
+    if (typeof input.maxToolCalls === 'number' && nextAcceptedCount > input.maxToolCalls)
+      return false;
+    if (
+      typeof input.maxToolCallsPerRound === 'number' &&
+      input.toolCalls.length > input.maxToolCallsPerRound
+    ) {
       return false;
     }
-    return input.toolCalls.every((toolCall) => isExplicitParallelToolCall(toolCall, this.options.tools));
+    return input.toolCalls.every((toolCall) =>
+      isExplicitParallelToolCall(toolCall, this.options.tools)
+    );
   }
 
   private async recordFailedToolCall(input: {
@@ -2311,10 +2373,15 @@ export class ReActRuntime {
     agentName: string;
     silent?: boolean;
     permission?: PermissionDecision | PermissionRequest;
-  }): Promise<{ stopReason: AgentExecutionResult['stopReason'] | null; observation: AgentToolObservation }> {
+  }): Promise<{
+    stopReason: AgentExecutionResult['stopReason'] | null;
+    observation: AgentToolObservation;
+  }> {
     void input.permission;
     if (!input.silent) {
-      LogService.error(`[Agent ${input.agentName}] Tool ${input.tc.name} failed: ${input.errorMessage}`);
+      LogService.error(
+        `[Agent ${input.agentName}] Tool ${input.tc.name} failed: ${input.errorMessage}`
+      );
     }
     const observation = this.createObservation(
       input.tc,
@@ -2330,10 +2397,7 @@ export class ReActRuntime {
       observation
     });
     input.round?.observations.push(observation);
-    await this.notifyToolObservation(
-      observation,
-      input.round?.index ?? input.roundIndex ?? 0,
-    );
+    await this.notifyToolObservation(observation, input.round?.index ?? input.roundIndex ?? 0);
     input.messages.push({
       role: 'tool',
       tool_call_id: input.tc.id,
@@ -2355,25 +2419,29 @@ export class ReActRuntime {
     const toolErrorCount = (input.toolFailureCounts.get(toolErrorSignature) || 0) + 1;
     input.toolFailureCounts.set(toolErrorSignature, toolErrorCount);
     const nonRetryable =
-      input.envelope?.error?.retryable === false && input.envelope.error.code !== 'validation_error';
+      input.envelope?.error?.retryable === false &&
+      input.envelope.error.code !== 'validation_error';
     if (
       nonRetryable ||
       (input.stopOnRepeatedToolError &&
-        (failureCount >= input.maxRepeatedToolErrors || toolErrorCount >= input.maxRepeatedToolErrors))
+        (failureCount >= input.maxRepeatedToolErrors ||
+          toolErrorCount >= input.maxRepeatedToolErrors))
     ) {
       return {
         stopReason: nonRetryable
           ? 'tool_error'
           : isInvalidToolArgumentsMessage(input.errorMessage)
-          ? 'invalid_tool_arguments'
-          : 'repeated_tool_error',
+            ? 'invalid_tool_arguments'
+            : 'repeated_tool_error',
         observation
       };
     }
     return { stopReason: null, observation };
   }
 
-  private async executeParallelToolCall(toolCall: NormalizedToolCall): Promise<ParallelToolExecutionOutcome> {
+  private async executeParallelToolCall(
+    toolCall: NormalizedToolCall
+  ): Promise<ParallelToolExecutionOutcome> {
     const startedAt = Date.now();
     const outcome = await this.callTool(toolCall);
     if (!outcome.ok) {
@@ -2407,7 +2475,8 @@ export class ReActRuntime {
 
     try {
       if (!isMcpToolDefinition(exposedTool)) {
-        const localTool = toolRegistry.getTool(exposedTool.id) || toolRegistry.getTool(exposedTool.name);
+        const localTool =
+          toolRegistry.getTool(exposedTool.id) || toolRegistry.getTool(exposedTool.name);
         if (!localTool) {
           return { ok: false, errorMessage: `未找到工具定义: ${tc.name}` };
         }
@@ -2483,10 +2552,14 @@ export class ReActRuntime {
     const workspacePolicy = this.options.workspace?.policy;
     const extras = this.options.toolContextExtras;
     const knowledgeScope = mergeKnowledgeScopes(
-      mergeKnowledgeScopes(this.options.agentDef.knowledgeScope, legacyKnowledgeCategoryScope(this.options.agentDef.knowledgeCategoryIds)),
+      mergeKnowledgeScopes(
+        this.options.agentDef.knowledgeScope,
+        legacyKnowledgeCategoryScope(this.options.agentDef.knowledgeCategoryIds)
+      ),
       extras?.knowledgeScope
     );
-    if (!workspace && !workspacePolicy && !extras && !this.options.signal && !knowledgeScope) return undefined;
+    if (!workspace && !workspacePolicy && !extras && !this.options.signal && !knowledgeScope)
+      return undefined;
     return {
       ...(extras || {}),
       ...(workspace ? { workspace } : {}),
@@ -2511,7 +2584,9 @@ export class ReActRuntime {
       ? toolContext?.observationContent || toObservationContent(result)
       : JSON.stringify(errorPayload);
     const data = success ? toolContext?.data : errorPayload;
-    const assessment = success ? assessToolObservationResult(data ?? result, { toolName: tc.name }) : undefined;
+    const assessment = success
+      ? assessToolObservationResult(data ?? result, { toolName: tc.name })
+      : undefined;
     const observationSuccess = success && (assessment?.success ?? true);
     const content = assessment
       ? applyToolObservationAssessment(rawContent, assessment)
@@ -2539,7 +2614,7 @@ export class ReActRuntime {
 
   private async notifyToolObservation(
     observation: AgentToolObservation,
-    round: number,
+    round: number
   ): Promise<void> {
     observation.canonicalMessageContent ??= observation.content;
     await this.options.onToolObservation?.(observation, round);
@@ -2599,7 +2674,9 @@ export class ReActRuntime {
     };
   }
 
-  private createUserInputObservationPayload(input: ReActRuntimeUserInputResumeInput['resolution']): Record<string, unknown> {
+  private createUserInputObservationPayload(
+    input: ReActRuntimeUserInputResumeInput['resolution']
+  ): Record<string, unknown> {
     const skipped =
       input.input &&
       typeof input.input === 'object' &&
@@ -2697,10 +2774,9 @@ export class ReActRuntime {
   ): AgentExecutionResult {
     const finalString = formatFinalContent(finalContent, lastToolResult);
     const failureFallback =
-      !finalString.trim() && stopReason !== 'final'
-        ? findLastFailedObservation(trace)
-        : undefined;
-    const content = finalString || (failureFallback ? formatToolFailureForUser(failureFallback) : '');
+      !finalString.trim() && stopReason !== 'final' ? findLastFailedObservation(trace) : undefined;
+    const content =
+      finalString || (failureFallback ? formatToolFailureForUser(failureFallback) : '');
     if (!content.trim()) {
       LogService.error(
         `[Agent ${this.options.agentDef.name}] Failed to generate any content after ${trace.rounds.length} rounds.`
@@ -2721,25 +2797,52 @@ export class ReActRuntime {
   private async buildModelMessages(
     messages: AIMessage[],
     roundIndex: number
-  ): Promise<{ messages: AIMessage[]; classified?: ClassifiedModelInput; snapshot?: ContextUsageSnapshot }> {
-    const result = await this.contextManager.compactMessages(messages, {
+  ): Promise<{
+    messages: AIMessage[];
+    classified?: ClassifiedModelInput;
+    snapshot?: ContextUsageSnapshot;
+  }> {
+    const result = await this.contextBuilder.compactMessages(messages, {
       policy: this.options.context?.policy,
       summarizer: this.options.context?.summarizer,
       signal: this.options.signal
     });
     if (result.compacted) {
-      await this.options.context?.onContextCompacted?.({
-        compacted: true,
-        strategy: String(result.metadata?.strategy || 'hybrid') as ContextCompactionRecord['strategy'],
-        beforeMessages: Number(result.metadata?.beforeMessages || messages.length),
-        afterMessages: Number(result.metadata?.afterMessages || result.messages.length),
-        summary: result.summary,
-        artifactIds: result.artifactIds || []
-      });
+      this.contextBuilder.replaceMessagesInPlace(messages, result.messages);
+      if (this.lastCompactionFingerprint !== result.fingerprint) {
+        this.lastCompactionFingerprint = result.fingerprint;
+        await this.options.context?.onContextCompacted?.(
+          this.toCompactionRecord(result, messages.length)
+        );
+      }
     }
 
-    const snapshot = await this.measureContextUsage(result.messages, roundIndex, result.compacted);
-    return { messages: result.messages, classified: undefined, snapshot };
+    const modelMessages = result.compacted ? messages : result.messages;
+    const snapshot = await this.measureContextUsage(modelMessages, roundIndex, result.compacted);
+    return { messages: modelMessages, classified: undefined, snapshot };
+  }
+
+  private toCompactionRecord(
+    result: AgentContextCompactionResult,
+    currentMessageCount: number
+  ): ContextCompactionRecord {
+    return {
+      compacted: true,
+      strategy: String(
+        result.metadata?.strategy || 'hybrid'
+      ) as ContextCompactionRecord['strategy'],
+      beforeMessages: Number(result.metadata?.beforeMessages || currentMessageCount),
+      afterMessages: Number(result.metadata?.afterMessages || result.messages.length),
+      summary: result.summary,
+      artifactIds: result.artifactIds || [],
+      beforeTokens: readFiniteNumber(result.metadata?.beforeTokens),
+      afterTokens: readFiniteNumber(result.metadata?.afterTokens),
+      fingerprint: result.fingerprint,
+      builderVersion: result.builderVersion,
+      summarySource: result.summarySource,
+      summarizedMessages: readFiniteNumber(result.metadata?.summarizedMessages),
+      retainedMessages: readFiniteNumber(result.metadata?.retainedMessages)
+    };
   }
 
   /**
@@ -2773,10 +2876,11 @@ export class ReActRuntime {
   private collectMcpToolIds(): Set<string> {
     const ids = new Set<string>();
     for (const cfg of this.options.mcpConfigs ?? []) {
-      const serverId = (cfg as { serverId?: string; id?: string; name?: string }).serverId
-        ?? (cfg as { id?: string }).id
-        ?? (cfg as { name?: string }).name
-        ?? '';
+      const serverId =
+        (cfg as { serverId?: string; id?: string; name?: string }).serverId ??
+        (cfg as { id?: string }).id ??
+        (cfg as { name?: string }).name ??
+        '';
       if (serverId) {
         ids.add(`mcp_${serverId}`);
       }

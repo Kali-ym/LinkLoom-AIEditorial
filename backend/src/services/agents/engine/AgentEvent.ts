@@ -426,6 +426,11 @@ export interface ContextCompactedEvent extends AgentEventBase {
     artifactIds?: string[];
     beforeTokens?: number;
     afterTokens?: number;
+    fingerprint?: string;
+    builderVersion?: string;
+    summarySource?: 'heuristic' | 'llm';
+    summarizedMessages?: number;
+    retainedMessages?: number;
   };
 }
 
@@ -469,7 +474,14 @@ export interface BudgetUpdatedEvent extends AgentEventBase {
     estimatedCostUsd?: number;
     elapsedMs?: number;
     limits?: Record<string, unknown>;
-    exceeded?: Array<'max_model_calls' | 'max_tool_calls' | 'max_input_tokens' | 'max_output_tokens' | 'max_cost_usd' | 'timeout'>;
+    exceeded?: Array<
+      | 'max_model_calls'
+      | 'max_tool_calls'
+      | 'max_input_tokens'
+      | 'max_output_tokens'
+      | 'max_cost_usd'
+      | 'timeout'
+    >;
   };
 }
 

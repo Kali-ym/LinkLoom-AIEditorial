@@ -24,8 +24,8 @@ function webSearchHint(mode: WebSearchEffectiveMode): string | null {
  */
 export class ModelHintProvider implements PromptProvider {
   id = 'model_hint';
-  // Search/reasoning hints can vary per turn, so keep them after the stable prefix.
-  phase = 'before_first_user' as const;
+  // Search/reasoning hints can vary per turn, so keep them in the dynamic tail.
+  phase = 'tail_guidance' as const;
   priority = 5;
 
   build(ctx: PromptBuildContext): PromptContribution | null {

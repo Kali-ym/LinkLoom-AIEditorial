@@ -34,17 +34,17 @@ function makeCtxInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe('assembleSystemMessages — context providers 集成', () => {
-  it('无 context 字段时,preUserMessages 只含 date,tailMessages 为空', () => {
+  it('无 context 字段时,动态 date 进入 tailMessages,preUserMessages 为空', () => {
     const ctx = buildPromptPipelineContext(makeCtxInput({ date: '2026-06-26' }));
     const assembled = assembleSystemMessages(ctx);
-    const preContents = assembled.preUserMessages.map((m) => m.content);
-    expect(preContents.some((c) => c.includes('2026-06-26'))).toBe(true);
-    expect(preContents.some((c) => c.includes('<retrieved_knowledge>'))).toBe(false);
-    expect(preContents.some((c) => c.includes('<memory>'))).toBe(false);
-    expect(assembled.tailMessages).toEqual([]);
+    expect(assembled.preUserMessages).toEqual([]);
+    const tailJoined = assembled.tailMessages.map((m) => m.content).join('\n');
+    expect(tailJoined).toContain('2026-06-26');
+    expect(tailJoined.includes('<retrieved_knowledge>')).toBe(false);
+    expect(tailJoined.includes('<memory>')).toBe(false);
   });
 
-  it('knowledgeContext 注入到 preUserMessages,包裹 <retrieved_knowledge>', () => {
+  it('knowledgeContext 注入到 tailMessages,包裹 <retrieved_knowledge>', () => {
     const ctx = buildPromptPipelineContext(
       makeCtxInput({
         date: '2026-06-26',
@@ -52,14 +52,14 @@ describe('assembleSystemMessages — context providers 集成', () => {
       })
     );
     const assembled = assembleSystemMessages(ctx);
-    const knowledgeMsg = assembled.preUserMessages.find((m) =>
+    const knowledgeMsg = assembled.tailMessages.find((m) =>
       m.content.includes('<retrieved_knowledge>')
     );
     expect(knowledgeMsg).toBeDefined();
     expect(knowledgeMsg?.content).toContain('文档内容A');
   });
 
-  it('memoryContext 注入到 preUserMessages,包裹 <memory>', () => {
+  it('memoryContext 注入到 tailMessages,包裹 <memory>', () => {
     const ctx = buildPromptPipelineContext(
       makeCtxInput({
         date: '2026-06-26',
@@ -67,7 +67,7 @@ describe('assembleSystemMessages — context providers 集成', () => {
       })
     );
     const assembled = assembleSystemMessages(ctx);
-    const memoryMsg = assembled.preUserMessages.find((m) => m.content.includes('<memory>'));
+    const memoryMsg = assembled.tailMessages.find((m) => m.content.includes('<memory>'));
     expect(memoryMsg).toBeDefined();
     expect(memoryMsg?.content).toContain('用户偏好A');
   });
@@ -92,7 +92,7 @@ describe('assembleSystemMessages — context providers 集成', () => {
     expect(todoMsg?.content).toContain('- [ ] 待办');
   });
 
-  it('三个 context 同时注入时,preUser 含 knowledge+memory+date,tail 含 todos', () => {
+  it('三个 context 同时注入时全部进入 tail,stable prefix 不含动态标签', () => {
     const ctx = buildPromptPipelineContext(
       makeCtxInput({
         date: '2026-06-26',
@@ -102,11 +102,15 @@ describe('assembleSystemMessages — context providers 集成', () => {
       })
     );
     const assembled = assembleSystemMessages(ctx);
-    const preJoined = assembled.preUserMessages.map((m) => m.content).join('\n');
-    expect(preJoined).toContain('2026-06-26');
-    expect(preJoined).toContain('<retrieved_knowledge>知识内容</retrieved_knowledge>');
-    expect(preJoined).toContain('<memory>记忆内容</memory>');
-    expect(assembled.tailMessages.some((m) => m.content.includes('<todos>'))).toBe(true);
+    expect(assembled.preUserMessages).toEqual([]);
+    const tailJoined = assembled.tailMessages.map((m) => m.content).join('\n');
+    expect(tailJoined).toContain('2026-06-26');
+    expect(tailJoined).toContain('<retrieved_knowledge>知识内容</retrieved_knowledge>');
+    expect(tailJoined).toContain('<memory>记忆内容</memory>');
+    expect(tailJoined).toContain('<todos>');
+    expect(assembled.systemMessage.content.includes('<retrieved_knowledge>')).toBe(false);
+    expect(assembled.systemMessage.content.includes('<memory>')).toBe(false);
+    expect(assembled.systemMessage.content.includes('2026-06-26')).toBe(false);
   });
 
   it('空字符串 context 字段被 skip(不产生空标签消息)', () => {
@@ -119,9 +123,11 @@ describe('assembleSystemMessages — context providers 集成', () => {
       })
     );
     const assembled = assembleSystemMessages(ctx);
-    expect(assembled.preUserMessages.some((m) => m.content.includes('<retrieved_knowledge>'))).toBe(false);
-    expect(assembled.preUserMessages.some((m) => m.content.includes('<memory>'))).toBe(false);
-    expect(assembled.tailMessages).toEqual([]);
+    expect(assembled.tailMessages.some((m) => m.content.includes('<retrieved_knowledge>'))).toBe(
+      false
+    );
+    expect(assembled.tailMessages.some((m) => m.content.includes('<memory>'))).toBe(false);
+    expect(assembled.tailMessages.some((m) => m.content.includes('<todos>'))).toBe(false);
   });
 
   it('variables 透传到 ctx.variables', () => {

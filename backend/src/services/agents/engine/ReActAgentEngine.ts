@@ -4,16 +4,15 @@ import type {
   AgentToolObservation
 } from '../../../types/agent.js';
 import type { AIMessage } from '../../../types/index.js';
+import { LogService } from '../../LogService.js';
 import {
   ReActRuntime,
   type ReActRuntimeOptions,
   type ReActRuntimePermissionPauseState
 } from '../runtime/ReActRuntime.js';
 import type { ContextUsageSnapshot } from '../context/ContextTokenTypes.js';
-import {
-  buildPromptCacheKey,
-  classifyProviderContextId,
-} from './responseContextCache.js';
+import { buildProviderCacheMetadataPatch } from './responseContextCache.js';
+import { readPromptCacheContract } from './promptCacheContract.js';
 import type {
   AgentEngine,
   AgentHitlResumeOptions,
@@ -47,21 +46,13 @@ import {
   isExecutionLifecycleSuppressedStatus
 } from './AgentRunStateMachine.js';
 import type { AgentArtifactRef, AgentSession } from './AgentSession.js';
-import {
-  InMemoryAgentSessionStore,
-  type AgentSessionStore
-} from './AgentSessionStore.js';
+import { InMemoryAgentSessionStore, type AgentSessionStore } from './AgentSessionStore.js';
 import type { ContextCompactionRecord } from './ContextManager.js';
+import { AGENT_CONTEXT_BUILDER_VERSION } from '../context/AgentContextBuilder.js';
 import { InMemoryAgentEventBus, type AgentEventBus } from './EventBus.js';
-import {
-  createPlatformPermissionPolicy,
-  DefaultPermissionEngine
-} from './PermissionEngine.js';
+import { createPlatformPermissionPolicy, DefaultPermissionEngine } from './PermissionEngine.js';
 import type { PermissionDecision, PermissionRequest } from './PermissionPolicy.js';
-import {
-  ASK_USER_QUESTION_TOOL_ID,
-  type UserInputPauseRequest
-} from './UserInputEngine.js';
+import { ASK_USER_QUESTION_TOOL_ID, type UserInputPauseRequest } from './UserInputEngine.js';
 import { WorkspaceManager } from './WorkspaceManager.js';
 import type { WorkspacePolicy, WorkspaceRef } from './WorkspacePolicy.js';
 import { summarizeWorkspaceFromRef } from './WorkspacePolicyResolver.js';
@@ -76,7 +67,10 @@ export class ReActAgentEngine implements AgentEngine {
   private readonly streamEventStateByRunId = new Map<string, { requestedToolCalls: Set<string> }>();
   /** Monotonic counter for ephemeral stream events (not persisted, not on event bus). */
   private readonly ephemeralStreamSeqByRunId = new Map<string, number>();
-  private readonly runControlsByRunId = new Map<string, { controller: AbortController; dispose?: () => void }>();
+  private readonly runControlsByRunId = new Map<
+    string,
+    { controller: AbortController; dispose?: () => void }
+  >();
 
   constructor(
     private readonly eventBus: AgentEventBus = new InMemoryAgentEventBus(),
@@ -120,7 +114,7 @@ export class ReActAgentEngine implements AgentEngine {
       throw error;
     });
     const workspace = workspaceResult.workspace;
-    if (control.controller.signal.aborted || await this.shouldSkipLifecycleEvent(runSpec.runId)) {
+    if (control.controller.signal.aborted || (await this.shouldSkipLifecycleEvent(runSpec.runId))) {
       if (control.controller.signal.aborted) {
         await this.cancelRun(runSpec.runId, this.getAbortReason(control.controller.signal));
       }
@@ -159,7 +153,11 @@ export class ReActAgentEngine implements AgentEngine {
         return output;
       }
       if (output.stopReason === 'cancelled') {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         await this.cleanupWorkspaceIfNeeded(runSpec, workspaceResult.policy, workspace, 'failed');
         return output;
       }
@@ -174,7 +172,11 @@ export class ReActAgentEngine implements AgentEngine {
       return output;
     } catch (error: any) {
       if (this.isCancellationError(error, control.controller.signal)) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         await this.cleanupWorkspaceIfNeeded(runSpec, workspaceResult.policy, workspace, 'failed');
         return { content: '', stopReason: 'cancelled' };
       }
@@ -219,7 +221,11 @@ export class ReActAgentEngine implements AgentEngine {
       await middleware.beforeRun();
       for await (const chunk of streamFactory()) {
         if (control.controller.signal.aborted) {
-          await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+          await this.publishRunCancelled(
+            runSpec,
+            this.getAbortReason(control.controller.signal),
+            Date.now() - startedAt
+          );
           this.streamEventStateByRunId.delete(runSpec.runId);
           return;
         }
@@ -228,7 +234,11 @@ export class ReActAgentEngine implements AgentEngine {
         yield chunk;
       }
       if (control.controller.signal.aborted) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         this.streamEventStateByRunId.delete(runSpec.runId);
         return;
       }
@@ -243,7 +253,11 @@ export class ReActAgentEngine implements AgentEngine {
       this.streamEventStateByRunId.delete(runSpec.runId);
     } catch (error: any) {
       if (this.isCancellationError(error, control.controller.signal)) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         this.streamEventStateByRunId.delete(runSpec.runId);
         return;
       }
@@ -287,7 +301,7 @@ export class ReActAgentEngine implements AgentEngine {
       throw error;
     });
     const workspace = workspaceResult.workspace;
-    if (control.controller.signal.aborted || await this.shouldSkipLifecycleEvent(runSpec.runId)) {
+    if (control.controller.signal.aborted || (await this.shouldSkipLifecycleEvent(runSpec.runId))) {
       if (control.controller.signal.aborted) {
         await this.cancelRun(runSpec.runId, this.getAbortReason(control.controller.signal));
       }
@@ -335,7 +349,11 @@ export class ReActAgentEngine implements AgentEngine {
       }
 
       if (stopReason === 'cancelled') {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         await this.cleanupWorkspaceIfNeeded(runSpec, workspaceResult.policy, workspace, 'failed');
         this.streamEventStateByRunId.delete(runSpec.runId);
         return;
@@ -361,7 +379,11 @@ export class ReActAgentEngine implements AgentEngine {
       this.streamEventStateByRunId.delete(runSpec.runId);
     } catch (error: any) {
       if (this.isCancellationError(error, control.controller.signal)) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         await this.cleanupWorkspaceIfNeeded(runSpec, workspaceResult.policy, workspace, 'failed');
         this.streamEventStateByRunId.delete(runSpec.runId);
         return;
@@ -400,7 +422,9 @@ export class ReActAgentEngine implements AgentEngine {
       : await this.sessionStore.getSession(sessionId);
     if (!session || session.sessionId !== sessionId) {
       throw new Error(
-        options.runId ? `Agent run not found: ${options.runId}` : `Agent session not found: ${sessionId}`
+        options.runId
+          ? `Agent run not found: ${options.runId}`
+          : `Agent session not found: ${sessionId}`
       );
     }
 
@@ -420,7 +444,9 @@ export class ReActAgentEngine implements AgentEngine {
     }
 
     if (!options.decision) {
-      throw new Error(`AgentEngine.resume requires a permission decision for session: ${sessionId}`);
+      throw new Error(
+        `AgentEngine.resume requires a permission decision for session: ${sessionId}`
+      );
     }
 
     if (options.decision.permissionId !== pendingPermission.permissionId) {
@@ -515,7 +541,11 @@ export class ReActAgentEngine implements AgentEngine {
       }
       const output = this.toRunOutput(result);
       if (output.stopReason === 'cancelled') {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         return output;
       }
       if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
@@ -532,7 +562,11 @@ export class ReActAgentEngine implements AgentEngine {
       return output;
     } catch (error: any) {
       if (this.isCancellationError(error, control.controller.signal)) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         return { content: '', stopReason: 'cancelled' };
       }
       await middleware.onError(error);
@@ -549,7 +583,9 @@ export class ReActAgentEngine implements AgentEngine {
       : await this.sessionStore.getSession(sessionId);
     if (!session || session.sessionId !== sessionId) {
       throw new Error(
-        options.runId ? `Agent run not found: ${options.runId}` : `Agent session not found: ${sessionId}`
+        options.runId
+          ? `Agent run not found: ${options.runId}`
+          : `Agent session not found: ${sessionId}`
       );
     }
 
@@ -568,13 +604,20 @@ export class ReActAgentEngine implements AgentEngine {
       throw new Error(`Agent session has no pending HITL request: ${sessionId}`);
     }
     if (pendingHitl.permissionId) {
-      throw new Error(`Permission-backed HITL must be resumed through permission resolution: ${sessionId}`);
+      throw new Error(
+        `Permission-backed HITL must be resumed through permission resolution: ${sessionId}`
+      );
     }
     if (options.resolution.requestId !== pendingHitl.requestId) {
-      throw new Error(`HITL resolution does not match pending request: ${options.resolution.requestId}`);
+      throw new Error(
+        `HITL resolution does not match pending request: ${options.resolution.requestId}`
+      );
     }
 
-    const checkpoint = this.resolveCheckpoint(session, options.checkpointId ?? pendingHitl.checkpointId);
+    const checkpoint = this.resolveCheckpoint(
+      session,
+      options.checkpointId ?? pendingHitl.checkpointId
+    );
     if (options.checkpointId && !checkpoint) {
       throw new Error(`Agent checkpoint not found: ${options.checkpointId}`);
     }
@@ -630,7 +673,8 @@ export class ReActAgentEngine implements AgentEngine {
       await this.publishRunResumed(latestSession, checkpointId);
       try {
         await middleware.beforeRun();
-        const canStreamResume = typeof options.runtimeOptions?.provider?.streamContent === 'function';
+        const canStreamResume =
+          typeof options.runtimeOptions?.provider?.streamContent === 'function';
         const runtimeOptions = this.withRuntimeControls(
           runSpec,
           {
@@ -705,9 +749,10 @@ export class ReActAgentEngine implements AgentEngine {
     }
 
     const hitlMessages = this.toHitlResumeMessages(pendingHitl, options.resolution);
-    const resumeSession = hitlMessages.length > 0
-      ? await this.saveHitlResumeMessages(latestSession, hitlMessages)
-      : latestSession;
+    const resumeSession =
+      hitlMessages.length > 0
+        ? await this.saveHitlResumeMessages(latestSession, hitlMessages)
+        : latestSession;
     if (!options.runtimeOptions || hitlMessages.length === 0) {
       const output: AgentRunOutput = {
         content: `HITL decision recorded: ${options.resolution.action}`,
@@ -759,7 +804,11 @@ export class ReActAgentEngine implements AgentEngine {
       await this.publishTraceEvents(runSpec, result);
       const output = this.toRunOutput(result);
       if (output.stopReason === 'cancelled') {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         return output;
       }
       if (output.stopReason === 'permission_required' || output.stopReason === 'needs_input') {
@@ -776,7 +825,11 @@ export class ReActAgentEngine implements AgentEngine {
       return output;
     } catch (error: any) {
       if (this.isCancellationError(error, control.controller.signal)) {
-        await this.publishRunCancelled(runSpec, this.getAbortReason(control.controller.signal), Date.now() - startedAt);
+        await this.publishRunCancelled(
+          runSpec,
+          this.getAbortReason(control.controller.signal),
+          Date.now() - startedAt
+        );
         return { content: '', stopReason: 'cancelled' };
       }
       await middleware.onError(error);
@@ -891,13 +944,22 @@ export class ReActAgentEngine implements AgentEngine {
    * resume. Falls back to the in-process bus when no table-backed session store exists.
    */
   async getEventsAfter(runId: string, afterSeq: number): Promise<AgentEvent[]> {
-    const repos = (this.sessionStore as { storeRepositories?: () => { agentEvents?: { listByRun: (runId: string, afterSeq?: number) => Promise<AgentEvent[]> } } | undefined });
-    const tableRepos = typeof repos.storeRepositories === 'function' ? repos.storeRepositories() : undefined;
+    const repos = this.sessionStore as {
+      storeRepositories?: () =>
+        | {
+            agentEvents?: {
+              listByRun: (runId: string, afterSeq?: number) => Promise<AgentEvent[]>;
+            };
+          }
+        | undefined;
+    };
+    const tableRepos =
+      typeof repos.storeRepositories === 'function' ? repos.storeRepositories() : undefined;
     if (tableRepos?.agentEvents) {
       return tableRepos.agentEvents.listByRun(runId, afterSeq);
     }
     const all = await this.getEvents(runId);
-    return all.filter((event) => typeof event.sequence === 'number' && (event.sequence) > afterSeq);
+    return all.filter((event) => typeof event.sequence === 'number' && event.sequence > afterSeq);
   }
 
   getEventChannel(): AgentRunEventChannel | undefined {
@@ -932,24 +994,15 @@ export class ReActAgentEngine implements AgentEngine {
     const session = await this.sessionStore.getSessionByRunId(runSpec.runId);
     if (!session) return;
 
-    const kind = classifyProviderContextId(responseId);
-    const idPatch =
-      kind === 'completion'
-        ? { providerCompletionId: responseId }
-        : kind === 'message'
-          ? { providerMessageId: responseId }
-          : { providerResponseId: responseId };
-
+    const contract = readPromptCacheContract(session.metadata?.promptCacheContract);
     session.metadata = {
       ...session.metadata,
-      ...idPatch,
-      providerCacheKey: buildPromptCacheKey(
-        runSpec.sessionId,
-        agentDef.model,
-        agentDef.providerId,
-      ),
-      model: agentDef.model,
-      providerId: agentDef.providerId
+      ...buildProviderCacheMetadataPatch({
+        responseId,
+        contract,
+        agentModel: agentDef.model,
+        agentProviderId: agentDef.providerId
+      })
     };
     await this.sessionStore.saveSession(session);
   }
@@ -1026,7 +1079,8 @@ export class ReActAgentEngine implements AgentEngine {
       await middleware.afterToolCall({
         toolName: String(payload.tool || ''),
         arguments: undefined,
-        result: payload.type === 'tool_result' ? payload.result : { success: false, error: payload.error }
+        result:
+          payload.type === 'tool_result' ? payload.result : { success: false, error: payload.error }
       });
     }
   }
@@ -1075,13 +1129,18 @@ export class ReActAgentEngine implements AgentEngine {
           if (await this.shouldSkipLifecycleEvent(spec.runId)) return;
           await this.publishPermissionRequired(spec, request);
           if (await this.shouldSkipLifecycleEvent(spec.runId)) return;
-          const checkpointId = await this.savePermissionCheckpoint(spec, request, {
-            ...runtimeOptions,
-            workspace: {
-              ...runtimeOptions.workspace,
-              workspace
-            }
-          }, state);
+          const checkpointId = await this.savePermissionCheckpoint(
+            spec,
+            request,
+            {
+              ...runtimeOptions,
+              workspace: {
+                ...runtimeOptions.workspace,
+                workspace
+              }
+            },
+            state
+          );
           if (await this.shouldSkipLifecycleEvent(spec.runId)) return;
           await this.publishRunPaused(spec, request.permissionId, checkpointId);
         },
@@ -1117,10 +1176,21 @@ export class ReActAgentEngine implements AgentEngine {
         policy: spec.contextPolicy ?? runtimeOptions.context?.policy,
         onContextCompacted: async (record) => {
           await runtimeOptions.context?.onContextCompacted?.(record);
+          try {
+            await this.saveContextCompactionCheckpoint(spec, runtimeOptions, record);
+          } catch (error) {
+            LogService.warn(
+              `[ReActAgentEngine] Failed to persist context compaction checkpoint for ${spec.runId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
           await this.publishContextCompacted(spec, record);
         },
         onArtifactSaved: async (artifact, content) => {
-          const savedArtifact = await this.workspaceManager.saveArtifact(workspace, artifact, content);
+          const savedArtifact = await this.workspaceManager.saveArtifact(
+            workspace,
+            artifact,
+            content
+          );
           await runtimeOptions.context?.onArtifactSaved?.(savedArtifact, content);
           await this.sessionStore.saveArtifact(spec.sessionId, savedArtifact, spec.runId);
           await this.publishArtifactSaved(spec, savedArtifact);
@@ -1146,7 +1216,10 @@ export class ReActAgentEngine implements AgentEngine {
     };
   }
 
-  private async publishTraceEvents(spec: AgentRunSpec, result: AgentExecutionResult): Promise<void> {
+  private async publishTraceEvents(
+    spec: AgentRunSpec,
+    result: AgentExecutionResult
+  ): Promise<void> {
     const sequenceStart = await this.nextRunEventSequence(spec.runId);
     const events = mapTraceToAgentEvents(result.trace, {
       ...agentEventContextFromSpec(spec, { adapter: 'react-runtime-trace' }),
@@ -1161,20 +1234,16 @@ export class ReActAgentEngine implements AgentEngine {
   private async publishToolObservation(
     spec: AgentRunSpec,
     observation: AgentToolObservation,
-    round: number,
+    round: number
   ): Promise<void> {
     if (await this.shouldSkipLifecycleEvent(spec.runId)) return;
     const sequenceStart = await this.nextRunEventSequence(spec.runId);
-    const events = mapToolObservationToAgentEvents(
-      observation,
-      round,
-      {
-        ...agentEventContextFromSpec(spec, {
-          adapter: 'react-runtime-tool-observation'
-        }),
-        sequenceStart
-      },
-    );
+    const events = mapToolObservationToAgentEvents(observation, round, {
+      ...agentEventContextFromSpec(spec, {
+        adapter: 'react-runtime-tool-observation'
+      }),
+      sequenceStart
+    });
     for (const event of events) {
       await this.publishEvent(event);
     }
@@ -1196,8 +1265,7 @@ export class ReActAgentEngine implements AgentEngine {
         continue;
       }
       if (event.type !== 'tool_call_requested') continue;
-      const toolCallId =
-        (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
+      const toolCallId = (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
       if (toolCallId) requestedToolCallIds.add(toolCallId);
     }
 
@@ -1215,8 +1283,7 @@ export class ReActAgentEngine implements AgentEngine {
         return true;
       }
       if (event.type !== 'tool_call_requested') return true;
-      const toolCallId =
-        (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
+      const toolCallId = (typeof payload.toolCallId === 'string' && payload.toolCallId) || event.id;
       if (!toolCallId) return true;
       if (requestedToolCallIds.has(toolCallId) || seenInBatch.has(toolCallId)) return false;
       seenInBatch.add(toolCallId);
@@ -1224,19 +1291,19 @@ export class ReActAgentEngine implements AgentEngine {
     });
   }
 
-  private async publishStreamChunkEvents(spec: AgentRunSpec, chunk: unknown): Promise<AgentEvent[]> {
-    const mappedEvents = mapStreamChunkToAgentEvents(
-      chunk,
-      {
-        ...agentEventContextFromSpec(spec, {
-          adapter: 'legacy-stream-chunk',
-          providerId: spec.agentDef?.providerId || spec.temporaryAgentDef?.providerId,
-          model: spec.agentDef?.model || spec.temporaryAgentDef?.model,
-          sequenceStart: 1
-        }),
+  private async publishStreamChunkEvents(
+    spec: AgentRunSpec,
+    chunk: unknown
+  ): Promise<AgentEvent[]> {
+    const mappedEvents = mapStreamChunkToAgentEvents(chunk, {
+      ...agentEventContextFromSpec(spec, {
+        adapter: 'legacy-stream-chunk',
+        providerId: spec.agentDef?.providerId || spec.temporaryAgentDef?.providerId,
+        model: spec.agentDef?.model || spec.temporaryAgentDef?.model,
         sequenceStart: 1
-      }
-    );
+      }),
+      sequenceStart: 1
+    });
     const deduped = this.dedupeStreamChunkEvents(spec, mappedEvents);
     const output: AgentEvent[] = [];
 
@@ -1385,8 +1452,12 @@ export class ReActAgentEngine implements AgentEngine {
       metadata: {
         ...decision.metadata,
         toolCallId:
-          (typeof decision.metadata?.toolCallId === 'string' ? decision.metadata.toolCallId : undefined) ??
-          (typeof pending?.metadata?.toolCallId === 'string' ? pending.metadata.toolCallId : undefined)
+          (typeof decision.metadata?.toolCallId === 'string'
+            ? decision.metadata.toolCallId
+            : undefined) ??
+          (typeof pending?.metadata?.toolCallId === 'string'
+            ? pending.metadata.toolCallId
+            : undefined)
       }
     };
     await this.publishEvent({
@@ -1397,7 +1468,8 @@ export class ReActAgentEngine implements AgentEngine {
       timestamp: new Date().toISOString(),
       payload: enrichedDecision
     });
-    const hadPendingHitl = sessionBeforeResolution?.pendingHitl?.permissionId === decision.permissionId;
+    const hadPendingHitl =
+      sessionBeforeResolution?.pendingHitl?.permissionId === decision.permissionId;
     if (decision.effect !== 'ask' && (hadPendingHitl || decision.resolvedBy === 'human')) {
       await this.publishHitlResolved(target, this.hitlResolutionFromPermission(decision));
     }
@@ -1558,16 +1630,18 @@ export class ReActAgentEngine implements AgentEngine {
       ...session,
       messages: [
         ...session.messages,
-        ...messages.map((message): AgentMessage => ({
-          role: message.role,
-          content: runtimeMessageToAgentContent(message.content),
-          name: message.name,
-          toolCallId: message.tool_call_id,
-          createdAt: new Date().toISOString(),
-          metadata: {
-            source: 'hitl_resume'
-          }
-        }))
+        ...messages.map(
+          (message): AgentMessage => ({
+            role: message.role,
+            content: runtimeMessageToAgentContent(message.content),
+            name: message.name,
+            toolCallId: message.tool_call_id,
+            createdAt: new Date().toISOString(),
+            metadata: {
+              source: 'hitl_resume'
+            }
+          })
+        )
       ]
     };
     await this.sessionStore.saveSession(nextSession);
@@ -1657,7 +1731,12 @@ export class ReActAgentEngine implements AgentEngine {
         summary: record.summary,
         artifactIds: record.artifactIds,
         beforeTokens: record.beforeTokens,
-        afterTokens: record.afterTokens
+        afterTokens: record.afterTokens,
+        fingerprint: record.fingerprint,
+        builderVersion: record.builderVersion,
+        summarySource: record.summarySource,
+        summarizedMessages: record.summarizedMessages,
+        retainedMessages: record.retainedMessages
       }
     });
   }
@@ -1797,7 +1876,8 @@ export class ReActAgentEngine implements AgentEngine {
   ): Promise<void> {
     const session = await this.sessionStore.getSessionByRunId(target.runId);
     if (session && (isClosedRunStatus(session.status) || session.status === 'cancelling')) return;
-    const previousStatus = session && isCancellableRunStatus(session.status) ? session.status : undefined;
+    const previousStatus =
+      session && isCancellableRunStatus(session.status) ? session.status : undefined;
     await this.publishEvent({
       id: this.createEventId(target.runId, 'run_cancel_requested'),
       type: 'run_cancel_requested',
@@ -1823,8 +1903,15 @@ export class ReActAgentEngine implements AgentEngine {
       await this.publishRunCancelRequested(target, reason);
     }
     const latestSession = await this.sessionStore.getSessionByRunId(target.runId);
-    if (latestSession && isClosedRunStatus(latestSession.status) && latestSession.status !== 'cancelling') return;
-    const startedAt = new Date(latestSession?.createdAt ?? session?.createdAt ?? target.createdAt ?? '').getTime();
+    if (
+      latestSession &&
+      isClosedRunStatus(latestSession.status) &&
+      latestSession.status !== 'cancelling'
+    )
+      return;
+    const startedAt = new Date(
+      latestSession?.createdAt ?? session?.createdAt ?? target.createdAt ?? ''
+    ).getTime();
     const resolvedDurationMs =
       durationMs ?? (Number.isFinite(startedAt) ? Date.now() - startedAt : undefined);
     await this.publishEvent({
@@ -1893,7 +1980,9 @@ export class ReActAgentEngine implements AgentEngine {
     }
   }
 
-  private getAbortReason(signal?: AbortSignal): 'manual' | 'client_disconnect' | 'timeout' | 'system' {
+  private getAbortReason(
+    signal?: AbortSignal
+  ): 'manual' | 'client_disconnect' | 'timeout' | 'system' {
     const reason = signal?.reason;
     if (typeof reason === 'string' && isCancelReason(reason)) return reason;
     if (reason && typeof reason === 'object') {
@@ -1911,7 +2000,9 @@ export class ReActAgentEngine implements AgentEngine {
     return (
       record.name === 'AbortError' ||
       record.code === 'ABORT_ERR' ||
-      String(record.message || '').toLowerCase().includes('abort')
+      String(record.message || '')
+        .toLowerCase()
+        .includes('abort')
     );
   }
 
@@ -1950,8 +2041,13 @@ export class ReActAgentEngine implements AgentEngine {
   }
 
   private async nextRunEventSequence(runId: string): Promise<number> {
-    const repos = (this.sessionStore as { storeRepositories?: () => { agentEvents?: { nextSequence: (runId: string) => Promise<number> } } | undefined });
-    const tableRepos = typeof repos.storeRepositories === 'function' ? repos.storeRepositories() : undefined;
+    const repos = this.sessionStore as {
+      storeRepositories?: () =>
+        | { agentEvents?: { nextSequence: (runId: string) => Promise<number> } }
+        | undefined;
+    };
+    const tableRepos =
+      typeof repos.storeRepositories === 'function' ? repos.storeRepositories() : undefined;
     if (tableRepos?.agentEvents) {
       return tableRepos.agentEvents.nextSequence(runId);
     }
@@ -1975,6 +2071,70 @@ export class ReActAgentEngine implements AgentEngine {
   private async shouldSkipLifecycleEvent(runId: string): Promise<boolean> {
     const session = await this.sessionStore.getSessionByRunId(runId);
     return Boolean(session && isExecutionLifecycleSuppressedStatus(session.status));
+  }
+
+  private async saveContextCompactionCheckpoint(
+    spec: AgentRunSpec,
+    runtimeOptions: ReActRuntimeOptions,
+    record: ContextCompactionRecord
+  ): Promise<string | undefined> {
+    if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
+    if (!record.fingerprint) return undefined;
+
+    const session = await this.sessionStore.getSessionByRunId(spec.runId);
+    const existing = session?.checkpoints.find((checkpoint) => {
+      const context = checkpoint.metadata?.context;
+      return (
+        Boolean(context) &&
+        typeof context === 'object' &&
+        !Array.isArray(context) &&
+        (context as Record<string, unknown>).fingerprint === record.fingerprint
+      );
+    });
+    if (existing) return existing.checkpointId;
+
+    const checkpointId = `checkpoint_${spec.runId}_context_${record.fingerprint}`;
+    await this.sessionStore.saveCheckpoint(spec.sessionId, {
+      checkpointId,
+      runId: spec.runId,
+      sessionId: spec.sessionId,
+      reason: 'context_compaction',
+      status: 'running',
+      messages: this.toAgentMessages(runtimeOptions.messages),
+      events: this.eventBus.getEvents(spec.runId),
+      workspace: runtimeOptions.workspace?.workspace,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        context: {
+          builderVersion: record.builderVersion ?? AGENT_CONTEXT_BUILDER_VERSION,
+          fingerprint: record.fingerprint,
+          compacted: record.compacted,
+          summary: record.summary,
+          summarySource: record.summarySource,
+          artifactIds: record.artifactIds,
+          beforeMessages: record.beforeMessages,
+          afterMessages: record.afterMessages,
+          beforeTokens: record.beforeTokens,
+          afterTokens: record.afterTokens,
+          summarizedMessages: record.summarizedMessages,
+          retainedMessages: record.retainedMessages
+        }
+      }
+    });
+
+    if (await this.shouldSkipLifecycleEvent(spec.runId)) return undefined;
+    await this.publishEvent({
+      id: this.createEventId(spec.runId, 'checkpoint_saved'),
+      type: 'checkpoint_saved',
+      runId: spec.runId,
+      sessionId: spec.sessionId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        checkpointId,
+        reason: 'context_compaction'
+      }
+    });
+    return checkpointId;
   }
 
   private async savePermissionCheckpoint(
@@ -2165,14 +2325,18 @@ export class ReActAgentEngine implements AgentEngine {
   ): Promise<void> {
     if (!workspace || !this.workspaceManager.shouldCleanup(policy, outcome)) return;
     await this.workspaceManager.cleanupWorkspace(workspace);
-    await this.sessionStore.updateWorkspace(spec.sessionId, {
-      ...workspace,
-      metadata: {
-        ...workspace.metadata,
-        cleanedAt: new Date().toISOString(),
-        cleanupOutcome: outcome
-      }
-    }, spec.runId);
+    await this.sessionStore.updateWorkspace(
+      spec.sessionId,
+      {
+        ...workspace,
+        metadata: {
+          ...workspace.metadata,
+          cleanedAt: new Date().toISOString(),
+          cleanupOutcome: outcome
+        }
+      },
+      spec.runId
+    );
   }
 
   private async *createEventStream(runId: string): AsyncIterable<AgentEvent> {
@@ -2204,7 +2368,9 @@ function isWorkspacePolicyRecord(value: unknown): value is WorkspacePolicy {
 function isCancelReason(
   value: string
 ): value is 'manual' | 'client_disconnect' | 'timeout' | 'system' {
-  return value === 'manual' || value === 'client_disconnect' || value === 'timeout' || value === 'system';
+  return (
+    value === 'manual' || value === 'client_disconnect' || value === 'timeout' || value === 'system'
+  );
 }
 
 /**
@@ -2217,7 +2383,11 @@ function isCancelReason(
  * `message_finished`, `tool_call_requested`).
  */
 function isEphemeralStreamEvent(event: AgentEvent): boolean {
-  if (event.type === 'reasoning_delta' || event.type === 'model_delta' || event.type === 'message_delta') {
+  if (
+    event.type === 'reasoning_delta' ||
+    event.type === 'model_delta' ||
+    event.type === 'message_delta'
+  ) {
     return true;
   }
   if (event.type !== 'custom') return false;

@@ -212,3 +212,50 @@ describe('ai prompt cache usage parsing', () => {
     });
   });
 });
+
+describe('prompt cache route affinity helpers', () => {
+  it('resolves effective endpoint preferring pinned then configured then auto plan', async () => {
+    const {
+      resolveEffectiveApiEndpoint,
+      mapAttemptLabelToApiEndpoint,
+      resolveStreamEndpointPlans
+    } = await import('../src/services/AIProvider.js');
+
+    expect(
+      resolveEffectiveApiEndpoint({
+        configuredEndpoint: 'auto',
+        pinnedEndpoint: 'responses',
+        providerType: 'OPENAI'
+      })
+    ).toBe('responses');
+
+    expect(
+      resolveEffectiveApiEndpoint({
+        configuredEndpoint: 'messages',
+        providerType: 'CLAUDE'
+      })
+    ).toBe('messages');
+
+    expect(mapAttemptLabelToApiEndpoint('chat/completions')).toBe('chat_completions');
+    expect(resolveStreamEndpointPlans({ apiUrl: 'https://example.com', apiEndpoint: 'responses' })).toEqual([
+      'responses'
+    ]);
+  });
+
+  it('keeps dynamic system suffix out of the stable instructions prefix', async () => {
+    const { splitSystemFromPrompt } = await import('../src/services/AIProvider.js');
+    const split = splitSystemFromPrompt(
+      [
+        { role: 'system', content: 'stable identity' },
+        { role: 'system', content: '<retrieved_knowledge>kb</retrieved_knowledge>' },
+        { role: 'user', content: 'hello' }
+      ],
+      'stable identity'
+    );
+
+    expect(split.systemInstruction).toBe('stable identity');
+    expect(split.dynamicSystemSuffix).toContain('<retrieved_knowledge>');
+    expect(Array.isArray(split.conversation)).toBe(true);
+    expect((split.conversation as Array<{ role: string }>)[0]?.role).toBe('user');
+  });
+});

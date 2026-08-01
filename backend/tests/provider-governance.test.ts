@@ -342,4 +342,81 @@ describe('Provider Governance', () => {
       exceeded: ['max_model_calls']
     });
   });
+
+
+  it('disables prompt cache key reuse when falling back to a mismatched provider/model', async () => {
+    const { adaptCallOptionsForCandidate, collectFallbackCacheMismatchReasons } = await import(
+      '../src/services/agents/providerGovernance.js'
+    );
+
+    const primary = {
+      provider: createProvider('primary', vi.fn()),
+      providerId: 'OPENAI',
+      model: 'gpt-5'
+    };
+    const fallback = {
+      provider: createProvider('fallback', vi.fn()),
+      providerId: 'OPENAI-BACKUP',
+      model: 'gpt-4.1'
+    };
+
+    expect(
+      collectFallbackCacheMismatchReasons(
+        { providerId: 'OPENAI', model: 'gpt-5', endpoint: 'chat_completions' },
+        fallback
+      )
+    ).toEqual(expect.arrayContaining(['fallback_provider_mismatch', 'fallback_model_mismatch']));
+
+    const adapted = adaptCallOptionsForCandidate(
+      {
+        responseCache: {
+          enableStore: true,
+          cacheKey: 'session-key',
+          providerId: 'OPENAI',
+          model: 'gpt-5',
+          endpoint: 'chat_completions'
+        }
+      },
+      fallback,
+      primary
+    );
+
+    expect(adapted?.responseCache?.cacheKey).toBeUndefined();
+    expect(adapted?.responseCache?.enableStore).toBe(false);
+    expect(adapted?.responseCache?.cacheDisableReason).toContain('fallback_provider_mismatch');
+  });
+
+  it('keeps prompt cache when fallback candidate matches the cache contract identity', async () => {
+    const { adaptCallOptionsForCandidate } = await import(
+      '../src/services/agents/providerGovernance.js'
+    );
+
+    const primary = {
+      provider: createProvider('primary', vi.fn()),
+      providerId: 'OPENAI',
+      model: 'gpt-5'
+    };
+    const sameIdentityFallback = {
+      provider: createProvider('fallback-same', vi.fn()),
+      providerId: 'OPENAI',
+      model: 'gpt-5'
+    };
+
+    const adapted = adaptCallOptionsForCandidate(
+      {
+        responseCache: {
+          enableStore: true,
+          cacheKey: 'session-key',
+          providerId: 'OPENAI',
+          model: 'gpt-5'
+        }
+      },
+      sameIdentityFallback,
+      primary
+    );
+
+    expect(adapted?.responseCache?.cacheKey).toBe('session-key');
+    expect(adapted?.responseCache?.enableStore).toBe(true);
+  });
+
 });

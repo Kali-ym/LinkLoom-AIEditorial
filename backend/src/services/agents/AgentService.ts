@@ -11,6 +11,10 @@ import type { AiBuildStreamEvent } from '../../types/aiBuilder.js';
 import type { AIProviderConfig, SystemSettings } from '../../types/config.js';
 import { AIMessage } from '../../types/index.js';
 import type { AIProvider } from '../AIProvider.js';
+import {
+  createAIProvider,
+  resolveEffectiveApiEndpoint
+} from '../AIProvider.js';
 import { LocalStore } from '../LocalStore.js';
 import { LogService } from '../LogService.js';
 import { KnowledgeRetrievalService } from '../rag/KnowledgeRetrievalService.js';
@@ -18,7 +22,12 @@ import { RagContextBuilder } from '../rag/RagContextBuilder.js';
 import { legacyKnowledgeCategoryScope, mergeKnowledgeScopes } from '../rag/RagScope.js';
 import type { ContextSummarizer } from './engine/ContextManager.js';
 import type { ObservationPolicy } from './engine/ObservationPolicy.js';
-import type { AgentBudgetPolicy, AgentMessage, AgentRunSource, AgentRunSpec } from './engine/AgentRunSpec.js';
+import type {
+  AgentBudgetPolicy,
+  AgentMessage,
+  AgentRunSource,
+  AgentRunSpec
+} from './engine/AgentRunSpec.js';
 import type { AgentSession } from './engine/AgentSession.js';
 import { LocalStoreAgentSessionStore } from './engine/AgentSessionStore.js';
 import {
@@ -26,20 +35,21 @@ import {
   PgAgentRunEventChannel,
   type AgentRunEventChannel
 } from './engine/AgentRunEventChannel.js';
-import type { PermissionDecision, PermissionEffect, PermissionPolicy } from './engine/PermissionPolicy.js';
+import type {
+  PermissionDecision,
+  PermissionEffect,
+  PermissionPolicy
+} from './engine/PermissionPolicy.js';
 import type { AgentRunRegistry } from './engine/AgentRunRegistry.js';
 import type { WorkspacePolicy } from './engine/WorkspacePolicy.js';
 import {
   isReusableConversationRun,
   isSupersedeableApprovalRun,
-  newConversationBlockedMessage,
+  newConversationBlockedMessage
 } from './conversationRunGuards.js';
 import type { UserTurnMessageMetadata } from './userTurnPayload.js';
 import { resolveTurnSkillIds } from './userTurnPayload.js';
-import {
-  applyWebSearchPolicy,
-  resolveWebSearchPolicy,
-} from './search/WebSearchPolicyResolver.js';
+import { applyWebSearchPolicy, resolveWebSearchPolicy } from './search/WebSearchPolicyResolver.js';
 import type { WebSearchPolicy } from './search/types.js';
 import { AgentUploadService } from './AgentUploadService.js';
 import {
@@ -48,7 +58,7 @@ import {
   readUserTurnMetadata,
   READ_UPLOAD_TOOL_ID,
   resolveSupportsVision,
-  runtimeMessagePlainText,
+  runtimeMessagePlainText
 } from './userTurnRuntime.js';
 import { MCPService } from './MCPService.js';
 import {
@@ -78,30 +88,35 @@ import {
   resolveContextProfile,
   type ModelContextProfile
 } from './context/index.js';
+import { AgentContextBuilder } from './context/AgentContextBuilder.js';
 import { createLLMSummarizer } from './engine/LLMSummarizer.js';
 import { ReActAgentEngine } from './engine/ReActAgentEngine.js';
 import {
   buildResponseCacheRequest,
   normalizeRuntimeMessageContent,
   pickRicherRuntimeHistory,
+  resolvePinnedSessionEndpoint,
   resolveResponseCacheFromSessions,
   type ResponseCacheRequest
 } from './engine/responseContextCache.js';
 import {
   canonicalizeToolDefinitions,
   CANONICAL_MESSAGE_SERIALIZATION_VERSION,
-  hashString,
   sortToolDefinitions
 } from './engine/canonicalMessageSerializer.js';
 import {
   buildPromptCacheContract,
+  readPromptCacheContract,
   type PromptCacheContract,
   type PromptCachePolicy,
   type PromptCacheRuntimeMode
 } from './engine/promptCacheContract.js';
 import { resolvePromptCacheCapability } from './engine/promptCacheCapabilities.js';
 import { applyMultiAgentPromptCachePolicy } from './engine/multiAgentPromptCache.js';
-import { rehydratePersistedAgentMessage, rehydratePersistedMessages } from './engine/runtimeHistoryRehydrator.js';
+import {
+  rehydratePersistedAgentMessage,
+  rehydratePersistedMessages
+} from './engine/runtimeHistoryRehydrator.js';
 import { resolveWorkspacePolicyFromAgent } from './engine/WorkspacePolicyResolver.js';
 import {
   AgentGovernanceManager,
@@ -224,7 +239,9 @@ function shouldMergeStreamToolCall(
   if (previous === undefined || previous === null) return true;
 
   if (typeof previous === 'string' && typeof next === 'string') {
-    return next.startsWith(previous) || previous.startsWith(next) || !looksLikeCompleteJson(previous);
+    return (
+      next.startsWith(previous) || previous.startsWith(next) || !looksLikeCompleteJson(previous)
+    );
   }
 
   if (
@@ -268,7 +285,8 @@ function recordsAreCompatibleForStreamMerge(
 }
 
 function streamValuesAreCompatible(previous: unknown, next: unknown): boolean {
-  if (previous === undefined || previous === null || next === undefined || next === null) return true;
+  if (previous === undefined || previous === null || next === undefined || next === null)
+    return true;
   if (typeof previous === 'string' && typeof next === 'string') {
     return previous === next || previous.startsWith(next) || next.startsWith(previous);
   }
@@ -321,15 +339,22 @@ function compactStreamToolCalls(
   toolCallState: Map<string, StreamToolCallAccumulator>
 ): Array<{ requestKey: string; id?: string; name: string; arguments?: unknown }> {
   return [...toolCallState.values()]
-    .filter((toolCall): toolCall is StreamToolCallAccumulator & { name: string } =>
-      typeof toolCall.name === 'string' && toolCall.name.trim().length > 0
+    .filter(
+      (toolCall): toolCall is StreamToolCallAccumulator & { name: string } =>
+        typeof toolCall.name === 'string' && toolCall.name.trim().length > 0
     )
     .map((toolCall) => ({ ...toolCall, name: toolCall.name.trim() }));
 }
 
-function resolveAgentKnowledgeScope(agentDef: AgentDefinition, extras?: Partial<ToolExecutionContext>): Partial<ToolExecutionContext> | undefined {
+function resolveAgentKnowledgeScope(
+  agentDef: AgentDefinition,
+  extras?: Partial<ToolExecutionContext>
+): Partial<ToolExecutionContext> | undefined {
   const knowledgeScope = mergeKnowledgeScopes(
-    mergeKnowledgeScopes(agentDef.knowledgeScope, legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds)),
+    mergeKnowledgeScopes(
+      agentDef.knowledgeScope,
+      legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds)
+    ),
     extras?.knowledgeScope
   );
   if (!knowledgeScope) return extras;
@@ -342,22 +367,21 @@ function resolveAgentKnowledgeScope(agentDef: AgentDefinition, extras?: Partial<
 function resolveUserTurnRuntimeExtras(
   agentDef: AgentDefinition,
   options: AgentRunOptions,
-  extras?: Partial<ToolExecutionContext>,
+  extras?: Partial<ToolExecutionContext>
 ): Partial<ToolExecutionContext> | undefined {
   const fileIds = collectUploadAllowlistFileIds(options.userTurnMetadata?.fileList);
-  const uploadAllowlist =
-    fileIds.size > 0 ? { agentId: agentDef.id, fileIds } : undefined;
+  const uploadAllowlist = fileIds.size > 0 ? { agentId: agentDef.id, fileIds } : undefined;
   const merged = resolveAgentKnowledgeScope(agentDef, extras);
   if (!uploadAllowlist && !merged) return undefined;
   return {
     ...(merged || {}),
-    ...(uploadAllowlist ? { uploadAllowlist } : {}),
+    ...(uploadAllowlist ? { uploadAllowlist } : {})
   };
 }
 
 function mergeAgentRunToolExtras(
   runSpec: Pick<AgentRunSpec, 'sessionId' | 'runId'>,
-  extras?: Partial<ToolExecutionContext>,
+  extras?: Partial<ToolExecutionContext>
 ): Partial<ToolExecutionContext> | undefined {
   const agentRun = { sessionId: runSpec.sessionId, runId: runSpec.runId };
   if (!extras) return { agentRun };
@@ -368,17 +392,15 @@ function resolveRuntimeToolExtras(
   runSpec: Pick<AgentRunSpec, 'sessionId' | 'runId'>,
   agentDef: AgentDefinition,
   options: AgentRunOptions,
-  extras?: Partial<ToolExecutionContext>,
+  extras?: Partial<ToolExecutionContext>
 ): Partial<ToolExecutionContext> | undefined {
   const userTurnExtras = resolveUserTurnRuntimeExtras(agentDef, options, extras);
   const exposedSkillIds = resolveTurnSkillIds({
     agentSkillIds: agentDef.skillIds ?? [],
-    userTurnMetadata: options.userTurnMetadata,
+    userTurnMetadata: options.userTurnMetadata
   });
   const withSkills: Partial<ToolExecutionContext> | undefined =
-    exposedSkillIds.length > 0
-      ? { ...(userTurnExtras ?? {}), exposedSkillIds }
-      : userTurnExtras;
+    exposedSkillIds.length > 0 ? { ...(userTurnExtras ?? {}), exposedSkillIds } : userTurnExtras;
   return mergeAgentRunToolExtras(runSpec, withSkills);
 }
 
@@ -389,7 +411,7 @@ const WORKSPACE_TOOL_IDS = [
   'edit_workspace_file',
   'list_dir',
   'glob',
-  'grep',
+  'grep'
 ] as const;
 
 function isWorkspaceSystemTool(tool: { id: string }): boolean {
@@ -418,7 +440,10 @@ function resolveAgentExposedToolIds(
   return toolIds;
 }
 
-function lookupAgentProviderType(agentDef: AgentDefinition, settings?: Partial<SystemSettings>): string {
+function lookupAgentProviderType(
+  agentDef: AgentDefinition,
+  settings?: Partial<SystemSettings>
+): string {
   const providers = settings?.AI_PROVIDERS || [];
   const providerId = String(agentDef.providerId || '').trim();
   const providerConfig = providerId
@@ -462,9 +487,10 @@ function resolveAgentMaxConcurrentRuns(settings?: Partial<SystemSettings>): numb
  * connection is available, otherwise an in-memory channel (single-process / tests).
  */
 function resolveAgentRunEventChannel(store: LocalStore): AgentRunEventChannel {
-  const conn = typeof (store as { getConnection?: () => unknown }).getConnection === 'function'
-    ? (store as { getConnection: () => unknown }).getConnection()
-    : null;
+  const conn =
+    typeof (store as { getConnection?: () => unknown }).getConnection === 'function'
+      ? (store as { getConnection: () => unknown }).getConnection()
+      : null;
   if (conn) {
     return new PgAgentRunEventChannel(conn as any);
   }
@@ -477,10 +503,16 @@ function resolveAgentRunEventChannel(store: LocalStore): AgentRunEventChannel {
  * in-process semaphore behavior.
  */
 function resolveAgentRunQueueBackend(store: LocalStore): AgentRunQueueBackend | undefined {
-  const repo = (store as { repositories?: { agentRunQueue?: unknown } }).repositories?.agentRunQueue;
+  const repo = (store as { repositories?: { agentRunQueue?: unknown } }).repositories
+    ?.agentRunQueue;
   if (!repo) return undefined;
   const queue = repo as {
-    enqueue: (input: { runId: string; sessionId?: string; maxAttempts?: number; payload?: Record<string, unknown> }) => Promise<void>;
+    enqueue: (input: {
+      runId: string;
+      sessionId?: string;
+      maxAttempts?: number;
+      payload?: Record<string, unknown>;
+    }) => Promise<void>;
     claim: (owner: string, limit: number) => Promise<AgentRunQueueJob[]>;
     claimRun: (runId: string, owner: string) => Promise<unknown>;
     heartbeat: (runId: string, owner: string) => Promise<boolean>;
@@ -509,7 +541,8 @@ function createToolLimitObservation(params: {
   current: number;
 }) {
   const scopeLabel = params.scope === 'round' ? '本轮工具请求数' : '本次运行工具请求总数';
-  const instruction = '该工具调用已达到预算或策略上限。不要重试同一工具/参数；基于已有 observation 总结方案，信息不足时直接向用户提出澄清问题。';
+  const instruction =
+    '该工具调用已达到预算或策略上限。不要重试同一工具/参数；基于已有 observation 总结方案，信息不足时直接向用户提出澄清问题。';
   const summary = `${scopeLabel}已达到上限 ${params.limit}，已跳过工具 ${params.toolName}。请停止继续批量调用工具，基于已有 observation 总结方案；如果信息仍不足，直接向用户提出澄清问题。`;
   const reactObservation = {
     success: false,
@@ -586,7 +619,7 @@ export function mergeAgentConsoleRuntimeMetadata(
     const { agentConsole: _removed, ...restMetadata } = agentDef.metadata ?? {};
     return {
       ...agentDef,
-      metadata: Object.keys(restMetadata).length > 0 ? restMetadata : undefined,
+      metadata: Object.keys(restMetadata).length > 0 ? restMetadata : undefined
     };
   }
 
@@ -646,6 +679,7 @@ export class AgentService {
   private governanceManager: AgentGovernanceManager;
   private runtimeManager: AgentRuntimeManager;
   private sessionManager: AgentSessionManager;
+  private readonly contextBuilder = new AgentContextBuilder();
   private eventChannel?: AgentRunEventChannel;
 
   constructor(
@@ -713,8 +747,56 @@ export class AgentService {
     silent?: boolean,
     settingsInput?: Partial<SystemSettings>,
     runtimeOptions?: ProviderRuntimeOptions,
+    sessionId?: string
   ): Promise<ResolvedAgentProvider> {
-    return this.governanceManager.resolveProviderForAgent(agentDef, silent, settingsInput, runtimeOptions);
+    const resolved = await this.governanceManager.resolveProviderForAgent(
+      agentDef,
+      silent,
+      settingsInput,
+      runtimeOptions
+    );
+    return this.applySessionEndpointAffinity(resolved, agentDef, sessionId);
+  }
+
+  /** Prefer a previously successful endpoint for the same session cache route. */
+  private async applySessionEndpointAffinity(
+    resolved: ResolvedAgentProvider,
+    agentDef: AgentDefinition,
+    sessionId?: string
+  ): Promise<ResolvedAgentProvider> {
+    const normalizedSessionId = normalizeRuntimeId(sessionId);
+    if (!normalizedSessionId || !resolved.providerConfig) return resolved;
+
+    const configured = resolved.providerConfig.apiEndpoint;
+    if (configured && configured !== 'auto') return resolved;
+
+    const model = String(resolved.model ?? agentDef.model ?? '').trim();
+    const providerId = String(resolved.providerConfig.id ?? agentDef.providerId ?? '').trim();
+    if (!model || !providerId) return resolved;
+
+    const sessions = await this.getSessionRuns(normalizedSessionId);
+    const pinned = resolvePinnedSessionEndpoint(sessions, model, providerId);
+    if (!pinned) return resolved;
+
+    const provider =
+      createAIProvider(
+        {
+          ...resolved.providerConfig,
+          model,
+          apiEndpoint: pinned as AIProviderConfig['apiEndpoint'],
+          reasoningEffort: (resolved.providerConfig as { reasoningEffort?: string }).reasoningEffort
+        },
+        resolved.providerConfig.useProxy === true ? this.proxyAgent : undefined
+      ) || resolved.provider;
+
+    return {
+      provider,
+      providerConfig: {
+        ...resolved.providerConfig,
+        apiEndpoint: pinned as AIProviderConfig['apiEndpoint']
+      },
+      model: resolved.model
+    };
   }
 
   private createGovernedProvider(input: GovernanceProviderInput): AIProvider {
@@ -740,7 +822,7 @@ export class AgentService {
     const { policy: webSearchPolicy, toolIdSet } = this.resolveWebSearchRunContext(
       agentDef,
       options,
-      settings,
+      settings
     );
 
     // 0. Resolve AI Provider from agent's own config
@@ -749,11 +831,16 @@ export class AgentService {
       options.silent,
       settings,
       { builtinSearch: webSearchPolicy.enableProviderBuiltinSearch ? 'full' : 'off' },
+      options.sessionId
     );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
     // 1. Prepare Skills
-    const combinedSkillInstructions = await this.buildTurnSkillInstructions(agentDef, options, input);
+    const combinedSkillInstructions = await this.buildTurnSkillInstructions(
+      agentDef,
+      options,
+      input
+    );
 
     // 2. Prepare Tools — agentDef.toolIds (+ read_upload when attachments), adjusted by web search policy.
     const tools = await this.materializeAgentLocalTools(toolIdSet);
@@ -774,14 +861,17 @@ export class AgentService {
 
     // useNativeFC gate:!FC 时不向 provider 传 tools 数组,只靠 ToolSystemProvider 的 XML 注入,
     // 避免双重工具描述(系统 XML + provider bindTools)。工具仍注册到 runSpec 供 toolRegistry 执行。
-    const useNativeFC = isCanUseFC(
-      resolvedProvider.providerConfig?.type ?? '',
-      agentDef.model
-    );
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? combinedTools : [];
 
     // 3. Construct System Message via PromptPipeline
-    const ctxInputs = await this.resolveContextProviderInputs(agentDef, input, options, settings, date);
+    const ctxInputs = await this.resolveContextProviderInputs(
+      agentDef,
+      input,
+      options,
+      settings,
+      date
+    );
     const promptCtx = buildPromptPipelineContext({
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
@@ -796,7 +886,7 @@ export class AgentService {
       memoryContext: ctxInputs.memoryContext,
       todoState: ctxInputs.todoState,
       variables: ctxInputs.variables,
-      webSearchPolicy,
+      webSearchPolicy
     });
     const assembled = assembleSystemMessages(promptCtx);
     const systemInstruction = assembled.systemMessage.content;
@@ -814,27 +904,28 @@ export class AgentService {
       options,
       agentDef,
       providerConfig: resolvedProvider.providerConfig,
-      variables: ctxInputs.variables,
+      variables: ctxInputs.variables
     });
-    const cacheContract = this.buildPromptCacheContractForRun(
+    const cacheContract = await this.buildPromptCacheContractForRun(
       options,
       agentDef,
       resolvedProvider.providerConfig,
       resolvedProvider.provider,
       resolvedProvider.model,
       assembled,
-      combinedTools,
+      combinedTools
     );
     const responseCache = await this.resolveResponseCacheForRun(
       options,
       agentDef,
       messages,
-      cacheContract,
+      cacheContract
     );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
-    const resolvedContextPolicy = options.contextPolicy
-      ?? this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
+    const resolvedContextPolicy =
+      options.contextPolicy ??
+      this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -898,8 +989,16 @@ export class AgentService {
               summarizer
             }
           : undefined,
-        toolContextExtras: resolveRuntimeToolExtras(runSpec, agentDef, options, options.toolContextExtras),
-        tokenCounter: this.resolveTokenCounterForAgent(agentDef, resolvedProvider.providerConfig?.type ?? ''),
+        toolContextExtras: resolveRuntimeToolExtras(
+          runSpec,
+          agentDef,
+          options,
+          options.toolContextExtras
+        ),
+        tokenCounter: this.resolveTokenCounterForAgent(
+          agentDef,
+          resolvedProvider.providerConfig?.type ?? ''
+        ),
         classifiedMessageBuilder: new ClassifiedMessageBuilder()
       },
       middleware: options.middleware,
@@ -930,7 +1029,7 @@ export class AgentService {
     const { policy: webSearchPolicy, toolIdSet } = this.resolveWebSearchRunContext(
       agentDef,
       options,
-      settings,
+      settings
     );
 
     const resolvedProvider = await this.resolveProviderForAgent(
@@ -938,10 +1037,15 @@ export class AgentService {
       options.silent,
       settings,
       { builtinSearch: webSearchPolicy.enableProviderBuiltinSearch ? 'full' : 'off' },
+      options.sessionId
     );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
 
-    const combinedSkillInstructions = await this.buildTurnSkillInstructions(agentDef, options, input);
+    const combinedSkillInstructions = await this.buildTurnSkillInstructions(
+      agentDef,
+      options,
+      input
+    );
     const tools = await this.materializeAgentLocalTools(toolIdSet);
 
     const mcpConfigs: MCPServerConfig[] = [];
@@ -955,14 +1059,17 @@ export class AgentService {
     const combinedTools = sortToolDefinitions([...tools, ...mcpTools]);
 
     // useNativeFC gate(同 runAgent):!FC 时不向 provider 传 tools,避免双重工具描述。
-    const useNativeFC = isCanUseFC(
-      resolvedProvider.providerConfig?.type ?? '',
-      agentDef.model
-    );
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? combinedTools : [];
 
     // Construct System Message via PromptPipeline
-    const ctxInputs = await this.resolveContextProviderInputs(agentDef, input, options, settings, date);
+    const ctxInputs = await this.resolveContextProviderInputs(
+      agentDef,
+      input,
+      options,
+      settings,
+      date
+    );
     const promptCtx = buildPromptPipelineContext({
       agentDef,
       providerId: resolvedProvider.providerConfig?.type ?? '',
@@ -977,7 +1084,7 @@ export class AgentService {
       memoryContext: ctxInputs.memoryContext,
       todoState: ctxInputs.todoState,
       variables: ctxInputs.variables,
-      webSearchPolicy,
+      webSearchPolicy
     });
     const assembled = assembleSystemMessages(promptCtx);
 
@@ -987,27 +1094,28 @@ export class AgentService {
       options,
       agentDef,
       providerConfig: resolvedProvider.providerConfig,
-      variables: ctxInputs.variables,
+      variables: ctxInputs.variables
     });
-    const cacheContract = this.buildPromptCacheContractForRun(
+    const cacheContract = await this.buildPromptCacheContractForRun(
       options,
       agentDef,
       resolvedProvider.providerConfig,
       resolvedProvider.provider,
       resolvedProvider.model,
       assembled,
-      combinedTools,
+      combinedTools
     );
     const responseCache = await this.resolveResponseCacheForRun(
       options,
       agentDef,
       messages,
-      cacheContract,
+      cacheContract
     );
     const workspacePolicy = resolveAgentRunWorkspacePolicy(agentDef, options);
 
-    const resolvedContextPolicy = options.contextPolicy
-      ?? this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
+    const resolvedContextPolicy =
+      options.contextPolicy ??
+      this.resolveContextPolicyFromAgentDef(agentDef, resolvedProvider.providerConfig?.type ?? '');
 
     const runSpec = this.createAgentRunSpec({
       agentDef,
@@ -1074,8 +1182,16 @@ export class AgentService {
               summarizer
             }
           : undefined,
-        toolContextExtras: resolveRuntimeToolExtras(runSpec, agentDef, options, options.toolContextExtras),
-        tokenCounter: this.resolveTokenCounterForAgent(agentDef, resolvedProvider.providerConfig?.type ?? ''),
+        toolContextExtras: resolveRuntimeToolExtras(
+          runSpec,
+          agentDef,
+          options,
+          options.toolContextExtras
+        ),
+        tokenCounter: this.resolveTokenCounterForAgent(
+          agentDef,
+          resolvedProvider.providerConfig?.type ?? ''
+        ),
         classifiedMessageBuilder: new ClassifiedMessageBuilder()
       },
       middleware: options.middleware,
@@ -1117,7 +1233,13 @@ export class AgentService {
     const settings = await this.store.get('system_settings');
     const resolvedProvider = params.provider
       ? { provider: params.provider, model: params.agentDef.model, providerConfig: undefined }
-      : await this.resolveProviderForAgent(params.agentDef, params.silent, settings);
+      : await this.resolveProviderForAgent(
+          params.agentDef,
+          params.silent,
+          settings,
+          undefined,
+          params.sessionId
+        );
     const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
     const cacheOptions: AgentRunOptions = {
       sessionId: params.sessionId,
@@ -1126,20 +1248,20 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const cacheContract = this.buildPromptCacheContractForMessages(
+    const cacheContract = await this.buildPromptCacheContractForMessages(
       cacheOptions,
       agentDef,
       resolvedProvider.providerConfig,
       resolvedProvider.provider,
       resolvedProvider.model,
       params.messages,
-      tools,
+      tools
     );
     const responseCache = await this.resolveResponseCacheForRun(
       cacheOptions,
       agentDef,
       params.messages,
-      cacheContract,
+      cacheContract
     );
 
     const runSpec = this.createAgentRunSpec({
@@ -1188,7 +1310,7 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: params.messages.map((message) => ({ ...message })),
+        messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
         responseCache,
         silent: params.silent,
         context: runSpec.contextPolicy
@@ -1201,8 +1323,8 @@ export class AgentService {
           : undefined,
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
-          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras),
-        ),
+          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
+        )
       },
       middleware: params.middleware,
       signal: params.signal,
@@ -1239,7 +1361,13 @@ export class AgentService {
     const settings = await this.store.get('system_settings');
     const resolvedProvider = params.provider
       ? { provider: params.provider, model: params.agentDef.model, providerConfig: undefined }
-      : await this.resolveProviderForAgent(params.agentDef, undefined, settings);
+      : await this.resolveProviderForAgent(
+          params.agentDef,
+          undefined,
+          settings,
+          undefined,
+          params.sessionId
+        );
     const agentDef = withResolvedProviderModel(params.agentDef, resolvedProvider.model);
     const cacheOptions: AgentRunOptions = {
       sessionId: params.sessionId,
@@ -1248,20 +1376,20 @@ export class AgentService {
       promptCacheMode: params.promptCacheMode,
       metadata: params.metadata
     };
-    const cacheContract = this.buildPromptCacheContractForMessages(
+    const cacheContract = await this.buildPromptCacheContractForMessages(
       cacheOptions,
       agentDef,
       resolvedProvider.providerConfig,
       resolvedProvider.provider,
       resolvedProvider.model,
       params.messages,
-      tools,
+      tools
     );
     const responseCache = await this.resolveResponseCacheForRun(
       cacheOptions,
       agentDef,
       params.messages,
-      cacheContract,
+      cacheContract
     );
 
     const runSpec = this.createAgentRunSpec({
@@ -1313,7 +1441,7 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: params.messages.map((message) => ({ ...message })),
+        messages: this.contextBuilder.snapshotFromMessages(params.messages).messages,
         responseCache,
         context: runSpec.contextPolicy
           ? {
@@ -1325,8 +1453,8 @@ export class AgentService {
           : undefined,
         toolContextExtras: mergeAgentRunToolExtras(
           runSpec,
-          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras),
-        ),
+          resolveAgentKnowledgeScope(agentDef, params.toolContextExtras)
+        )
       },
       middleware: params.middleware,
       signal: params.signal,
@@ -1383,7 +1511,8 @@ export class AgentService {
         }
       } catch (error: any) {
         const errorMessage = error?.message || String(error);
-        const canGracefullyFinish = !!roundContent.trim() && compactStreamToolCalls(toolCallState).length === 0;
+        const canGracefullyFinish =
+          !!roundContent.trim() && compactStreamToolCalls(toolCallState).length === 0;
 
         if (canGracefullyFinish) {
           LogService.warn(
@@ -1445,7 +1574,10 @@ export class AgentService {
       messages.push({
         role: 'assistant',
         content: roundContent || null,
-        tool_calls: scheduledToolCalls.length > 0 ? scheduledToolCalls.map((item) => item.toolCall) : undefined
+        tool_calls:
+          scheduledToolCalls.length > 0
+            ? scheduledToolCalls.map((item) => item.toolCall)
+            : undefined
       });
 
       if (scheduledToolCalls.length > 0) {
@@ -1626,7 +1758,11 @@ export class AgentService {
     const sessions = await this.getSessionRuns(sessionId);
 
     for (const session of sessions) {
-      if (session.status === 'running' || session.status === 'queued' || session.status === 'cancelling') {
+      if (
+        session.status === 'running' ||
+        session.status === 'queued' ||
+        session.status === 'cancelling'
+      ) {
         throw new Error(newConversationBlockedMessage(session));
       }
     }
@@ -1724,7 +1860,9 @@ export class AgentService {
    * fn. When no cross-process channel is configured this is a no-op (single-instance
    * delivery already happens via {@link subscribeRunEvents}).
    */
-  subscribeRunEventSignals(handler: (signal: { runId: string; seq: number; instanceId: string }) => void): () => void {
+  subscribeRunEventSignals(
+    handler: (signal: { runId: string; seq: number; instanceId: string }) => void
+  ): () => void {
     const channel = this.agentEngine.getEventChannel();
     if (!channel) return () => undefined;
     return channel.onSignal(handler);
@@ -1777,7 +1915,13 @@ export class AgentService {
     const queueWorkspacePolicy = this.readWorkspacePolicyFromMetadata(
       session.metadata?.workspacePolicy
     );
-    const resolvedProvider = await this.resolveProviderForAgent(agentDef, true, settings);
+    const resolvedProvider = await this.resolveProviderForAgent(
+      agentDef,
+      true,
+      settings,
+      undefined,
+      session.sessionId
+    );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
     const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
     const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
@@ -1791,10 +1935,7 @@ export class AgentService {
       skillInstructions: []
     };
     // useNativeFC gate(同 runAgent/streamAgent):!FC 时不向 provider 传 tools。
-    const useNativeFC = isCanUseFC(
-      resolvedProvider.providerConfig?.type ?? '',
-      agentDef.model
-    );
+    const useNativeFC = isCanUseFC(resolvedProvider.providerConfig?.type ?? '', agentDef.model);
     const providerTools = useNativeFC ? combinedTools : [];
     const provider = this.createGovernedProvider({
       ...resolvedProvider,
@@ -1804,6 +1945,14 @@ export class AgentService {
       settings
     });
     const summarizer = createLLMSummarizer({ provider });
+    const recoveredMessages = this.toRuntimeMessages(session.messages);
+    const { responseCache } = await this.rebuildResponseCacheForRecoveredSession(
+      session,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.model,
+      recoveredMessages
+    );
 
     await this.runtimeManager.runClaimed({
       runSpec,
@@ -1815,7 +1964,8 @@ export class AgentService {
         mcpConfigs,
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
-        messages: this.toRuntimeMessages(session.messages),
+        messages: recoveredMessages,
+        responseCache,
         silent: true,
         context: runSpec.contextPolicy
           ? {
@@ -1863,7 +2013,9 @@ export class AgentService {
     return session?.pendingHitl ?? null;
   }
 
-  async listPendingHitl(): Promise<Array<AgentHitlRequest & { runId: string; sessionId: string; runStatus: string }>> {
+  async listPendingHitl(): Promise<
+    Array<AgentHitlRequest & { runId: string; sessionId: string; runStatus: string }>
+  > {
     const sessions = await this.listRunSessions();
     return sessions
       .filter((session) => session.pendingHitl)
@@ -2037,7 +2189,9 @@ export class AgentService {
     });
   }
 
-  private async buildResumeRuntimeContext(session: AgentSession): Promise<ResumeRuntimeContext | undefined> {
+  private async buildResumeRuntimeContext(
+    session: AgentSession
+  ): Promise<ResumeRuntimeContext | undefined> {
     const checkpoint = session.checkpoints.at(-1);
     const agentId = session.metadata?.agentId;
     if (typeof agentId !== 'string' || !agentId.trim()) return undefined;
@@ -2050,14 +2204,29 @@ export class AgentService {
 
     const noTools = session.metadata?.noTools === true;
     const settings = await this.store.get('system_settings');
-    const resolvedProvider = await this.resolveProviderForAgent(agentDef, true, settings);
+    const resolvedProvider = await this.resolveProviderForAgent(
+      agentDef,
+      true,
+      settings,
+      undefined,
+      session.sessionId
+    );
     agentDef = withResolvedProviderModel(agentDef, resolvedProvider.model);
     const tools = await this.resolveAgentLocalTools(agentDef, noTools, session);
     const mcpConfigs = await this.resolveAgentMcpConfigs(agentDef, noTools);
     const mcpTools = noTools ? [] : await this.mcpService.getTools(mcpConfigs);
-    const messages = this.toRuntimeMessages(
+    let messages = this.toRuntimeMessages(
       checkpoint?.messages?.length ? checkpoint.messages : session.messages
     );
+    if (checkpoint?.messages?.length) {
+      const checkpointSnapshot = this.contextBuilder.buildFromCheckpoint(checkpoint, messages);
+      if (!checkpointSnapshot) {
+        LogService.warn(
+          `[AgentService] Ignoring invalid context checkpoint ${checkpoint.checkpointId}; rebuilding runtime history.`
+        );
+        messages = this.toRuntimeMessages(session.messages);
+      }
+    }
     const budgetPolicy = this.resolveResumeBudgetPolicy(agentDef, session);
     const runSpec = this.runSpecFromSessionForGovernance(session, agentDef, budgetPolicy);
     const provider = this.createGovernedProvider({
@@ -2070,6 +2239,13 @@ export class AgentService {
     });
 
     const summarizer = createLLMSummarizer({ provider });
+    const { responseCache } = await this.rebuildResponseCacheForRecoveredSession(
+      session,
+      agentDef,
+      resolvedProvider.providerConfig,
+      resolvedProvider.model,
+      messages
+    );
 
     return {
       runSpec,
@@ -2081,6 +2257,7 @@ export class AgentService {
         mcpService: this.mcpService,
         toolRegistry: this.toolRegistry,
         messages,
+        responseCache,
         silent: true,
         context: runSpec.contextPolicy
           ? {
@@ -2126,13 +2303,17 @@ export class AgentService {
       : undefined;
   }
 
-  private resolveContextPolicyFromAgentDef(agentDef: AgentDefinition, providerId: string): ContextPolicy | undefined {
+  private resolveContextPolicyFromAgentDef(
+    agentDef: AgentDefinition,
+    providerId: string
+  ): ContextPolicy | undefined {
     const chatConfig = this.readAgentConsoleChatConfig(agentDef);
     if (!chatConfig) return undefined;
     const profile = resolveContextProfile(providerId, agentDef.model, {
-      maxContextWindow: chatConfig.enableMaxContextWindow === true
-        ? Number(chatConfig.maxContextWindow) || undefined
-        : undefined
+      maxContextWindow:
+        chatConfig.enableMaxContextWindow === true
+          ? Number(chatConfig.maxContextWindow) || undefined
+          : undefined
     });
     return buildContextPolicyFromChatConfig(chatConfig, profile);
   }
@@ -2140,7 +2321,7 @@ export class AgentService {
   private resolveWebSearchRunContext(
     agentDef: AgentDefinition,
     options: Pick<AgentRunOptions, 'noTools' | 'userTurnMetadata'>,
-    settings?: Partial<SystemSettings>,
+    settings?: Partial<SystemSettings>
   ): { policy: WebSearchPolicy; toolIdSet: Set<string> } {
     const chatConfig = this.readAgentConsoleChatConfig(agentDef);
     const providerType = lookupAgentProviderType(agentDef, settings);
@@ -2150,7 +2331,9 @@ export class AgentService {
     return { policy, toolIdSet };
   }
 
-  private readAgentConsoleChatConfig(agentDef: AgentDefinition): Record<string, unknown> | undefined {
+  private readAgentConsoleChatConfig(
+    agentDef: AgentDefinition
+  ): Record<string, unknown> | undefined {
     const agentConsole = agentDef.metadata?.agentConsole;
     if (!agentConsole || typeof agentConsole !== 'object') return undefined;
     const chatConfig = (agentConsole as Record<string, unknown>).chatConfig;
@@ -2161,9 +2344,10 @@ export class AgentService {
   private resolveTokenCounterForAgent(agentDef: AgentDefinition, providerId: string): TokenCounter {
     const chatConfig = this.readAgentConsoleChatConfig(agentDef);
     const profile = resolveContextProfile(providerId, agentDef.model, {
-      maxContextWindow: chatConfig?.enableMaxContextWindow === true
-        ? Number(chatConfig?.maxContextWindow) || undefined
-        : undefined
+      maxContextWindow:
+        chatConfig?.enableMaxContextWindow === true
+          ? Number(chatConfig?.maxContextWindow) || undefined
+          : undefined
     });
     return new TokenCounter(
       new TokenEstimator({ driftMultiplier: profile.driftMultiplier, encoding: profile.encoding }),
@@ -2203,8 +2387,7 @@ export class AgentService {
     const mode = policy.mode;
     if (!isWorkspaceMode(mode)) return undefined;
 
-    const pool =
-      policy.pool === 'per-agent' || policy.pool === 'per-run' ? policy.pool : undefined;
+    const pool = policy.pool === 'per-agent' || policy.pool === 'per-run' ? policy.pool : undefined;
 
     const network = isWorkspaceNetworkPolicy(policy.network) ? policy.network : undefined;
     const writes = isWorkspaceWritePolicy(policy.writes) ? policy.writes : undefined;
@@ -2226,21 +2409,22 @@ export class AgentService {
         ? (policy.sandbox as Record<string, unknown>).denyCapabilities
         : undefined
     );
-    const sandbox = policy.sandbox && typeof policy.sandbox === 'object'
-      ? {
-          enabled:
-            typeof (policy.sandbox as Record<string, unknown>).enabled === 'boolean'
-              ? ((policy.sandbox as Record<string, unknown>).enabled as boolean)
-              : undefined,
-          allowCapabilities,
-          denyCapabilities,
-          denyUnsupportedModes:
-            typeof (policy.sandbox as Record<string, unknown>).denyUnsupportedModes === 'boolean'
-              ? ((policy.sandbox as Record<string, unknown>).denyUnsupportedModes as boolean)
-              : undefined,
-          envAllowlist
-        }
-      : undefined;
+    const sandbox =
+      policy.sandbox && typeof policy.sandbox === 'object'
+        ? {
+            enabled:
+              typeof (policy.sandbox as Record<string, unknown>).enabled === 'boolean'
+                ? ((policy.sandbox as Record<string, unknown>).enabled as boolean)
+                : undefined,
+            allowCapabilities,
+            denyCapabilities,
+            denyUnsupportedModes:
+              typeof (policy.sandbox as Record<string, unknown>).denyUnsupportedModes === 'boolean'
+                ? ((policy.sandbox as Record<string, unknown>).denyUnsupportedModes as boolean)
+                : undefined,
+            envAllowlist
+          }
+        : undefined;
 
     return {
       mode,
@@ -2274,14 +2458,18 @@ export class AgentService {
       },
       budgetPolicy,
       contextPolicy: this.readContextPolicyFromMetadata(session.metadata?.contextPolicy),
-      observationPolicy: this.readObservationPolicyFromMetadata(session.metadata?.observationPolicy),
+      observationPolicy: this.readObservationPolicyFromMetadata(
+        session.metadata?.observationPolicy
+      ),
       permissionPolicy: this.readPermissionPolicyFromMetadata(session.metadata?.permissionPolicy),
       workspacePolicy: this.readWorkspacePolicyFromMetadata(session.metadata?.workspacePolicy),
       metadata: session.metadata
     };
   }
 
-  private extractProviderGovernanceLedger(session: AgentSession): Partial<ProviderGovernanceLedger> {
+  private extractProviderGovernanceLedger(
+    session: AgentSession
+  ): Partial<ProviderGovernanceLedger> {
     const rounds = this.extractProviderGovernanceRounds(session);
     const lastBudget = [...rounds]
       .reverse()
@@ -2306,9 +2494,8 @@ export class AgentService {
     const eventRounds = session.events.flatMap((event) => {
       if (event.type !== 'model_finished') return [];
       const payload = event.payload as Record<string, unknown>;
-      const budget = payload.budget && typeof payload.budget === 'object'
-        ? payload.budget
-        : undefined;
+      const budget =
+        payload.budget && typeof payload.budget === 'object' ? payload.budget : undefined;
       return budget ? [{ budget }] : [];
     });
     if (eventRounds.length > 0) return eventRounds;
@@ -2371,13 +2558,13 @@ export class AgentService {
   private async buildTurnSkillInstructions(
     agentDef: AgentDefinition,
     options: AgentRunOptions,
-    input: string,
+    input: string
   ): Promise<string> {
     if (options.noSkills) return '';
     const skillIds = resolveTurnSkillIds({
       agentSkillIds: agentDef.skillIds || [],
       message: input,
-      userTurnMetadata: options.userTurnMetadata,
+      userTurnMetadata: options.userTurnMetadata
     });
     return this.skillService.buildSkillsPrompt(skillIds);
   }
@@ -2392,7 +2579,7 @@ export class AgentService {
     input: string,
     options: AgentRunOptions,
     settings: SystemSettings | null | undefined,
-    date?: string,
+    date?: string
   ): Promise<{
     knowledgeContext?: string;
     memoryContext?: string;
@@ -2401,7 +2588,7 @@ export class AgentService {
   }> {
     const variables: Record<string, string> = {
       agentId: agentDef.id,
-      agentName: agentDef.name,
+      agentName: agentDef.name
     };
     if (options.sessionId) variables.sessionId = options.sessionId;
     if (date) variables.date = date;
@@ -2417,11 +2604,11 @@ export class AgentService {
   private async resolveKnowledgeContext(
     agentDef: AgentDefinition,
     input: string,
-    settings: SystemSettings | null | undefined,
+    settings: SystemSettings | null | undefined
   ): Promise<string | undefined> {
     const scope = mergeKnowledgeScopes(
       agentDef.knowledgeScope,
-      legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds),
+      legacyKnowledgeCategoryScope(agentDef.knowledgeCategoryIds)
     );
     const categoryIds = scope?.allowedCategoryIds;
     if (!categoryIds || categoryIds.length === 0) return undefined;
@@ -2445,7 +2632,7 @@ export class AgentService {
   private async resolveMemoryContext(
     agentDef: AgentDefinition,
     input: string,
-    options: AgentRunOptions,
+    options: AgentRunOptions
   ): Promise<string | undefined> {
     const categoryIds = agentDef.memoryCategoryIds;
     if (!categoryIds || categoryIds.length === 0) return undefined;
@@ -2497,37 +2684,41 @@ export class AgentService {
       ? new AgentUploadService(this.store)
       : undefined;
     const supportsVision = resolveSupportsVision(input.agentDef, input.providerConfig);
-    const dynamicSuffix = resolveInputTemplateSuffix(input.agentDef, input.options.metadata, input.variables);
+    const dynamicSuffix = resolveInputTemplateSuffix(
+      input.agentDef,
+      input.options.metadata,
+      input.variables
+    );
     const turnContent = await buildRuntimeUserContent({
       message: input.input,
       fileList: input.options.userTurnMetadata?.fileList,
       imageList: input.options.userTurnMetadata?.imageList,
       dynamicSuffix,
       supportsVision,
-      uploadService,
+      uploadService
     });
     const turnMessage: AIMessage = { role: 'user', content: turnContent };
     const sessionHistory = await this.buildSessionHistory(
       input.options,
       input.agentDef,
-      input.providerConfig,
+      input.providerConfig
     );
     const clientHistory = this.normalizeClientRunMessages(input.options.messages);
     const mergedHistory = pickRicherRuntimeHistory(sessionHistory, clientHistory);
     const conversation = [...mergedHistory, turnMessage];
 
-    // 组装：systemMessage + preUserMessages + conversation + tailMessages
-    const leadMessages: AIMessage[] = [
-      input.assembled.systemMessage,
-      ...input.assembled.preUserMessages
-    ];
-    return [...leadMessages, ...conversation, ...input.assembled.tailMessages];
+    return this.contextBuilder.buildInitial({
+      systemMessage: input.assembled.systemMessage,
+      preUserMessages: input.assembled.preUserMessages,
+      conversationMessages: conversation,
+      tailMessages: input.assembled.tailMessages
+    }).messages;
   }
 
   private async buildSessionHistory(
     options: AgentRunOptions,
     agentDef: AgentDefinition,
-    providerConfig?: AIProviderConfig,
+    providerConfig?: AIProviderConfig
   ): Promise<AIMessage[]> {
     const sessionId = normalizeRuntimeId(options.sessionId);
     const threadId = normalizeRuntimeId(options.threadId);
@@ -2568,77 +2759,108 @@ export class AgentService {
     );
   }
 
-  private buildPromptCacheContractForRun(
+  private async buildPromptCacheContractForRun(
     options: AgentRunOptions,
     agentDef: AgentDefinition,
     providerConfig: AIProviderConfig | undefined,
     provider: AIProvider,
     providerModel: string | undefined,
     assembled: AssembledMessages,
-    tools: ToolDefinition[],
-  ): PromptCacheContract {
+    tools: ToolDefinition[]
+  ): Promise<PromptCacheContract> {
     const providerId = String(providerConfig?.id ?? agentDef.providerId ?? '').trim();
     const providerType = String(providerConfig?.type ?? providerId).trim();
+    const model = String(providerModel ?? agentDef.model ?? '').trim();
     const reasoningMode = String(
-      (providerConfig as { reasoningEffort?: string } | undefined)?.reasoningEffort ?? 'none',
+      (providerConfig as { reasoningEffort?: string } | undefined)?.reasoningEffort ?? 'none'
     );
     const contributions = assembled.contributions ?? [];
-    const unsafeReasons = contributions
-      .filter((contribution) =>
-        contribution.phase === 'system_accumulate' &&
-        contribution.cacheClass !== 'stable',
-      )
-      .map((contribution) => `unstable_system_contribution:${contribution.providerId}`);
+    const unsafeReasons: string[] = [];
+
+    for (const contribution of contributions) {
+      if (contribution.phase === 'system_accumulate' && contribution.cacheClass !== 'stable') {
+        unsafeReasons.push(`unstable_system_contribution:${contribution.providerId}`);
+      }
+      // Dynamic providers must live in tail_guidance. Flag any before_first_user
+      // contribution that is not explicitly stable so new providers cannot silently
+      // pollute the cached prefix.
+      if (
+        contribution.phase === 'before_first_user' &&
+        contribution.cacheClass !== 'stable'
+      ) {
+        unsafeReasons.push(`unstable_before_first_user_contribution:${contribution.providerId}`);
+      }
+    }
+
     const variantParts = contributions
       .filter((contribution) => contribution.cacheClass === 'variant')
       .map((contribution) => ({
         providerId: contribution.providerId,
         variantKey: contribution.variantKey,
-        content: contribution.content,
+        content: contribution.content
       }));
+
+    const sessionId = normalizeRuntimeId(options.sessionId);
+    if (!sessionId) {
+      LogService.info(
+        `[AgentService] Session-scoped prompt cache disabled: session_id_required (agent=${agentDef.id})`
+      );
+    }
+
+    const sessions = sessionId ? await this.getSessionRuns(sessionId) : [];
+    const pinnedEndpoint = resolvePinnedSessionEndpoint(sessions, model, providerId);
+    const endpoint = resolveEffectiveApiEndpoint({
+      configuredEndpoint: providerConfig?.apiEndpoint,
+      pinnedEndpoint,
+      providerType,
+      apiUrl: providerConfig?.apiUrl,
+      model,
+      providerLabel: providerConfig?.name ?? provider.name,
+      reasoningEffort: reasoningMode
+    });
 
     const contract = buildPromptCacheContract({
       providerId,
-      model: providerModel ?? agentDef.model,
-      endpoint: providerConfig?.apiEndpoint,
+      model,
+      endpoint,
       reasoningMode,
       stablePrefix: assembled.systemMessage.content,
       variantParts,
       toolset: canonicalizeToolDefinitions(tools),
       capability:
         provider.promptCacheCapability ??
-        resolvePromptCacheCapability(providerType, providerConfig?.apiEndpoint),
+        resolvePromptCacheCapability(providerType, endpoint),
       cacheRequested:
         (options.promptCacheMode ?? 'enforced') !== 'disabled' &&
         !this.isResponseCacheDisabled(options),
       cachePolicy: options.promptCachePolicy,
       cacheMode: options.promptCacheMode,
-      sessionId: options.sessionId,
-      unsafeReasons,
+      sessionId,
+      unsafeReasons
     });
     return applyMultiAgentPromptCachePolicy(
       contract,
       options.promptCachePolicy ?? 'isolated',
-      options.parentPromptCacheContract,
+      options.parentPromptCacheContract
     );
   }
 
-  private buildPromptCacheContractForMessages(
+  private async buildPromptCacheContractForMessages(
     options: AgentRunOptions,
     agentDef: AgentDefinition,
     providerConfig: AIProviderConfig | undefined,
     provider: AIProvider,
     providerModel: string | undefined,
     messages: AIMessage[],
-    tools: ToolDefinition[],
-  ): PromptCacheContract {
+    tools: ToolDefinition[]
+  ): Promise<PromptCacheContract> {
     const systemMessages = messages.filter((message) => message.role === 'system');
     const assembled: AssembledMessages = {
       systemMessage: {
         role: 'system',
         content: normalizeRuntimeMessageContent(
-          systemMessages[0]?.content ?? 'You are a helpful assistant.',
-        ),
+          systemMessages[0]?.content ?? 'You are a helpful assistant.'
+        )
       },
       preUserMessages: [],
       tailMessages: [],
@@ -2646,8 +2868,8 @@ export class AgentService {
         providerId: `temporary_system_${index}`,
         phase: 'system_accumulate' as const,
         content: normalizeRuntimeMessageContent(message.content),
-        cacheClass: index === 0 ? ('stable' as const) : ('dynamic' as const),
-      })),
+        cacheClass: index === 0 ? ('stable' as const) : ('dynamic' as const)
+      }))
     };
     return this.buildPromptCacheContractForRun(
       options,
@@ -2656,7 +2878,7 @@ export class AgentService {
       provider,
       providerModel,
       assembled,
-      tools,
+      tools
     );
   }
 
@@ -2664,12 +2886,12 @@ export class AgentService {
     options: AgentRunOptions,
     agentDef: AgentDefinition,
     messages: AIMessage[],
-    contract: PromptCacheContract,
+    contract: PromptCacheContract
   ): Promise<ResponseCacheRequest | undefined> {
     if (this.isResponseCacheDisabled(options) || !contract.cacheEligibility) {
       return disabledResponseCacheRequest(
         contract,
-        contract.cacheDisableReason ?? 'cache_ineligible',
+        contract.cacheDisableReason ?? 'cache_ineligible'
       );
     }
     if (contract.cacheMode === 'shadow') {
@@ -2684,31 +2906,99 @@ export class AgentService {
         (message) =>
           (message.role === 'tool' ||
             (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)) &&
-          message.canonical_message_version !== CANONICAL_MESSAGE_SERIALIZATION_VERSION,
+          message.canonical_message_version !== CANONICAL_MESSAGE_SERIALIZATION_VERSION
       )
     ) {
       return disabledResponseCacheRequest(
         contract,
-        hasLegacyToolHistory(sessions) ? 'legacy_tool_history' : 'legacy_runtime_messages',
+        hasLegacyToolHistory(sessions) ? 'legacy_tool_history' : 'legacy_runtime_messages'
       );
     }
     const cacheEntry = sessionId
-      ? resolveResponseCacheFromSessions(
-          sessions,
-          contract.model,
-          contract.providerId,
-          sessionId,
-        )
+      ? resolveResponseCacheFromSessions(sessions, contract.model, contract.providerId, contract.cacheKey)
       : undefined;
     return buildResponseCacheRequest(messages, cacheEntry, {
       enableStore: true,
       roundIndex: 1,
-      // OpenAI-compatible gateways cap prompt_cache_key at 64 characters.
-      // Keep the descriptive namespace in observability, but send a bounded
-      // deterministic key to the provider.
-      cacheKey: hashString(contract.cacheNamespace, 64),
-      contract,
+      cacheKey: contract.cacheKey,
+      contract
     });
+  }
+
+  /**
+   * Rebuild responseCache for HITL/permission resume and durable queue recovery.
+   * Reuses the persisted contract only when provider/model/endpoint still match.
+   */
+  private async rebuildResponseCacheForRecoveredSession(
+    session: AgentSession,
+    agentDef: AgentDefinition,
+    providerConfig: AIProviderConfig | undefined,
+    providerModel: string | undefined,
+    messages: AIMessage[]
+  ): Promise<{ contract?: PromptCacheContract; responseCache?: ResponseCacheRequest }> {
+    const persisted = readPromptCacheContract(session.metadata?.promptCacheContract);
+    if (!persisted) {
+      return {};
+    }
+
+    const providerId = String(providerConfig?.id ?? agentDef.providerId ?? '').trim();
+    const model = String(providerModel ?? agentDef.model ?? '').trim();
+    const sessions = await this.getSessionRuns(session.sessionId);
+    const pinnedEndpoint = resolvePinnedSessionEndpoint(sessions, model, providerId);
+    const endpoint = resolveEffectiveApiEndpoint({
+      configuredEndpoint: providerConfig?.apiEndpoint,
+      pinnedEndpoint: pinnedEndpoint ?? persisted.endpoint,
+      providerType: providerConfig?.type,
+      apiUrl: providerConfig?.apiUrl,
+      model,
+      providerLabel: providerConfig?.name,
+      reasoningEffort: persisted.reasoningMode
+    });
+
+    const routeMismatchReasons: string[] = [];
+    if (persisted.providerId && providerId && persisted.providerId !== providerId) {
+      routeMismatchReasons.push('resume_provider_mismatch');
+    }
+    if (persisted.model && model && persisted.model !== model) {
+      routeMismatchReasons.push('resume_model_mismatch');
+    }
+    if (
+      persisted.endpoint &&
+      endpoint &&
+      persisted.endpoint !== 'default' &&
+      persisted.endpoint !== 'auto' &&
+      endpoint !== persisted.endpoint
+    ) {
+      routeMismatchReasons.push('resume_endpoint_mismatch');
+    }
+    if (
+      persisted.stablePrefixHash &&
+      // Prefix changes after compaction / prompt edits are expected; refuse reuse.
+      typeof session.metadata?.promptCacheContract === 'object' &&
+      routeMismatchReasons.length === 0
+    ) {
+      // Keep persisted contract when route matches; resolveResponseCacheForRun
+      // still validates eligibility / legacy history.
+    }
+
+    if (routeMismatchReasons.length > 0) {
+      return {
+        contract: persisted,
+        responseCache: disabledResponseCacheRequest(persisted, routeMismatchReasons.join(';'))
+      };
+    }
+
+    const options: AgentRunOptions = {
+      sessionId: session.sessionId,
+      metadata: session.metadata
+    };
+    const responseCache = await this.resolveResponseCacheForRun(
+      options,
+      agentDef,
+      messages,
+      persisted
+    );
+    return { contract: persisted, responseCache };
   }
 
   private isResponseCacheDisabled(options: AgentRunOptions): boolean {
@@ -2724,9 +3014,14 @@ export class AgentService {
     runtime: {
       uploadService: AgentUploadService;
       supportsVision: boolean;
-    },
+    }
   ): Promise<AIMessage[]> {
-    if (message.role !== 'system' && message.role !== 'user' && message.role !== 'assistant' && message.role !== 'tool') {
+    if (
+      message.role !== 'system' &&
+      message.role !== 'user' &&
+      message.role !== 'assistant' &&
+      message.role !== 'tool'
+    ) {
       return [];
     }
 
@@ -2739,7 +3034,7 @@ export class AgentService {
           fileList,
           imageList,
           supportsVision: runtime.supportsVision,
-          uploadService: runtime.uploadService,
+          uploadService: runtime.uploadService
         });
         return [
           {
@@ -2747,9 +3042,13 @@ export class AgentService {
             content,
             name: message.name,
             tool_call_id: message.toolCallId,
-            tool_calls: Array.isArray(message.metadata?.toolCalls) ? message.metadata.toolCalls : undefined,
-            raw_parts: Array.isArray(message.metadata?.rawParts) ? message.metadata.rawParts : undefined,
-          },
+            tool_calls: Array.isArray(message.metadata?.toolCalls)
+              ? message.metadata.toolCalls
+              : undefined,
+            raw_parts: Array.isArray(message.metadata?.rawParts)
+              ? message.metadata.rawParts
+              : undefined
+          }
         ];
       }
     }
@@ -2768,11 +3067,10 @@ export class AgentService {
           message.role === 'system' ||
           message.role === 'user' ||
           message.role === 'assistant' ||
-          message.role === 'tool',
-      ),
+          message.role === 'tool'
+      )
     ).messages;
   }
-
 }
 
 function isRecoverableQueueSessionStatus(status: AgentSession['status']): boolean {
@@ -2781,18 +3079,21 @@ function isRecoverableQueueSessionStatus(status: AgentSession['status']): boolea
 
 function disabledResponseCacheRequest(
   contract: PromptCacheContract,
-  reason: string,
+  reason: string
 ): ResponseCacheRequest {
   return {
     enableStore: false,
+    cacheKey: undefined,
     cacheEligibility: false,
     cacheNamespace: contract.cacheNamespace,
     cacheContractVersion: contract.contractVersion,
     cacheDisableReason: reason,
     providerId: contract.providerId,
     model: contract.model,
+    endpoint: contract.endpoint,
+    reasoningMode: contract.reasoningMode,
     cachePolicy: contract.cachePolicy,
-    cacheMode: contract.cacheMode,
+    cacheMode: contract.cacheMode
   };
 }
 
@@ -2818,7 +3119,7 @@ function hasLegacyToolHistory(sessions: AgentSession[]): boolean {
           (toolCall) =>
             !toolCall ||
             typeof toolCall !== 'object' ||
-            typeof (toolCall as Record<string, unknown>).canonicalMessageContent !== 'string',
+            typeof (toolCall as Record<string, unknown>).canonicalMessageContent !== 'string'
         )
       ) {
         return true;
@@ -2842,7 +3143,9 @@ function readPermissionPolicyRules(value: unknown): PermissionPolicy['rules'] {
   return rules.length === value.length ? rules : undefined;
 }
 
-function isPermissionPolicyRule(value: unknown): value is NonNullable<PermissionPolicy['rules']>[number] {
+function isPermissionPolicyRule(
+  value: unknown
+): value is NonNullable<PermissionPolicy['rules']>[number] {
   if (!value || typeof value !== 'object') return false;
   const rule = value as Record<string, unknown>;
   return typeof rule.id === 'string' && isPermissionEffect(rule.effect);
@@ -2852,7 +3155,9 @@ function isWorkspaceMode(value: unknown): value is WorkspacePolicy['mode'] {
   return value === 'none' || value === 'local' || value === 'docker' || value === 'remote';
 }
 
-function isWorkspaceNetworkPolicy(value: unknown): value is NonNullable<WorkspacePolicy['network']> {
+function isWorkspaceNetworkPolicy(
+  value: unknown
+): value is NonNullable<WorkspacePolicy['network']> {
   return value === 'disabled' || value === 'limited' || value === 'enabled';
 }
 
@@ -2860,7 +3165,9 @@ function isWorkspaceWritePolicy(value: unknown): value is NonNullable<WorkspaceP
   return value === 'read-only' || value === 'workspace-only' || value === 'allow-listed';
 }
 
-function isWorkspaceCleanupPolicy(value: unknown): value is NonNullable<WorkspacePolicy['cleanup']> {
+function isWorkspaceCleanupPolicy(
+  value: unknown
+): value is NonNullable<WorkspacePolicy['cleanup']> {
   return value === 'always' || value === 'on-success' || value === 'manual';
 }
 
@@ -2871,9 +3178,7 @@ function readStringArrayPolicy(value: unknown): string[] | undefined {
 }
 
 function readToolCapabilityArrayPolicy(value: unknown): ToolExecutionCapability[] | undefined {
-  return Array.isArray(value) && value.every(isToolExecutionCapability)
-    ? [...value]
-    : undefined;
+  return Array.isArray(value) && value.every(isToolExecutionCapability) ? [...value] : undefined;
 }
 
 function isToolExecutionCapability(value: unknown): value is ToolExecutionCapability {
@@ -2908,7 +3213,9 @@ function validateHitlResolutionInput(
     throw new Error(`HITL kind does not match pending request: ${input.kind}`);
   }
 
-  const allowed = new Set(pendingHitl.allowedActions ?? defaultHitlActionsForKind(expectedKind, pendingHitl));
+  const allowed = new Set(
+    pendingHitl.allowedActions ?? defaultHitlActionsForKind(expectedKind, pendingHitl)
+  );
   if (!allowed.has(input.action)) {
     throw new Error(`HITL action is not allowed for pending request: ${input.action}`);
   }
@@ -2992,12 +3299,9 @@ function formatMemoryContext(results: Array<{ content?: string; text?: string }>
 /** 读取 chatConfig.memory.enabled(默认 true);优先 options.metadata 覆盖,其次 agentDef.metadata.agentConsole。 */
 function readAgentChatConfigMemoryEnabled(
   agentDef: AgentDefinition,
-  metadata?: Record<string, unknown>,
+  metadata?: Record<string, unknown>
 ): boolean {
-  const sources = [
-    (metadata)?.agentConsole,
-    (agentDef.metadata)?.agentConsole,
-  ];
+  const sources = [metadata?.agentConsole, agentDef.metadata?.agentConsole];
   for (const agentConsole of sources) {
     if (!agentConsole || typeof agentConsole !== 'object') continue;
     const chatConfig = (agentConsole as Record<string, unknown>).chatConfig;
@@ -3014,12 +3318,9 @@ function readAgentChatConfigMemoryEnabled(
 function resolveInputTemplateSuffix(
   agentDef: AgentDefinition,
   metadata?: Record<string, unknown>,
-  variables?: Record<string, string>,
+  variables?: Record<string, string>
 ): string {
-  const sources = [
-    (metadata)?.agentConsole,
-    (agentDef.metadata)?.agentConsole,
-  ];
+  const sources = [metadata?.agentConsole, agentDef.metadata?.agentConsole];
   let template: string | undefined;
   for (const agentConsole of sources) {
     if (!agentConsole || typeof agentConsole !== 'object') continue;

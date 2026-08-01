@@ -254,10 +254,10 @@ describe('SkillProvider', () => {
     );
     expect(r).toBeNull();
   });
-  it('has id skill, phase before_first_user, priority 70', () => {
+  it('has id skill, phase tail_guidance, priority 70', () => {
     const p = new SkillProvider({} as never);
     expect(p.id).toBe('skill');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(70);
   });
 });
@@ -379,10 +379,10 @@ describe('ModelHintProvider', () => {
     expect(r?.content).toContain('自定义提示');
     expect(r?.content).toContain('内置搜索');
   });
-  it('has id model_hint, phase before_first_user, priority 5', () => {
+  it('has id model_hint, phase tail_guidance, priority 5', () => {
     const p = new ModelHintProvider();
     expect(p.id).toBe('model_hint');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(5);
   });
 });
@@ -468,10 +468,10 @@ describe('ToolSystemProvider', () => {
     );
     expect(r?.content).toContain('<tool name="nodesc">no description</tool>');
   });
-  it('has id tool_system, phase before_first_user, priority 40', () => {
+  it('has id tool_system, phase tail_guidance, priority 40', () => {
     const p = new ToolSystemProvider();
     expect(p.id).toBe('tool_system');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(40);
   });
 });
@@ -479,20 +479,20 @@ describe('ToolSystemProvider', () => {
 import { DateContextProvider } from '../src/services/agents/prompt/providers/DateContextProvider.js';
 
 describe('DateContextProvider', () => {
-  it('injects date as before_first_user system message', () => {
+  it('injects date as tail_guidance system message', () => {
     const p = new DateContextProvider();
     const r = p.build(makeCtx({ date: '2026-06-25' }));
     expect(r?.content).toContain('2026-06-25');
     expect(r?.content).toContain('当前处理日期为');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
   });
   it('returns null when no date', () => {
     expect(new DateContextProvider().build(makeCtx({}))).toBeNull();
   });
-  it('has id date_context, phase before_first_user, priority 10', () => {
+  it('has id date_context, phase tail_guidance, priority 10', () => {
     const p = new DateContextProvider();
     expect(p.id).toBe('date_context');
-    expect(p.phase).toBe('before_first_user');
+    expect(p.phase).toBe('tail_guidance');
     expect(p.priority).toBe(10);
   });
 });

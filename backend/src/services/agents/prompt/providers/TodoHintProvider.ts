@@ -10,8 +10,10 @@ import type { PromptBuildContext, PromptContribution, PromptProvider } from '../
  */
 export class TodoHintProvider implements PromptProvider {
   id = 'todo_hint';
+  // Keep todos after model/date/kb/memory/tool hints so the dynamic tail order
+  // stays deterministic across turns.
   phase = 'tail_guidance' as const;
-  priority = 10;
+  priority = 50;
 
   build(ctx: PromptBuildContext): PromptContribution | null {
     const todos = ctx.todoState?.todos;

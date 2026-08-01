@@ -23,8 +23,23 @@ export {
   PROMPT_CACHE_CONTRACT_VERSION,
   PROMPT_CACHE_HISTORY_SERIALIZATION_VERSION,
   PROMPT_CACHE_PROMPT_SCHEMA_VERSION,
-  buildPromptCacheContract
+  buildPromptCacheContract,
+  derivePromptCacheKey,
+  readPromptCacheContract
 } from './promptCacheContract.js';
+export {
+  PROMPT_CACHE_MISS_NOISE_FLOOR_TOKENS,
+  PROMPT_CACHE_TTL_MS,
+  advancePromptCacheObservationBaseline,
+  diagnosePromptCacheMiss,
+  scanPromptCacheSessionDiagnostics
+} from './promptCacheDiagnostics.js';
+export type {
+  PromptCacheDiagnosticCall,
+  PromptCacheMissDiagnosis,
+  PromptCacheObservationBaseline,
+  PromptCacheSessionScanResult
+} from './promptCacheDiagnostics.js';
 export type {
   PromptCacheClass,
   PromptCacheContract,
@@ -41,6 +56,13 @@ export type {
   PromptCacheCapability,
   PromptCacheProviderFamily
 } from './promptCacheCapabilities.js';
+export {
+  buildProviderCacheMetadataPatch,
+  buildPromptCacheKey,
+  buildResponseCacheRequest,
+  resolvePinnedSessionEndpoint,
+  resolveResponseCacheFromSessions
+} from './responseContextCache.js';
 export {
   rehydratePersistedAgentMessage,
   rehydratePersistedMessages
