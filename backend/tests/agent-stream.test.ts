@@ -104,7 +104,7 @@ function createProvider(rounds: AIResponse[][]) {
 function createService(
   agent: AgentDefinition,
   provider: any,
-  skillPrompt = '',
+  skillMetadata: { id: string; name: string; description: string }[] = [],
   runRegistry?: InMemoryAgentRunRegistry
 ) {
   const registry = ToolRegistry.getInstance();
@@ -114,7 +114,7 @@ function createService(
     service: new AgentService(
       createStore(agent) as any,
       provider,
-      { buildSkillsPrompt: vi.fn().mockResolvedValue(skillPrompt) } as any,
+      { listSkillMetadata: vi.fn().mockReturnValue(skillMetadata) } as any,
       { getTools: vi.fn().mockResolvedValue([]), callTool: vi.fn() } as any,
       undefined,
       runRegistry
@@ -531,7 +531,7 @@ describe('AgentService streamAgent', () => {
       }
     };
     const runRegistry = new InMemoryAgentRunRegistry();
-    const { service } = createService(createAgent(), provider, '', runRegistry);
+    const { service } = createService(createAgent(), provider, [], runRegistry);
     let runId = '';
 
     const events = await collect(
@@ -586,7 +586,7 @@ describe('AgentService streamAgent', () => {
       }
     };
     const runRegistry = new InMemoryAgentRunRegistry();
-    const { service } = createService(createAgent(), provider, '', runRegistry);
+    const { service } = createService(createAgent(), provider, [], runRegistry);
     let runId = '';
 
     const events = await collect(
@@ -727,7 +727,7 @@ describe('AgentService streamAgent', () => {
     const largeContent = 'stream-output-'.repeat(8);
     const provider = createProvider([[{ content: largeContent }]]);
     const runRegistry = new InMemoryAgentRunRegistry();
-    const { service } = createService(createAgent(), provider, '', runRegistry);
+    const { service } = createService(createAgent(), provider, [], runRegistry);
     let runId = '';
 
     const chunks = await collect(
@@ -772,9 +772,11 @@ describe('AgentService streamAgent', () => {
 
   it('respects noTools and noSkills for internal streaming calls', async () => {
     const provider = createProvider([[{ content: 'done' }]]);
-    const skillPrompt = 'skill instructions';
+    const skillDescription = 'skill instructions';
     const agent = createAgent({ skillIds: ['skill-1'] });
-    const { service } = createService(agent, provider, skillPrompt);
+    const { service } = createService(agent, provider, [
+      { id: 'skill-1', name: 'Skill 1', description: skillDescription }
+    ]);
 
     await collect(
       service.streamAgent('stream-agent', 'run', undefined, {
@@ -786,7 +788,7 @@ describe('AgentService streamAgent', () => {
 
     expect(provider.seenTools[0]).toEqual([]);
     const firstPrompt = provider.seenPrompts[0] as AIMessage[];
-    expect(firstPrompt[0].content).not.toContain(skillPrompt);
+    expect(firstPrompt[0].content).not.toContain(skillDescription);
   });
 });
 

@@ -842,7 +842,7 @@ describe('ReActAgentEngine run control plane', () => {
     const service = new AgentService(
       {} as any,
       { name: 'test-provider', generateContent: async () => ({ content: 'unused' }) } as any,
-      { buildSkillsPrompt: async () => '' } as any,
+      { listSkillMetadata: () => [] } as any,
       { getTools: async () => [], callTool: async () => ({}) } as any
     );
     (service as any).agentEngine = engine;
@@ -1486,7 +1486,7 @@ describe('ReActAgentEngine run control plane', () => {
         getMCPConfig: async () => undefined
       } as any,
       { name: 'test-provider', generateContent: async () => ({ content: 'unused' }) } as any,
-      { buildSkillsPrompt: async () => '' } as any,
+      { listSkillMetadata: () => [] } as any,
       { getTools: async () => [], callTool: async () => ({}) } as any
     );
     const session = {
@@ -1621,7 +1621,7 @@ describe('ReActAgentEngine run control plane', () => {
           };
         }
       } as any,
-      { buildSkillsPrompt: async () => '' } as any,
+      { listSkillMetadata: () => [] } as any,
       { getTools: async () => [], callTool: async () => ({}) } as any
     );
     const session = {

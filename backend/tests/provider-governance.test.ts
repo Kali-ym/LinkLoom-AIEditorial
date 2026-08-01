@@ -76,7 +76,7 @@ function createService(agent: AgentDefinition, provider: AIProvider, settings?: 
   return new AgentService(
     createStore(agent, settings) as any,
     provider,
-    { buildSkillsPrompt: vi.fn().mockResolvedValue('') } as any,
+    { listSkillMetadata: vi.fn().mockReturnValue([]) } as any,
     { getTools: vi.fn().mockResolvedValue([]), callTool: vi.fn() } as any
   );
 }

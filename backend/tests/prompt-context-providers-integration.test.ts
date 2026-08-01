@@ -27,7 +27,7 @@ function makeCtxInput(overrides: Record<string, unknown> = {}) {
     tools: [],
     skills: [],
     mcpTools: [],
-    skillInstructions: '',
+    skillMetadata: [],
     registry: PromptRegistry.getInstance(),
     ...overrides
   };
@@ -45,18 +45,20 @@ describe('assembleSystemMessages — static/variant boundary', () => {
     expect(assembled.systemMessage.content.includes('<memory>')).toBe(false);
   });
 
-  it('skill instructions 进入 variantMessages 而非 systemMessage', () => {
+  it('skill metadata 进入 variantMessages 而非 systemMessage', () => {
     const ctx = buildPromptPipelineContext(
       makeCtxInput({
         agentDef: makeAgentDef({ skillIds: ['s1'] }),
-        skillInstructions: '## Available Skills\n### Skill: s1'
+        skillMetadata: [{ id: 's1', name: 'Skill 1', description: 'First skill' }]
       })
     );
     const assembled = assembleSystemMessages(ctx);
+    const variantContent = assembled.variantMessages.map((message) => message.content).join('\n');
     expect(assembled.systemMessage.content).not.toContain('<available_skills>');
-    expect(assembled.variantMessages.map((message) => message.content).join('\n')).toContain(
-      '<available_skills>'
-    );
+    expect(variantContent).toContain('<available_skills>');
+    expect(variantContent).toContain('s1');
+    expect(variantContent).toContain('First skill');
+    expect(variantContent).not.toContain('Instructions');
   });
 
   it('variables 透传到 ctx.variables', () => {

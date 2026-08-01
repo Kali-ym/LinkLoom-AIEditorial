@@ -53,7 +53,7 @@ function createService(agent: AgentDefinition, runRegistry = new InMemoryAgentRu
   const service = new AgentService(
     createStore(agent) as never,
     createProvider(),
-    { buildSkillsPrompt: vi.fn().mockResolvedValue('') } as never,
+    { listSkillMetadata: vi.fn().mockReturnValue([]) } as never,
     { getTools: vi.fn().mockResolvedValue([]), callTool: vi.fn() } as never,
     undefined,
     runRegistry
