@@ -1004,13 +1004,23 @@ export class ReActAgentEngine implements AgentEngine {
     if (!session) return;
 
     const contract = readPromptCacheContract(session.metadata?.promptCacheContract);
+    const responseInputFingerprint =
+      (typeof session.metadata?.turnContextFingerprint === 'string' &&
+      session.metadata.turnContextFingerprint.trim()
+        ? session.metadata.turnContextFingerprint.trim()
+        : undefined) ??
+      (typeof session.metadata?.responseInputFingerprint === 'string' &&
+      session.metadata.responseInputFingerprint.trim()
+        ? session.metadata.responseInputFingerprint.trim()
+        : undefined);
     session.metadata = {
       ...session.metadata,
       ...buildProviderCacheMetadataPatch({
         responseId,
         contract,
         agentModel: agentDef.model,
-        agentProviderId: agentDef.providerId
+        agentProviderId: agentDef.providerId,
+        responseInputFingerprint
       })
     };
     await this.sessionStore.saveSession(session);

@@ -28,6 +28,7 @@ import { LogService } from './LogService.js';
 import type { GeminiBuiltinSearchMode } from './agents/search/types.js';
 import {
   normalizeApiMessageContent,
+  convertToProviderRequest,
   toChatCompletionsApiMessages,
   toMessagesApiMessages,
   toMessagesApiTools,
@@ -35,6 +36,7 @@ import {
   toResponsesApiInputItems,
   toResponsesApiMessageContent,
   toResponsesApiTools,
+  type LlmProviderFormat,
 } from './agents/context/LlmMessageConverter.js';
 
 export {
@@ -502,6 +504,7 @@ export function attachPromptCacheUsage(
     cacheNamespace: responseCache.cacheNamespace,
     cacheContractVersion: responseCache.cacheContractVersion,
     cacheDisableReason: responseCache.cacheDisableReason,
+    turnContextFingerprint: responseCache.responseInputFingerprint,
     requested,
     eligible: responseCache.cacheEligibility,
     hit: cachedTokens > 0 ? true : undefined,
@@ -536,6 +539,9 @@ function resolvePromptCacheStatus(
   ) {
     return 'disabled';
   }
+  if (responseCache.cacheDisableReason?.includes('response_input_fingerprint_mismatch')) {
+    return responseCache.cacheEligibility ? 'miss' : 'unsafe';
+  }
   if (responseCache.cacheDisableReason) return 'unsafe';
   if (cachedTokens > 0) return 'hit';
   if (writeTokens > 0) return 'write';
@@ -562,7 +568,8 @@ function normalizeSystemMessageText(content: unknown): string {
 
 export function splitSystemFromPrompt(
   prompt: string | AIMessage[],
-  systemInstruction?: string
+  systemInstruction?: string,
+  options?: { piContextV2?: boolean }
 ): {
   systemInstruction?: string;
   conversation: string | AIMessage[];
@@ -580,6 +587,18 @@ export function splitSystemFromPrompt(
   if (systemInstruction?.trim()) {
     if (typeof prompt === 'string') {
       return { systemInstruction: systemInstruction.trim(), conversation: prompt };
+    }
+    if (options?.piContextV2) {
+      const conversation: AIMessage[] = [];
+      for (const message of prompt) {
+        if (message.role !== 'system') {
+          conversation.push(message);
+        }
+      }
+      return {
+        systemInstruction: systemInstruction.trim(),
+        conversation,
+      };
     }
     // Caller supplied a stable systemInstruction; any system messages still
     // present in the prompt are dynamic leftovers — collect them as suffix.
@@ -658,7 +677,7 @@ function appendDynamicSuffixToInput(
   dynamicSuffix?: string
 ): Array<Record<string, unknown>> {
   if (!dynamicSuffix?.trim() || input.length === 0) return input;
-  const last = input[input.length - 1]!;
+  const last = input[input.length - 1];
   if (last.role !== 'user') {
     return [...input, { role: 'user', content: dynamicSuffix }];
   }
@@ -900,6 +919,36 @@ export function applyReasoningRequestFields(
   }
 }
 
+function isPiContextV2ResponseCache(responseCache?: ResponseCacheRequest): boolean {
+  return responseCache?.cacheContractVersion === 'prompt-cache-v2';
+}
+
+function buildPiContextProviderRequest(
+  prompt: string | AIMessage[],
+  systemInstruction: string,
+  tools: any[],
+  format: LlmProviderFormat,
+  keepHistoryReasoning?: boolean,
+) {
+  const split = splitSystemFromPrompt(prompt, systemInstruction, { piContextV2: true });
+  const { stableInstructions } = splitStableInstructions(split.systemInstruction?.trim() || systemInstruction);
+  const conversation =
+    typeof split.conversation === 'string'
+      ? [{ role: 'user' as const, content: split.conversation }]
+      : (split.conversation);
+  return convertToProviderRequest({
+    request: {
+      systemInstruction: stableInstructions,
+      messages: conversation,
+      providerTools: tools,
+      ephemeralMessages: [],
+      turnContextFingerprint: '',
+    },
+    format,
+    keepHistoryReasoning,
+  });
+}
+
 function buildChatCompletionsBody(
   model: string,
   prompt: string | AIMessage[],
@@ -908,6 +957,31 @@ function buildChatCompletionsBody(
   reasoningEffort?: string,
   responseCache?: ResponseCacheRequest
 ): Record<string, unknown> {
+  if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const converted = buildPiContextProviderRequest(
+      prompt,
+      systemInstruction,
+      tools,
+      'chat_completions',
+      responseCache?.keepHistoryReasoning,
+    );
+    const body: Record<string, unknown> = {
+      model,
+      messages: converted.systemInstruction
+        ? [{ role: 'system', content: converted.systemInstruction }, ...(converted.messages ?? [])]
+        : converted.messages,
+    };
+    if (responseCache?.cacheKey) {
+      body.prompt_cache_key = responseCache.cacheKey;
+    }
+    const apiTools = converted.tools ?? toOpenAIApiTools(tools);
+    if (apiTools?.length) {
+      body.tools = apiTools;
+    }
+    applyReasoningRequestFields(body, reasoningEffort);
+    return body;
+  }
+
   const split = splitSystemFromPrompt(prompt, systemInstruction);
   const rawSystem = split.systemInstruction?.trim();
   const { stableInstructions, dynamicSuffix } = rawSystem
@@ -946,6 +1020,33 @@ function buildResponsesApiBody(
   reasoningEffort?: string,
   responseCache?: ResponseCacheRequest
 ): Record<string, unknown> {
+  if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const converted = buildPiContextProviderRequest(
+      prompt,
+      systemInstruction,
+      tools,
+      'responses',
+      responseCache?.keepHistoryReasoning,
+    );
+    const body: Record<string, unknown> = {
+      model,
+      instructions: converted.instructions ?? converted.systemInstruction,
+      input: converted.input ?? [],
+      store: false,
+    };
+    if (responseCache?.cacheKey) {
+      body.prompt_cache_key = responseCache.cacheKey;
+    }
+    const apiTools = converted.tools ?? toResponsesApiTools(tools);
+    if (apiTools?.length) {
+      body.tools = apiTools;
+    }
+    if (reasoningEffort && reasoningEffort !== 'none') {
+      body.reasoning = { effort: reasoningEffort, summary: 'detailed' };
+    }
+    return body;
+  }
+
   const split = splitSystemFromPrompt(prompt, systemInstruction);
   const { stableInstructions, dynamicSuffix } = splitStableInstructions(
     split.systemInstruction?.trim() || 'You are a helpful assistant.'
@@ -1274,11 +1375,11 @@ export function applyAnthropicPromptCache(
   const stable = messages.slice(0, -1);
   const latest = messages[messages.length - 1];
   if (stable.length > 0) {
-    markAnthropicCacheControl(stable[stable.length - 1]!);
+    markAnthropicCacheControl(stable[stable.length - 1]);
   }
 
   return {
-    messages: [...stable, latest!],
+    messages: [...stable, latest],
     system
   };
 }
@@ -1292,7 +1393,7 @@ export function markAnthropicToolsCacheControl(
 ): Array<Record<string, unknown>> | undefined {
   if (!responseCache?.cacheKey) return tools;
   if (!tools?.length) return undefined;
-  const lastTool = tools[tools.length - 1] as Record<string, unknown>;
+  const lastTool = tools[tools.length - 1];
   if (lastTool && typeof lastTool === 'object') {
     lastTool.cache_control = { type: 'ephemeral' };
   }
@@ -1312,6 +1413,47 @@ function buildMessagesApiBody(
   // thinking is enabled — even though it weakens prompt-cache prefix stability.
   const thinkingEnabled = !!reasoningEffort && reasoningEffort !== 'none';
   const keepHistoryReasoning = thinkingEnabled || responseCache?.keepHistoryReasoning === true;
+
+  if (isPiContextV2ResponseCache(responseCache) && systemInstruction?.trim()) {
+    const converted = buildPiContextProviderRequest(
+      prompt,
+      systemInstruction,
+      tools,
+      'anthropic',
+      keepHistoryReasoning,
+    );
+    const anthropicSystem =
+      typeof converted.systemInstruction === 'string'
+        ? converted.systemInstruction
+        : systemInstruction;
+    const cached = applyAnthropicPromptCache(
+      converted.messages as Array<Record<string, unknown>>,
+      anthropicSystem,
+      responseCache,
+    );
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: 4096,
+      messages: cached.messages,
+    };
+    if (cached.system) {
+      body.system = cached.system;
+    }
+    const apiTools = markAnthropicToolsCacheControl(
+      converted.tools ?? toMessagesApiTools(tools),
+      responseCache,
+    );
+    if (apiTools?.length) {
+      body.tools = apiTools;
+    }
+    if (reasoningEffort && reasoningEffort !== 'none') {
+      body.thinking = {
+        type: 'enabled',
+        budget_tokens: reasoningEffortToThinkingBudget(reasoningEffort),
+      };
+    }
+    return body;
+  }
 
   // Split the stable first system message (cached system prefix) from the
   // per-turn dynamic system messages (knowledge / memory / todo …). The
@@ -1976,7 +2118,7 @@ export function parseMessagesStreamPayload(
         const input =
           record.input &&
           typeof record.input === 'object' &&
-          Object.keys(record.input as Record<string, unknown>).length > 0
+          Object.keys(record.input).length > 0
             ? JSON.stringify(record.input)
             : '';
         const acc = upsertMessagesToolUse(state, blockIndex, {
@@ -2036,7 +2178,7 @@ export function parseMessagesStreamPayload(
         const input =
           record.input &&
           typeof record.input === 'object' &&
-          Object.keys(record.input as Record<string, unknown>).length > 0
+          Object.keys(record.input).length > 0
             ? JSON.stringify(record.input)
             : state?.toolUsesByBlock.get(blockIndex)?.inputJsonText ?? '';
         upsertMessagesToolUse(state, blockIndex, {

@@ -25,9 +25,23 @@ export type PromptCacheDiagnosticCall = {
   providerId?: string;
   endpoint?: string;
   timestampMs?: number;
+  turnContextFingerprint?: string;
+  sourceErrors?: Array<{ source: string; code: string }>;
+  conversionDiagnostics?: string[];
   /** True when this call followed a context compaction / summary rewrite. */
   afterCompaction?: boolean;
 };
+
+export interface PromptCacheObservation {
+  turnContextFingerprint?: string;
+  sourceErrors?: Array<{ source: string; code: string }>;
+  conversionDiagnostics?: string[];
+}
+
+export type PromptCacheSessionMissReason =
+  | 'turn_context_changed'
+  | 'turn_context_source_failed'
+  | 'context_conversion_unsupported';
 
 export type PromptCacheMissDiagnosis = {
   missedTokens: number;
@@ -121,20 +135,50 @@ export type PromptCacheSessionScanResult = {
   missCount: number;
   missedTokens: number;
   diagnoses: PromptCacheMissDiagnosis[];
+  sessionMissReasons: PromptCacheSessionMissReason[];
 };
+
+function collectSessionMissReasons(call: PromptCacheDiagnosticCall): PromptCacheSessionMissReason[] {
+  const reasons: PromptCacheSessionMissReason[] = [];
+  if (call.sourceErrors?.some((error) => error.code === 'unavailable')) {
+    reasons.push('turn_context_source_failed');
+  }
+  if (call.conversionDiagnostics?.includes('context_conversion_unsupported')) {
+    reasons.push('context_conversion_unsupported');
+  }
+  return reasons;
+}
 
 /** Scan an ordered list of per-call observations for a session. */
 export function scanPromptCacheSessionDiagnostics(
   calls: PromptCacheDiagnosticCall[]
 ): PromptCacheSessionScanResult {
   let previous: PromptCacheObservationBaseline | undefined;
+  let previousFingerprint: string | undefined;
   const diagnoses: PromptCacheMissDiagnosis[] = [];
+  const sessionMissReasons: PromptCacheSessionMissReason[] = [];
   let missedTokens = 0;
 
   for (const call of calls) {
     if (call.afterCompaction) {
       previous = undefined;
+      previousFingerprint = undefined;
       continue;
+    }
+    if (
+      previousFingerprint &&
+      call.turnContextFingerprint &&
+      previousFingerprint !== call.turnContextFingerprint
+    ) {
+      sessionMissReasons.push('turn_context_changed');
+    }
+    if (call.turnContextFingerprint) {
+      previousFingerprint = call.turnContextFingerprint;
+    }
+    for (const reason of collectSessionMissReasons(call)) {
+      if (!sessionMissReasons.includes(reason)) {
+        sessionMissReasons.push(reason);
+      }
     }
     const diagnosis = diagnosePromptCacheMiss(previous, call);
     if (diagnosis) {
@@ -147,6 +191,7 @@ export function scanPromptCacheSessionDiagnostics(
   return {
     missCount: diagnoses.length,
     missedTokens,
-    diagnoses
+    diagnoses,
+    sessionMissReasons
   };
 }

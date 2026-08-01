@@ -1,8 +1,9 @@
+import { PI_CONTEXT_PROTOCOL_VERSION } from '../context/PiContextTypes.js';
 import { hashString, stableStringify } from './canonicalMessageSerializer.js';
 import type { PromptCacheCapability } from './promptCacheCapabilities.js';
 
-export const PROMPT_CACHE_CONTRACT_VERSION = 'prompt-cache-v1' as const;
-export const PROMPT_CACHE_PROMPT_SCHEMA_VERSION = 'prompt-schema-v1' as const;
+export const PROMPT_CACHE_CONTRACT_VERSION = 'prompt-cache-v2' as const;
+export const PROMPT_CACHE_PROMPT_SCHEMA_VERSION = 'prompt-schema-v2' as const;
 export const PROMPT_CACHE_HISTORY_SERIALIZATION_VERSION = 'canonical-history-v1' as const;
 
 export type PromptCacheClass = 'stable' | 'variant' | 'dynamic';
@@ -14,6 +15,7 @@ export interface PromptCacheContract {
   contractVersion: typeof PROMPT_CACHE_CONTRACT_VERSION;
   promptSchemaVersion: string;
   historySerializationVersion: string;
+  contextProtocolVersion: typeof PI_CONTEXT_PROTOCOL_VERSION;
   providerId: string;
   model: string;
   endpoint: string;
@@ -41,13 +43,18 @@ export interface PromptCacheContractInput {
   stablePrefix: string;
   variantParts?: unknown[];
   toolset?: unknown;
-  promptSchemaVersion?: string;
+  contextProtocolVersion: typeof PI_CONTEXT_PROTOCOL_VERSION;
+  promptSchemaVersion?: 'prompt-schema-v2';
   historySerializationVersion?: string;
   capability: PromptCacheCapability;
   cacheRequested?: boolean;
   cachePolicy?: PromptCachePolicy;
   cacheMode?: PromptCacheRuntimeMode;
   sessionId?: string;
+  /** Precomputed SessionContext hashes; when set, stablePrefix text is not re-hashed for the namespace. */
+  stablePrefixHash?: string;
+  variantHash?: string;
+  toolsetHash?: string;
   /**
    * Explicit scope override. Default is session isolation when a sessionId is
    * present; callers without a session must opt into `global` (or accept
@@ -68,23 +75,28 @@ export function buildPromptCacheContract(input: PromptCacheContractInput): Promp
   const model = normalizePart(input.model, 'default');
   const endpoint = normalizePart(input.endpoint, 'default');
   const reasoningMode = normalizePart(input.reasoningMode, 'none');
+  const contextProtocolVersion = input.contextProtocolVersion;
   const promptSchemaVersion = input.promptSchemaVersion ?? PROMPT_CACHE_PROMPT_SCHEMA_VERSION;
   const historySerializationVersion =
     input.historySerializationVersion ?? PROMPT_CACHE_HISTORY_SERIALIZATION_VERSION;
-  const toolsetHash = hashString(stableStringify(input.toolset ?? { tools: [] }));
-  const variantHash = hashString(
-    stableStringify({
-      contractVersion: PROMPT_CACHE_CONTRACT_VERSION,
-      providerId,
-      model,
-      endpoint,
-      reasoningMode,
-      promptSchemaVersion,
-      variantParts: input.variantParts ?? [],
-      toolsetHash
-    })
-  );
-  const stablePrefixHash = hashString(input.stablePrefix);
+  const toolsetHash =
+    input.toolsetHash ?? hashString(stableStringify(input.toolset ?? { tools: [] }));
+  const variantHash =
+    input.variantHash ??
+    hashString(
+      stableStringify({
+        contractVersion: PROMPT_CACHE_CONTRACT_VERSION,
+        contextProtocolVersion,
+        providerId,
+        model,
+        endpoint,
+        reasoningMode,
+        promptSchemaVersion,
+        variantParts: input.variantParts ?? [],
+        toolsetHash
+      })
+    );
+  const stablePrefixHash = input.stablePrefixHash ?? hashString(input.stablePrefix);
 
   const unsafeReasons = [...(input.unsafeReasons ?? [])];
   const sessionId = input.sessionId?.trim() || undefined;
@@ -100,13 +112,14 @@ export function buildPromptCacheContract(input: PromptCacheContractInput): Promp
 
   const namespaceParts = [
     'pc',
-    'v1',
+    'v2',
     cacheScope === 'session' ? 'session' : 'global',
     ...(cacheScope === 'session' && sessionId ? [sessionId] : []),
     providerId,
     model,
     endpoint,
     reasoningMode,
+    contextProtocolVersion,
     promptSchemaVersion,
     stablePrefixHash,
     variantHash
@@ -118,6 +131,7 @@ export function buildPromptCacheContract(input: PromptCacheContractInput): Promp
     contractVersion: PROMPT_CACHE_CONTRACT_VERSION,
     promptSchemaVersion,
     historySerializationVersion,
+    contextProtocolVersion,
     providerId,
     model,
     endpoint,
@@ -160,6 +174,8 @@ export function readPromptCacheContract(value: unknown): PromptCacheContract | u
   if (!value || typeof value !== 'object') return undefined;
   const record = value as Record<string, unknown>;
   if (typeof record.cacheNamespace !== 'string' || !record.cacheNamespace.trim()) return undefined;
+  const contextProtocolVersion = record.contextProtocolVersion;
+  if (contextProtocolVersion !== PI_CONTEXT_PROTOCOL_VERSION) return undefined;
   const cacheNamespace = record.cacheNamespace.trim();
   return {
     contractVersion: PROMPT_CACHE_CONTRACT_VERSION,
@@ -171,6 +187,7 @@ export function readPromptCacheContract(value: unknown): PromptCacheContract | u
       typeof record.historySerializationVersion === 'string'
         ? record.historySerializationVersion
         : PROMPT_CACHE_HISTORY_SERIALIZATION_VERSION,
+    contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
     providerId: String(record.providerId ?? 'unknown'),
     model: String(record.model ?? 'default'),
     endpoint: String(record.endpoint ?? 'default'),

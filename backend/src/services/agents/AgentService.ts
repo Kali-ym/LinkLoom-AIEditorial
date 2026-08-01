@@ -3155,12 +3155,22 @@ export class AgentService {
       reasoningEffort: reasoningMode
     });
 
+    const sessionContext = this.buildSessionContextForRun({
+      assembled,
+      trajectory: [],
+      providerTools: tools
+    });
+
     const contract = buildPromptCacheContract({
       providerId,
       model,
       endpoint,
       reasoningMode,
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
       stablePrefix: assembled.systemMessage.content,
+      stablePrefixHash: sessionContext.stablePrefixHash,
+      variantHash: sessionContext.variantHash,
+      toolsetHash: sessionContext.toolsetHash,
       variantParts,
       toolset: canonicalizeToolDefinitions(tools),
       capability:
@@ -3251,15 +3261,41 @@ export class AgentService {
       );
     }
     const cacheEntry = sessionId
-      ? resolveResponseCacheFromSessions(sessions, contract.model, contract.providerId, contract.cacheKey)
+      ? resolveResponseCacheFromSessions(
+          sessions,
+          contract.model,
+          contract.providerId,
+          contract.cacheKey,
+          turnContextFingerprint
+        )
       : undefined;
-    void turnContextFingerprint;
-    return buildResponseCacheRequest(messages, cacheEntry, {
+    const responseInputFingerprintMismatch =
+      turnContextFingerprint &&
+      cacheEntry?.responseInputFingerprint &&
+      cacheEntry.responseInputFingerprint !== turnContextFingerprint;
+    const request = buildResponseCacheRequest(messages, cacheEntry, {
       enableStore: true,
       roundIndex: 1,
       cacheKey: contract.cacheKey,
       contract
     });
+    if (!request) return undefined;
+    return {
+      ...request,
+      responseInputFingerprint: turnContextFingerprint,
+      ...(responseInputFingerprintMismatch
+        ? {
+            previousContextId: undefined,
+            previousResponseId: undefined,
+            previousCompletionId: undefined,
+            previousMessageId: undefined,
+          }
+        : {
+            previousResponseId: cacheEntry?.responseId,
+            previousCompletionId: cacheEntry?.completionId,
+            previousMessageId: cacheEntry?.messageId,
+          }),
+    };
   }
 
   /**
@@ -3333,7 +3369,9 @@ export class AgentService {
       options,
       agentDef,
       messages,
-      persisted
+      persisted,
+      readString(session.metadata?.turnContextFingerprint) ??
+        readString(session.metadata?.responseInputFingerprint)
     );
     return { contract: persisted, responseCache };
   }

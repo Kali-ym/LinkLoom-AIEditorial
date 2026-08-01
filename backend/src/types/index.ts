@@ -39,6 +39,7 @@ export interface AIPromptCacheUsage {
   cacheNamespace?: string;
   cacheContractVersion?: string;
   cacheDisableReason?: string;
+  turnContextFingerprint?: string;
   estimatedCacheSavingsUsd?: number;
   mode?: 'shadow' | 'enforced' | 'disabled';
   requested: boolean;

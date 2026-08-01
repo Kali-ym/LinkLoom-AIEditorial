@@ -827,8 +827,12 @@ export function adaptCallOptionsForCandidate(
 }
 
 export function collectFallbackCacheMismatchReasons(
-  cache: Pick<ResponseCacheRequest, 'providerId' | 'model' | 'endpoint'>,
-  candidate: ProviderGovernanceCandidate
+  cache: Pick<
+    ResponseCacheRequest,
+    'providerId' | 'model' | 'endpoint' | 'responseInputFingerprint' | 'previousResponseId' | 'previousCompletionId' | 'previousMessageId'
+  >,
+  candidate: ProviderGovernanceCandidate,
+  persistedResponseInputFingerprint?: string
 ): string[] {
   const reasons: string[] = [];
   // Require an explicit provider/model match against the cache contract. Missing
@@ -838,6 +842,14 @@ export function collectFallbackCacheMismatchReasons(
   }
   if (!cache.model || !candidate.model || cache.model !== candidate.model) {
     reasons.push('fallback_model_mismatch');
+  }
+  if (
+    persistedResponseInputFingerprint &&
+    cache.responseInputFingerprint &&
+    persistedResponseInputFingerprint !== cache.responseInputFingerprint &&
+  (cache.previousResponseId || cache.previousCompletionId || cache.previousMessageId)
+  ) {
+    reasons.push('response_input_fingerprint_mismatch');
   }
   return reasons;
 }

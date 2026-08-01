@@ -16,6 +16,7 @@ export type ProviderContextCacheEntry = {
   endpoint?: string;
   reasoningMode?: string;
   responseId?: string;
+  responseInputFingerprint?: string;
 };
 
 /** Provider context cache hints passed into AIProvider for all endpoint modes. */
@@ -39,6 +40,7 @@ export type ResponseCacheRequest = {
   previousCompletionId?: string;
   previousMessageId?: string;
   previousResponseId?: string;
+  responseInputFingerprint?: string;
   /**
    * When true, history assistant messages keep their reasoning/thinking blocks
    * when serialized back to the API. Defaults to false (omitted) so that the
@@ -97,10 +99,10 @@ export function resolveResponseCacheFromSessions(
   model: string,
   providerId: string,
   cacheKey?: string,
+  responseInputFingerprint?: string,
 ): ProviderContextCacheEntry | undefined {
   const sorted = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  for (let index = sorted.length - 1; index >= 0; index -= 1) {
-    const session = sorted[index]!;
+  for (const session of [...sorted].reverse()) {
     if (session.status !== 'succeeded' && session.status !== 'archived') continue;
 
     const metadata = session.metadata ?? {};
@@ -110,6 +112,9 @@ export function resolveResponseCacheFromSessions(
     const sessionModel = readMetadataString(metadata.model);
     const sessionProvider = readMetadataString(metadata.providerId);
     const cacheNamespace = readMetadataString(metadata.providerCacheNamespace);
+    const persistedFingerprint =
+      readMetadataString(metadata.responseInputFingerprint) ??
+      readMetadataString(metadata.turnContextFingerprint);
     // Prefer the canonical namespace-derived key. Fall back to legacy
     // `sessionId:model:providerId` metadata for older sessions only.
     const sessionCacheKey =
@@ -120,16 +125,21 @@ export function resolveResponseCacheFromSessions(
     if (!responseId && !completionId && !messageId) continue;
 
     if (sessionModel === model && sessionProvider === providerId) {
+      const fingerprintMatches =
+        !responseInputFingerprint ||
+        !persistedFingerprint ||
+        persistedFingerprint === responseInputFingerprint;
       return {
-        responseId,
-        completionId,
-        messageId,
+        responseId: fingerprintMatches ? responseId : undefined,
+        completionId: fingerprintMatches ? completionId : undefined,
+        messageId: fingerprintMatches ? messageId : undefined,
         model: sessionModel,
         providerId: sessionProvider,
         endpoint: readMetadataString(metadata.providerEndpoint),
         reasoningMode: readMetadataString(metadata.providerReasoningMode),
         cacheNamespace,
         cacheKey: sessionCacheKey,
+        responseInputFingerprint: persistedFingerprint,
       };
     }
 
@@ -159,6 +169,7 @@ export function buildProviderCacheMetadataPatch(input: {
   contract?: PromptCacheContract;
   agentModel?: string;
   agentProviderId?: string;
+  responseInputFingerprint?: string;
 }): Record<string, unknown> {
   const kind = classifyProviderContextId(input.responseId);
   const idPatch =
@@ -184,7 +195,13 @@ export function buildProviderCacheMetadataPatch(input: {
     ...(input.contract?.endpoint ? { providerEndpoint: input.contract.endpoint } : {}),
     ...(input.contract?.reasoningMode
       ? { providerReasoningMode: input.contract.reasoningMode }
-      : {})
+      : {}),
+    ...(input.responseInputFingerprint
+      ? {
+          responseInputFingerprint: input.responseInputFingerprint,
+          turnContextFingerprint: input.responseInputFingerprint,
+        }
+      : {}),
   };
 }
 
@@ -195,8 +212,8 @@ export function resolvePinnedSessionEndpoint(
   providerId: string
 ): string | undefined {
   const sorted = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  for (let index = sorted.length - 1; index >= 0; index -= 1) {
-    const metadata = sorted[index]!.metadata ?? {};
+  for (const session of [...sorted].reverse()) {
+    const metadata = session.metadata ?? {};
     const sessionModel = readMetadataString(metadata.model);
     const sessionProvider = readMetadataString(metadata.providerId);
     if (sessionModel !== model || sessionProvider !== providerId) continue;

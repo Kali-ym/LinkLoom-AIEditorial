@@ -2,10 +2,45 @@ import { describe, expect, it } from 'vitest';
 import { buildPromptCacheContract } from '../src/services/agents/engine/promptCacheContract.js';
 import { resolvePromptCacheCapability } from '../src/services/agents/engine/promptCacheCapabilities.js';
 import { applyMultiAgentPromptCachePolicy } from '../src/services/agents/engine/multiAgentPromptCache.js';
+import { PI_CONTEXT_PROTOCOL_VERSION } from '../src/services/agents/context/PiContextTypes.js';
 
 const openAiCapability = resolvePromptCacheCapability('OPENAI', 'chat');
+const baseV2Input = {
+  providerId: 'openai',
+  model: 'gpt-4o',
+  endpoint: 'chat',
+  stablePrefix: 'stable',
+  toolset: { tools: [] },
+  contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
+  capability: {
+    supportsPromptCache: true,
+    supportsExplicitBreakpoint: false,
+    supportsCacheNamespace: true,
+    reportsCacheRead: true,
+    reportsCacheWrite: true,
+    family: 'openai' as const,
+  },
+  cacheRequested: true,
+};
 
 describe('prompt cache contract', () => {
+  it('keeps stable cache keys independent of turn fingerprint and dynamic markers', () => {
+    const first = buildPromptCacheContract({
+      ...baseV2Input,
+      sessionId: 'session-1',
+      variantParts: [{ skillMetadata: 'same' }],
+    });
+    const second = buildPromptCacheContract({
+      ...baseV2Input,
+      sessionId: 'session-1',
+      variantParts: [{ skillMetadata: 'same' }],
+    });
+
+    expect(first.cacheKey).toBe(second.cacheKey);
+    expect(first.cacheKey).not.toContain('knowledge');
+    expect(first.cacheNamespace).not.toContain('turn');
+  });
+
   it('resolves conservative provider capabilities', () => {
     expect(resolvePromptCacheCapability('OPENAI')).toMatchObject({
       supportsPromptCache: true,
@@ -35,6 +70,7 @@ describe('prompt cache contract', () => {
       stablePrefix: 'stable prompt',
       variantParts: ['base-agent-v1'],
       toolset: [{ name: 'search' }],
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
       capability: openAiCapability,
       sessionId: 'session-a'
     });

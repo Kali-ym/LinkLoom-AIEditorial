@@ -174,11 +174,54 @@ describe('responseContextCache', () => {
     expect(resolvePinnedSessionEndpoint(sessions, 'other', 'openai')).toBeUndefined();
   });
 
+  it('isolates provider response ids by dynamic input fingerprint', () => {
+    const sessions = [
+      {
+        runId: 'run-1',
+        sessionId: 'session-1',
+        source: 'agent',
+        status: 'succeeded',
+        messages: [],
+        events: [],
+        checkpoints: [],
+        artifacts: [],
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:01:00.000Z',
+        metadata: {
+          model: 'gpt-4o',
+          providerId: 'openai',
+          providerResponseId: 'resp_1',
+          providerCacheKey: 'cache-1',
+          turnContextFingerprint: 'turn-a',
+        },
+      },
+    ] as AgentSession[];
+    const first = resolveResponseCacheFromSessions(
+      sessions,
+      'gpt-4o',
+      'openai',
+      'cache-1',
+      'turn-a',
+    );
+    const second = resolveResponseCacheFromSessions(
+      sessions,
+      'gpt-4o',
+      'openai',
+      'cache-1',
+      'turn-b',
+    );
+    expect(first?.cacheKey).toBe('cache-1');
+    expect(first?.responseId).toBe('resp_1');
+    expect(second?.cacheKey).toBe('cache-1');
+    expect(second?.responseId).toBeUndefined();
+  });
+
   it('builds response cache request from contract cacheKey/namespace', () => {
     const contract = {
-      contractVersion: 'prompt-cache-v1' as const,
-      promptSchemaVersion: 'prompt-schema-v1',
+      contractVersion: 'prompt-cache-v2' as const,
+      promptSchemaVersion: 'prompt-schema-v2',
       historySerializationVersion: 'canonical-history-v1',
+      contextProtocolVersion: 'pi-context-v2' as const,
       providerId: 'OPENAI',
       model: 'gpt-5',
       endpoint: 'chat_completions',

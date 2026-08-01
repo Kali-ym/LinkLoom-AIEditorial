@@ -181,7 +181,7 @@ describe('ai prompt cache usage parsing', () => {
         cacheKey: 'pc:v1:global:openai:gpt-5',
         cacheNamespace: 'pc:v1:global:openai:gpt-5',
         cacheEligibility: true,
-        cacheContractVersion: 'prompt-cache-v1',
+        cacheContractVersion: 'prompt-cache-v2',
         providerId: 'provider-openai',
       },
     );
@@ -191,7 +191,7 @@ describe('ai prompt cache usage parsing', () => {
       cachedInputTokens: 80,
       uncachedInputTokens: 20,
       cacheNamespace: 'pc:v1:global:openai:gpt-5',
-      cacheContractVersion: 'prompt-cache-v1',
+      cacheContractVersion: 'prompt-cache-v2',
     });
   });
 
@@ -242,6 +242,25 @@ describe('prompt cache route affinity helpers', () => {
     ]);
   });
 
+  it('keeps linkloom_context user messages out of stable system instructions', async () => {
+    const { splitSystemFromPrompt } = await import('../src/services/AIProvider.js');
+    const split = splitSystemFromPrompt(
+      [
+        {
+          role: 'user',
+          content: '<linkloom_context source="knowledge">kb</linkloom_context>',
+        },
+        { role: 'user', content: 'hello' },
+      ],
+      'stable identity',
+      { piContextV2: true },
+    );
+
+    expect(split.systemInstruction).toBe('stable identity');
+    expect(split.dynamicSystemSuffix).toBeUndefined();
+    expect((split.conversation as Array<{ role: string }>).length).toBe(2);
+  });
+
   it('keeps dynamic system suffix out of the stable instructions prefix', async () => {
     const { splitSystemFromPrompt } = await import('../src/services/AIProvider.js');
     const split = splitSystemFromPrompt(
@@ -265,6 +284,9 @@ describe('prompt cache route affinity helpers', () => {
     );
     const { resolvePromptCacheCapability } = await import(
       '../src/services/agents/engine/promptCacheCapabilities.js'
+    );
+    const { PI_CONTEXT_PROTOCOL_VERSION } = await import(
+      '../src/services/agents/context/PiContextTypes.js'
     );
     const {
       assembleSystemMessages,
@@ -322,6 +344,7 @@ describe('prompt cache route affinity helpers', () => {
     const offContract = buildPromptCacheContract({
       providerId: 'GEMINI',
       model: 'gemini-2.0-flash',
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
       stablePrefix: offAssembled.systemMessage.content,
       variantParts: offAssembled.contributions
         ?.filter((contribution) => contribution.cacheClass === 'variant')
@@ -335,6 +358,7 @@ describe('prompt cache route affinity helpers', () => {
     const appContract = buildPromptCacheContract({
       providerId: 'GEMINI',
       model: 'gemini-2.0-flash',
+      contextProtocolVersion: PI_CONTEXT_PROTOCOL_VERSION,
       stablePrefix: appAssembled.systemMessage.content,
       variantParts: appAssembled.contributions
         ?.filter((contribution) => contribution.cacheClass === 'variant')
