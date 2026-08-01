@@ -117,57 +117,119 @@ describe('ModelHintProvider variant boundary', () => {
   });
 });
 
-describe('web search policy placement', () => {
-  it('keeps dynamic web search policy out of the stable system hash', () => {
-    const baseInput = {
-      agentDef: {
-        id: 'a',
-        name: 'A',
-        description: '',
-        systemPrompt: 'You are X',
-        providerId: 'GEMINI',
-        model: 'gemini-2.0-flash',
-        temperature: 0,
-        toolIds: [],
-        skillIds: [],
-        mcpServerIds: []
-      } as never,
+const WEB_SEARCH_HINT_MARKERS = ['内置搜索', '实时外部信息', '联网工具'];
+
+const WEB_SEARCH_POLICIES = {
+  off: {
+    effectiveMode: 'off' as const,
+    injectToolIds: [],
+    stripToolIds: ['web_search'],
+    enableProviderBuiltinSearch: false,
+    degradedFromProvider: false
+  },
+  app: {
+    effectiveMode: 'app' as const,
+    injectToolIds: ['web_search'],
+    stripToolIds: [],
+    enableProviderBuiltinSearch: false,
+    degradedFromProvider: false
+  },
+  provider: {
+    effectiveMode: 'provider' as const,
+    injectToolIds: ['crawl_single_page'],
+    stripToolIds: ['web_search'],
+    enableProviderBuiltinSearch: true,
+    degradedFromProvider: false
+  }
+};
+
+function makeWebSearchPipelineInput() {
+  return {
+    agentDef: {
+      id: 'a',
+      name: 'A',
+      description: '',
+      systemPrompt: 'You are X',
       providerId: 'GEMINI',
-      providerConfig: { type: 'GEMINI' } as never,
       model: 'gemini-2.0-flash',
-      tools: [],
-      skills: [],
-      mcpTools: [],
-      skillMetadata: []
-    };
+      temperature: 0,
+      toolIds: [],
+      skillIds: [],
+      mcpServerIds: []
+    } as never,
+    providerId: 'GEMINI',
+    providerConfig: { type: 'GEMINI' } as never,
+    model: 'gemini-2.0-flash',
+    tools: [],
+    skills: [],
+    mcpTools: [],
+    skillMetadata: []
+  };
+}
 
-    const offCtx = buildPromptPipelineContext({
-      ...baseInput,
-      webSearchPolicy: {
-        effectiveMode: 'off',
-        injectToolIds: [],
-        stripToolIds: ['web_search'],
-        enableProviderBuiltinSearch: false,
-        degradedFromProvider: false
+describe('web search policy placement', () => {
+  it('isolates web search policy to TurnContext without affecting prompt stable or variant assembly', async () => {
+    const baseInput = makeWebSearchPipelineInput();
+    const assembledByPolicy = Object.fromEntries(
+      Object.entries(WEB_SEARCH_POLICIES).map(([mode, webSearchPolicy]) => [
+        mode,
+        assembleSystemMessages(
+          buildPromptPipelineContext({
+            ...baseInput,
+            webSearchPolicy
+          })
+        )
+      ])
+    );
+
+    const stableContents = Object.values(assembledByPolicy).map(
+      (assembled) => assembled.systemMessage.content
+    );
+    const stableHashes = stableContents.map((content) => hashString(content));
+    const variantContents = Object.values(assembledByPolicy).map((assembled) =>
+      assembled.variantMessages.map((message) => message.content).join('\n')
+    );
+
+    expect(new Set(stableHashes).size).toBe(1);
+    expect(new Set(stableContents).size).toBe(1);
+    expect(new Set(variantContents).size).toBe(1);
+
+    for (const stableContent of stableContents) {
+      for (const marker of WEB_SEARCH_HINT_MARKERS) {
+        expect(stableContent).not.toContain(marker);
       }
-    });
-    const appCtx = buildPromptPipelineContext({
-      ...baseInput,
-      webSearchPolicy: {
-        effectiveMode: 'app',
-        injectToolIds: ['web_search'],
-        stripToolIds: [],
-        enableProviderBuiltinSearch: false,
-        degradedFromProvider: false
+    }
+    for (const variantContent of variantContents) {
+      for (const marker of WEB_SEARCH_HINT_MARKERS) {
+        expect(variantContent).not.toContain(marker);
       }
+      expect(variantContent).not.toContain('<model_hint>');
+    }
+
+    const assembler = new TurnContextAssembler({
+      knowledge: async () => ({}),
+      memory: async () => ({}),
+      workspace: async () => ({})
     });
+    const runtimeMetadataByMode = Object.fromEntries(
+      await Promise.all(
+        Object.entries(WEB_SEARCH_POLICIES).map(async ([mode, webSearchPolicy]) => {
+          const context = await assembler.assemble({
+            turnId: `turn-search-${mode}`,
+            agentDef: makeCtx().agentDef,
+            userInput: 'search',
+            webSearchPolicy
+          });
+          const runtimeSource = context.sources.find((source) => source.source === 'runtime');
+          return [mode, runtimeSource?.content ?? ''];
+        })
+      )
+    );
 
-    const offStable = hashString(assembleSystemMessages(offCtx).systemMessage.content);
-    const appStable = hashString(assembleSystemMessages(appCtx).systemMessage.content);
-
-    expect(offStable).toBe(appStable);
-    expect(assembleSystemMessages(appCtx).systemMessage.content).not.toContain('内置搜索');
-    expect(assembleSystemMessages(appCtx).systemMessage.content).not.toContain('实时外部信息');
+    expect(runtimeMetadataByMode.off).toContain('"effectiveMode":"off"');
+    expect(runtimeMetadataByMode.app).toContain('"effectiveMode":"app"');
+    expect(runtimeMetadataByMode.provider).toContain('"effectiveMode":"provider"');
+    expect(new Set(Object.values(runtimeMetadataByMode)).size).toBe(3);
   });
 
   it('represents dynamic web search policy in TurnContext runtime metadata', async () => {
